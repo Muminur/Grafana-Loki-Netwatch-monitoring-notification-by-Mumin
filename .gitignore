@@ -27,7 +27,7 @@ tokens/
 *.db-wal
 *.db-shm
 *.db-journal
-data/
+/data/
 logs/
 *.log
 
