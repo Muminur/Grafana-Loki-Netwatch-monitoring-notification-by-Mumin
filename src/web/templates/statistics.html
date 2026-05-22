@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+
+{% block title %}BSCCL NETWATCH — Statistics{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+    <h1 class="page-title">
+        <span class="page-icon">◎</span> NETWORK STATISTICS
+    </h1>
+    <p class="page-subtitle">Performance metrics and alert analytics for BSCCL backbone</p>
+</div>
+
+<!-- Period Sub-tabs -->
+<div class="subtab-bar" role="tablist" id="statsPeriodTabs">
+    <button class="subtab active" data-period="today" role="tab" aria-selected="true">Today</button>
+    <button class="subtab" data-period="week" role="tab" aria-selected="false">Week</button>
+    <button class="subtab" data-period="month" role="tab" aria-selected="false">Month</button>
+    <button class="subtab" data-period="year" role="tab" aria-selected="false">Year</button>
+</div>
+
+<!-- Statistics Grid -->
+<div class="stats-layout">
+
+    <!-- Health Score Gauge (large) -->
+    <section class="panel stats-panel stats-health">
+        <div class="panel-header">
+            <span class="panel-title">
+                <span class="panel-icon">◈</span> NETWORK HEALTH SCORE
+            </span>
+        </div>
+        <div class="stats-gauge-container">
+            <canvas id="statsHealthGauge" width="300" height="200"
+                    aria-label="Network health score gauge"></canvas>
+            <div class="stats-health-value">
+                <span class="health-number" id="statsHealthNumber">—</span>
+                <span class="health-unit">/100</span>
+            </div>
+        </div>
+        <div class="health-bands">
+            <span class="band band-good">90-100: Excellent</span>
+            <span class="band band-ok">70-89: Good</span>
+            <span class="band band-warn">50-69: Degraded</span>
+            <span class="band band-crit">0-49: Critical</span>
+        </div>
+    </section>
+
+    <!-- Alert Timeline Stacked Area -->
+    <section class="panel stats-panel stats-timeline">
+        <div class="panel-header">
+            <span class="panel-title">
+                <span class="panel-icon">◎</span> ALERT TIMELINE
+            </span>
+        </div>
+        <canvas id="statsTimelineChart" width="600" height="200"
+                aria-label="Alert timeline stacked area chart"></canvas>
+    </section>
+
+    <!-- Category Donut -->
+    <section class="panel stats-panel stats-donut">
+        <div class="panel-header">
+            <span class="panel-title">
+                <span class="panel-icon">⬡</span> ALERT CATEGORIES
+            </span>
+        </div>
+        <canvas id="statsCategoryDonut" width="280" height="200"
+                aria-label="Alert category distribution donut chart"></canvas>
+        <div class="donut-legend" id="donutLegend"></div>
+    </section>
+
+    <!-- Top Devices Bar Chart -->
+    <section class="panel stats-panel stats-devices">
+        <div class="panel-header">
+            <span class="panel-title">
+                <span class="panel-icon">⚙</span> TOP DEVICES BY ALERTS
+            </span>
+        </div>
+        <canvas id="statsTopDevicesChart" width="600" height="200"
+                aria-label="Top devices by alert count bar chart"></canvas>
+    </section>
+
+    <!-- Summary Counters -->
+    <section class="panel stats-panel stats-summary">
+        <div class="panel-header">
+            <span class="panel-title">
+                <span class="panel-icon">⚠</span> PERIOD SUMMARY
+            </span>
+        </div>
+        <div class="summary-grid" id="statsSummaryGrid">
+            <div class="summary-cell">
+                <div class="summary-value" id="statsTotalAlerts">0</div>
+                <div class="summary-label">Total Alerts</div>
+            </div>
+            <div class="summary-cell summary-critical">
+                <div class="summary-value" id="statsCriticalCount">0</div>
+                <div class="summary-label">Critical</div>
+            </div>
+            <div class="summary-cell summary-warning">
+                <div class="summary-value" id="statsWarningCount">0</div>
+                <div class="summary-label">Warning</div>
+            </div>
+            <div class="summary-cell">
+                <div class="summary-value" id="statsInfoCount">0</div>
+                <div class="summary-label">Info</div>
+            </div>
+            <div class="summary-cell">
+                <div class="summary-value" id="statsIncidentCount">0</div>
+                <div class="summary-label">Incidents</div>
+            </div>
+            <div class="summary-cell">
+                <div class="summary-value" id="statsDeviceCount">0</div>
+                <div class="summary-label">Active Devices</div>
+            </div>
+        </div>
+    </section>
+
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+window.NETWATCH_CONFIG = window.NETWATCH_CONFIG || {};
+window.NETWATCH_CONFIG.apiBase = '/api';
+window.NETWATCH_CONFIG.statsPage = true;
+
+// Initialise statistics page charts and sub-tabs
+document.addEventListener('DOMContentLoaded', function() {
+    if (window.NetwatchCharts) {
+        window.NetwatchCharts.initStats();
+    }
+
+    // Sub-tab switching
+    var tabs = document.querySelectorAll('[data-period]');
+    tabs.forEach(function(tab) {
+        tab.addEventListener('click', function() {
+            tabs.forEach(function(t) {
+                t.classList.remove('active');
+                t.setAttribute('aria-selected', 'false');
+            });
+            tab.classList.add('active');
+            tab.setAttribute('aria-selected', 'true');
+            if (window.NetwatchCharts) {
+                window.NetwatchCharts.loadPeriod(tab.dataset.period);
+            }
+        });
+    });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}BSCCL NETWATCH{% endblock %}</title>
+
+    <!-- Google Fonts: Orbitron (display), JetBrains Mono (data), Inter (body) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=JetBrains+Mono:wght@300;400;500;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <!-- Neon Theme CSS -->
+    <link rel="stylesheet" href="/static/css/neon-theme.css">
+
+    {% block head_extra %}{% endblock %}
+</head>
+<body>
+
+    <!-- ══════════════════════════════════════════════
+         NAV HEADER
+    ══════════════════════════════════════════════ -->
+    <header class="nav-header">
+        <div class="nav-brand">
+            <div class="nav-logo">
+                <span class="logo-icon">◈</span>
+                <span class="logo-text">BSCCL</span>
+                <span class="logo-sub">NETWATCH</span>
+            </div>
+        </div>
+
+        <nav class="nav-links">
+            <a href="/" class="nav-link {% if active_page == 'dashboard' %}active{% endif %}">
+                <span class="nav-icon">⬡</span> Dashboard
+            </a>
+            <a href="/statistics" class="nav-link {% if active_page == 'statistics' %}active{% endif %}">
+                <span class="nav-icon">◎</span> Statistics
+            </a>
+            <a href="/settings" class="nav-link {% if active_page == 'settings' %}active{% endif %}">
+                <span class="nav-icon">⚙</span> Settings
+            </a>
+        </nav>
+
+        <div class="nav-status">
+            <!-- LIVE indicator -->
+            <div class="live-indicator" id="liveIndicator">
+                <span class="live-dot"></span>
+                <span class="live-label">LIVE</span>
+            </div>
+
+            <!-- BDT Clock -->
+            <div class="nav-clock" id="navClock">
+                <span class="clock-time" id="clockTime">--:--:--</span>
+                <span class="clock-tz">BDT</span>
+            </div>
+
+            <!-- Sound toggle -->
+            <button class="sound-toggle" id="soundToggle" title="Toggle alert sounds (N)" aria-label="Toggle sound">
+                <span class="sound-icon" id="soundIcon">🔊</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- ══════════════════════════════════════════════
+         MAIN CONTENT
+    ══════════════════════════════════════════════ -->
+    <main class="main-content">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- ══════════════════════════════════════════════
+         JAVASCRIPT
+    ══════════════════════════════════════════════ -->
+    <script src="/static/js/sounds.js"></script>
+    <script src="/static/js/websocket.js"></script>
+    <script src="/static/js/charts.js"></script>
+    <script src="/static/js/topology.js"></script>
+    <script src="/static/js/shortcuts.js"></script>
+    <script src="/static/js/dashboard.js"></script>
+
+    {% block scripts %}{% endblock %}
+
+    <!-- Base clock script -->
+    <script>
+    (function() {
+        function updateClock() {
+            var now = new Date();
+            // BDT = UTC+6
+            var bdt = new Date(now.getTime() + (6 * 60 * 60 * 1000));
+            var h = String(bdt.getUTCHours()).padStart(2, '0');
+            var m = String(bdt.getUTCMinutes()).padStart(2, '0');
+            var s = String(bdt.getUTCSeconds()).padStart(2, '0');
+            var el = document.getElementById('clockTime');
+            if (el) el.textContent = h + ':' + m + ':' + s;
+        }
+        updateClock();
+        setInterval(updateClock, 1000);
+    })();
+    </script>
+</body>
+</html>

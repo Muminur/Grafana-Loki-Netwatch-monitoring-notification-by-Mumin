@@ -9,18 +9,25 @@ Shutdown sequence:
   1. Stop SyslogReceiver gracefully
 
 Routes:
-  GET  /health         — Health check
-  WS   /ws             — Live alert WebSocket (all events)
-  WS   /ws/filtered    — Live alert WebSocket (filtered by classification)
+  GET  /              — Dashboard page
+  GET  /statistics    — Statistics page
+  GET  /settings      — Settings page
+  GET  /health        — Health check
+  WS   /ws            — Live alert WebSocket (all events)
+  WS   /ws/filtered   — Live alert WebSocket (filtered by classification)
 """
 
 from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Request, WebSocket
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 from src.api.routes import router
 from src.api.websocket import WebSocketManager
@@ -40,6 +47,13 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _ws_manager = WebSocketManager()
+
+# ---------------------------------------------------------------------------
+# Template + static file setup
+# ---------------------------------------------------------------------------
+
+_WEB_DIR = Path(__file__).resolve().parent / "web"
+_templates = Jinja2Templates(directory=str(_WEB_DIR / "templates"))
 
 
 # ---------------------------------------------------------------------------
@@ -137,8 +151,54 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ── Static files ─────────────────────────────────────────────────────────────
+app.mount(
+    "/static",
+    StaticFiles(directory=str(_WEB_DIR / "static")),
+    name="static",
+)
+
 # ── REST API router ─────────────────────────────────────────────────────────
 app.include_router(router)
+
+
+# ── Page routes ──────────────────────────────────────────────────────────────
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard_page(request: Request) -> HTMLResponse:
+    """Render the main NOC dashboard page."""
+    return _templates.TemplateResponse(
+        request=request,
+        name="dashboard.html",
+        context={"active_page": "dashboard"},
+    )
+
+
+@app.get("/statistics", response_class=HTMLResponse)
+async def statistics_page(request: Request) -> HTMLResponse:
+    """Render the statistics page."""
+    return _templates.TemplateResponse(
+        request=request,
+        name="statistics.html",
+        context={"active_page": "statistics"},
+    )
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request) -> HTMLResponse:
+    """Render the settings page."""
+    from src.config import get_settings as _gs  # noqa: PLC0415
+
+    s = _gs()
+    return _templates.TemplateResponse(
+        request=request,
+        name="settings.html",
+        context={
+            "active_page": "settings",
+            "dedup_window": s.dedup_window_seconds,
+        },
+    )
 
 
 # ── WebSocket endpoints ──────────────────────────────────────────────────────

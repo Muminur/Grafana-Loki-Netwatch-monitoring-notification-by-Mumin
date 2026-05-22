@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+
+{% block title %}BSCCL NETWATCH — Dashboard{% endblock %}
+
+{% block content %}
+
+<!-- ══════════════════════════════════════════════
+     SEVERITY COUNTER CARDS
+══════════════════════════════════════════════ -->
+<section class="severity-bar">
+    <div class="sev-card sev-critical" id="sevCardCritical">
+        <div class="sev-count" id="countCritical">0</div>
+        <div class="sev-label">CRITICAL</div>
+        <div class="sev-glow"></div>
+    </div>
+    <div class="sev-card sev-warning" id="sevCardWarning">
+        <div class="sev-count" id="countWarning">0</div>
+        <div class="sev-label">WARNING</div>
+        <div class="sev-glow"></div>
+    </div>
+    <div class="sev-card sev-info" id="sevCardInfo">
+        <div class="sev-count" id="countInfo">0</div>
+        <div class="sev-label">INFO</div>
+        <div class="sev-glow"></div>
+    </div>
+    <div class="sev-card sev-noise" id="sevCardNoise">
+        <div class="sev-count" id="countNoise">0</div>
+        <div class="sev-label">NOISE</div>
+        <div class="sev-glow"></div>
+    </div>
+    <div class="sev-card sev-login" id="sevCardLogin">
+        <div class="sev-count" id="countLogin">0</div>
+        <div class="sev-label">LOGIN</div>
+        <div class="sev-glow"></div>
+    </div>
+    <div class="sev-card sev-stats" id="sevCardStats">
+        <div class="sev-count" id="countTotal">0</div>
+        <div class="sev-label">STATS</div>
+        <div class="sev-glow"></div>
+    </div>
+</section>
+
+<!-- ══════════════════════════════════════════════
+     MAIN LAYOUT: LEFT (alerts) + RIGHT (mini panels)
+══════════════════════════════════════════════ -->
+<div class="dashboard-layout">
+
+    <!-- LEFT COLUMN: Active incidents + Alert list -->
+    <div class="dashboard-left">
+
+        <!-- Active Incidents Panel -->
+        <section class="panel panel-incidents">
+            <div class="panel-header">
+                <span class="panel-title">
+                    <span class="panel-icon">⚠</span> ACTIVE INCIDENTS
+                </span>
+                <span class="incident-count badge-critical" id="incidentCount">0</span>
+            </div>
+            <div class="incidents-list" id="incidentsList">
+                <div class="empty-state">No active incidents</div>
+            </div>
+        </section>
+
+        <!-- Alert List with Tabs -->
+        <section class="panel panel-alerts">
+            <div class="panel-header">
+                <span class="panel-title">
+                    <span class="panel-icon">◈</span> ALERT STREAM
+                </span>
+                <div class="alert-controls">
+                    <input type="text" class="search-input" id="alertSearch"
+                           placeholder="Search alerts..." aria-label="Search alerts">
+                    <button class="btn-icon" id="clearAlertsBtn" title="Clear all alerts">✕</button>
+                </div>
+            </div>
+
+            <!-- Tab Bar -->
+            <div class="tab-bar" role="tablist">
+                <button class="tab active" data-tab="all" role="tab" aria-selected="true"
+                        title="All alerts (keyboard: 1)">
+                    ALL <span class="tab-badge" id="tabCountAll">0</span>
+                </button>
+                <button class="tab tab-critical" data-tab="CRITICAL" role="tab" aria-selected="false"
+                        title="Critical alerts (keyboard: 1)">
+                    CRITICAL <span class="tab-badge tab-badge-critical" id="tabCountCritical">0</span>
+                </button>
+                <button class="tab tab-warning" data-tab="WARNING" role="tab" aria-selected="false"
+                        title="Warning alerts (keyboard: 2)">
+                    WARNING <span class="tab-badge tab-badge-warning" id="tabCountWarning">0</span>
+                </button>
+                <button class="tab tab-info" data-tab="INFO" role="tab" aria-selected="false"
+                        title="Info alerts (keyboard: 3)">
+                    INFO <span class="tab-badge" id="tabCountInfo">0</span>
+                </button>
+                <button class="tab tab-noise" data-tab="NOISE" role="tab" aria-selected="false"
+                        title="Noise alerts (keyboard: 4)">
+                    NOISE <span class="tab-badge" id="tabCountNoise">0</span>
+                </button>
+                <button class="tab tab-login" data-tab="USER_LOGIN" role="tab" aria-selected="false"
+                        title="Login events (keyboard: 5)">
+                    LOGIN <span class="tab-badge" id="tabCountLogin">0</span>
+                </button>
+            </div>
+
+            <!-- Alert Cards Container -->
+            <div class="alerts-container" id="alertsContainer" role="tabpanel">
+                <div class="empty-state" id="alertsEmpty">
+                    <span class="empty-icon">◎</span>
+                    <span class="empty-text">Waiting for alerts...</span>
+                </div>
+            </div>
+        </section>
+
+    </div><!-- /.dashboard-left -->
+
+    <!-- RIGHT COLUMN: Topology + Mini charts -->
+    <div class="dashboard-right">
+
+        <!-- Network Topology -->
+        <section class="panel panel-topology">
+            <div class="panel-header">
+                <span class="panel-title">
+                    <span class="panel-icon">⬡</span> NETWORK TOPOLOGY
+                </span>
+                <span class="topology-legend">
+                    <span class="legend-dot legend-ok"></span>OK
+                    <span class="legend-dot legend-warn"></span>WARN
+                    <span class="legend-dot legend-crit"></span>CRIT
+                    <span class="legend-dot legend-unknown"></span>UNK
+                </span>
+            </div>
+            <div class="topology-container" id="topologyContainer">
+                <!-- SVG rendered by topology.js -->
+                <svg id="topologySvg" width="100%" height="280"
+                     viewBox="0 0 600 280" preserveAspectRatio="xMidYMid meet"
+                     role="img" aria-label="Network topology diagram">
+                    <!-- Will be populated by topology.js -->
+                    <text x="300" y="140" text-anchor="middle"
+                          fill="#8888a0" font-family="JetBrains Mono" font-size="12">
+                        Loading topology...
+                    </text>
+                </svg>
+            </div>
+        </section>
+
+        <!-- Mini Charts -->
+        <section class="panel panel-charts">
+            <div class="panel-header">
+                <span class="panel-title">
+                    <span class="panel-icon">◎</span> ANALYTICS
+                </span>
+            </div>
+            <div class="charts-grid">
+                <!-- Health Score Gauge -->
+                <div class="chart-cell">
+                    <div class="chart-label">Network Health</div>
+                    <canvas id="healthGaugeChart" width="160" height="100"
+                            aria-label="Network health gauge"></canvas>
+                    <div class="health-score-value" id="healthScoreValue">—</div>
+                </div>
+                <!-- Alert Timeline -->
+                <div class="chart-cell chart-cell-wide">
+                    <div class="chart-label">Alert Timeline (1h)</div>
+                    <canvas id="timelineChart" width="300" height="100"
+                            aria-label="Alert timeline chart"></canvas>
+                </div>
+                <!-- Category Donut -->
+                <div class="chart-cell">
+                    <div class="chart-label">By Category</div>
+                    <canvas id="categoryDonutChart" width="160" height="100"
+                            aria-label="Alert category donut chart"></canvas>
+                </div>
+                <!-- Top Devices Bar -->
+                <div class="chart-cell chart-cell-wide">
+                    <div class="chart-label">Top Devices</div>
+                    <canvas id="topDevicesChart" width="300" height="100"
+                            aria-label="Top devices bar chart"></canvas>
+                </div>
+            </div>
+        </section>
+
+    </div><!-- /.dashboard-right -->
+
+</div><!-- /.dashboard-layout -->
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Pass server-side config to JS (no secrets — only public operational params)
+window.NETWATCH_CONFIG = {
+    wsUrl: 'ws://' + window.location.host + '/ws',
+    apiBase: '/api',
+};
+</script>
+{% endblock %}

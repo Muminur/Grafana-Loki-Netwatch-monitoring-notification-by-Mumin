@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+
+{% block title %}BSCCL NETWATCH — Settings{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+    <h1 class="page-title">
+        <span class="page-icon">⚙</span> SETTINGS
+    </h1>
+    <p class="page-subtitle">Configure alert preferences, notifications, and maintenance windows</p>
+</div>
+
+<div class="settings-layout">
+
+    <!-- ── Notification Preferences ─────────────────────────────────────── -->
+    <section class="panel settings-panel">
+        <div class="panel-header">
+            <span class="panel-title">
+                <span class="panel-icon">◈</span> NOTIFICATION PREFERENCES
+            </span>
+        </div>
+        <form class="settings-form" id="notificationForm" action="#" method="post">
+            <div class="form-group">
+                <label class="form-label" for="discordEnabled">Discord Notifications</label>
+                <div class="toggle-row">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="discordEnabled" name="discord_enabled">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="toggle-desc">Send CRITICAL + WARNING alerts to Discord</span>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="telegramEnabled">Telegram Notifications</label>
+                <div class="toggle-row">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="telegramEnabled" name="telegram_enabled">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="toggle-desc">Send CRITICAL alerts to Telegram</span>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="notifySeverity">Minimum Alert Severity</label>
+                <select class="form-select" id="notifySeverity" name="notify_severity">
+                    <option value="CRITICAL">CRITICAL only</option>
+                    <option value="WARNING" selected>WARNING and above</option>
+                    <option value="INFO">INFO and above</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="dedupWindow">Deduplication Window (seconds)</label>
+                <input type="number" class="form-input" id="dedupWindow" name="dedup_window"
+                       value="{{ dedup_window | default(300) }}" min="30" max="3600">
+                <span class="form-hint">Same device+event suppressed for this many seconds</span>
+            </div>
+        </form>
+    </section>
+
+    <!-- ── Sound Settings ────────────────────────────────────────────────── -->
+    <section class="panel settings-panel">
+        <div class="panel-header">
+            <span class="panel-title">
+                <span class="panel-icon">🔊</span> SOUND SETTINGS
+            </span>
+        </div>
+        <form class="settings-form" id="soundForm" action="#" method="post">
+            <div class="form-group">
+                <label class="form-label" for="soundEnabled">Alert Sounds</label>
+                <div class="toggle-row">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="soundEnabled" name="sound_enabled" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="toggle-desc">Play audio alerts for CRITICAL events</span>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="criticalSoundEnabled">Critical Alarm</label>
+                <div class="toggle-row">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="criticalSoundEnabled" name="critical_sound_enabled" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="toggle-desc">Audible alarm for CRITICAL events</span>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="warningSoundEnabled">Warning Chime</label>
+                <div class="toggle-row">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="warningSoundEnabled" name="warning_sound_enabled" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="toggle-desc">Chime for WARNING events</span>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="recoverySoundEnabled">Recovery Arpeggio</label>
+                <div class="toggle-row">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="recoverySoundEnabled" name="recovery_sound_enabled" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="toggle-desc">Ascending notes when link recovers</span>
+                </div>
+            </div>
+            <div class="form-group">
+                <div class="sound-test-buttons">
+                    <button type="button" class="btn btn-test btn-test-critical"
+                            onclick="if(window.NetwatchSounds) window.NetwatchSounds.testCritical()">
+                        Test Critical
+                    </button>
+                    <button type="button" class="btn btn-test btn-test-warning"
+                            onclick="if(window.NetwatchSounds) window.NetwatchSounds.testWarning()">
+                        Test Warning
+                    </button>
+                    <button type="button" class="btn btn-test btn-test-recovery"
+                            onclick="if(window.NetwatchSounds) window.NetwatchSounds.testRecovery()">
+                        Test Recovery
+                    </button>
+                </div>
+            </div>
+        </form>
+    </section>
+
+    <!-- ── Maintenance Windows ───────────────────────────────────────────── -->
+    <section class="panel settings-panel">
+        <div class="panel-header">
+            <span class="panel-title">
+                <span class="panel-icon">⚠</span> MAINTENANCE WINDOWS
+            </span>
+            <button type="button" class="btn btn-add" id="addMaintenanceBtn">+ Add Window</button>
+        </div>
+        <form class="settings-form" id="maintenanceForm" action="#" method="post">
+            <div class="form-group">
+                <label class="form-label" for="maintDevice">Device</label>
+                <select class="form-select" id="maintDevice" name="maint_device">
+                    <option value="">— All devices —</option>
+                    <option value="Equinix-RTR-1">Equinix-RTR-1 (Singapore)</option>
+                    <option value="Equinix-RTR-2">Equinix-RTR-2 (Singapore)</option>
+                    <option value="KKT-Core-1">KKT-Core-1 (Kuakata)</option>
+                    <option value="KKT-Core-2">KKT-Core-2 (Kuakata)</option>
+                    <option value="KKT-Core-3">KKT-Core-3 (Kuakata)</option>
+                    <option value="DHK-Core-3">DHK-Core-3 (Dhaka)</option>
+                    <option value="COX-Core-1">COX-Core-1 (Cox's Bazar)</option>
+                    <option value="COX-Core-3">COX-Core-3 (Cox's Bazar)</option>
+                </select>
+            </div>
+            <div class="form-group form-row">
+                <div class="form-col">
+                    <label class="form-label" for="maintStart">Start (BDT)</label>
+                    <input type="datetime-local" class="form-input" id="maintStart" name="maint_start">
+                </div>
+                <div class="form-col">
+                    <label class="form-label" for="maintEnd">End (BDT)</label>
+                    <input type="datetime-local" class="form-input" id="maintEnd" name="maint_end">
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="maintNote">Note</label>
+                <input type="text" class="form-input" id="maintNote" name="maint_note"
+                       placeholder="e.g. Planned link upgrade" maxlength="200">
+            </div>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Schedule Maintenance</button>
+                <button type="reset" class="btn btn-secondary">Cancel</button>
+            </div>
+        </form>
+
+        <!-- Maintenance windows list -->
+        <div class="maintenance-list" id="maintenanceList">
+            <div class="empty-state">No maintenance windows scheduled</div>
+        </div>
+    </section>
+
+    <!-- ── Keyboard Shortcuts ────────────────────────────────────────────── -->
+    <section class="panel settings-panel">
+        <div class="panel-header">
+            <span class="panel-title">
+                <span class="panel-icon">⌨</span> KEYBOARD SHORTCUTS
+            </span>
+        </div>
+        <div class="shortcuts-table">
+            <div class="shortcut-row">
+                <kbd>1</kbd><span>CRITICAL tab</span>
+                <kbd>2</kbd><span>WARNING tab</span>
+                <kbd>3</kbd><span>INFO tab</span>
+            </div>
+            <div class="shortcut-row">
+                <kbd>4</kbd><span>NOISE tab</span>
+                <kbd>5</kbd><span>LOGIN tab</span>
+                <kbd>0</kbd><span>ALL tab</span>
+            </div>
+            <div class="shortcut-row">
+                <kbd>A</kbd><span>Acknowledge selected</span>
+                <kbd>N</kbd><span>Toggle mute</span>
+                <kbd>/</kbd><span>Focus search</span>
+            </div>
+        </div>
+    </section>
+
+</div><!-- /.settings-layout -->
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+window.NETWATCH_CONFIG = window.NETWATCH_CONFIG || {};
+window.NETWATCH_CONFIG.apiBase = '/api';
+document.addEventListener('DOMContentLoaded', function() {
+    // Sync sound toggle state from header
+    var soundToggle = document.getElementById('soundEnabled');
+    var headerToggle = document.getElementById('soundToggle');
+    if (soundToggle && headerToggle) {
+        soundToggle.addEventListener('change', function() {
+            if (window.NetwatchSounds) {
+                window.NetwatchSounds.setEnabled(soundToggle.checked);
+            }
+        });
+    }
+});
+</script>
+{% endblock %}
