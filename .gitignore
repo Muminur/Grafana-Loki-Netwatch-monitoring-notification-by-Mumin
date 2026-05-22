@@ -1,0 +1,76 @@
+# ── Never push: internal project docs, instructions & agent configs ──
+# BSCCL internal material (network topology, device/interface maps, PRDs)
+# and Claude operating instructions stay local-only.
+CLAUDE.md
+PLANNING.md
+TASKS.md
+docs/
+.claude/commands/*.md
+.claude/agents/*.md
+
+# ── Secrets / config (NEVER commit) ──────────────────────────────
+.env
+.env.*
+!.env.example
+*.secret
+*.key
+*.pem
+*.token
+*.cookie
+secrets/
+tokens/
+
+# ── Databases / runtime data ─────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
+data/
+logs/
+*.log
+
+# ── Python bytecode / packaging ──────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+*.manifest
+*.spec
+
+# ── Virtual environments ─────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ── Tooling caches ───────────────────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.cache/
+
+# ── IDE / editor ─────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── OS cruft ─────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
