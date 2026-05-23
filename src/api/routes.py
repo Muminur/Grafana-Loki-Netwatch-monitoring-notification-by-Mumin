@@ -256,6 +256,26 @@ def add_alert_to_store(enriched: Any, correlated: Any) -> None:
         enriched.parsed.message,
         enriched.rule_id,
     )
+
+    # When a recovery event arrives, resolve matching DOWN incidents
+    if is_recovery:
+        dev = enriched.device_name
+        iface = enriched.interface_name
+        neighbor = enriched.bgp_neighbor
+        as_num = enriched.as_number
+        resolved = []
+        for i, inc in enumerate(_incidents_store):
+            if inc["device"] != dev:
+                continue
+            if iface and inc.get("interface") == iface:
+                resolved.append(i)
+            elif neighbor and as_num and inc.get("mnemonic") == "ADJCHANGE":
+                inc_msg = inc.get("message", "")
+                if str(as_num) in inc_msg or neighbor in inc_msg:
+                    resolved.append(i)
+        for idx in reversed(resolved):
+            _incidents_store.pop(idx)
+
     if not is_recovery and (
         enriched.classification == "CRITICAL"
         or (correlated.incident_id and not correlated.is_symptom)
@@ -567,6 +587,19 @@ async def get_incidents() -> list[dict[str, Any]]:
         result = await session.execute(stmt)
         rows = result.scalars().all()
 
+    # First pass: collect resolved keys — a DOWN incident is resolved if a
+    # later recovery event exists for the same device + interface/AS.
+    resolved_keys: set[str] = set()
+    for row in rows:
+        if not _is_recovery_event(row.mnemonic, row.message or ""):
+            continue
+        iface = row.interface_name or ""
+        if row.mnemonic == "ADJCHANGE" and row.as_number:
+            resolved_keys.add(f"{row.device_name}:ADJCHANGE:{row.as_number}")
+        elif iface:
+            for mn in ("UPDOWN", "ACTIVE", "RFI", "RX_FAULT", "SIGNAL"):
+                resolved_keys.add(f"{row.device_name}:{mn}:{iface}")
+
     incidents: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in rows:
@@ -577,6 +610,8 @@ async def get_incidents() -> list[dict[str, Any]]:
         else:
             discriminator = row.bgp_neighbor or row.interface_name or ""
         key = f"{row.device_name}:{row.mnemonic}:{discriminator}"
+        if key in resolved_keys:
+            continue
         if key in seen:
             for inc in incidents:
                 if inc.get("_key") == key:
