@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-326_passing-00ff88?style=flat-square" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-329_passing-00ff88?style=flat-square" alt="Tests"/>
   <img src="https://img.shields.io/badge/coverage-85%25-00ff88?style=flat-square" alt="Coverage"/>
   <img src="https://img.shields.io/badge/ruff-clean-00f0ff?style=flat-square" alt="Ruff"/>
   <img src="https://img.shields.io/badge/mypy-strict-8b5cf6?style=flat-square" alt="Mypy"/>
@@ -32,11 +32,12 @@ BSCPLC (Bangladesh Submarine Cables PLC) operates a multi-site ISP/carrier backb
 **NetWatch** replaces that chaos with an intelligent, real-time alert classification system that:
 
 - **Parses** 4 distinct Cisco IOS-XR syslog formats from 34 network devices
-- **Classifies** every log into 5 severity tiers using 25 regex rules
+- **Classifies** every log into 5 severity tiers using 26 regex rules
 - **Enriches** each alert with device identity, interface descriptions, client names, and AS numbers from 845+ interface mappings
 - **Correlates** cascading failures — a single fiber cut generating 200+ alerts becomes **one incident**
 - **Notifies** operators via Discord and Telegram with deduplication and flap detection
-- **Displays** everything in a futuristic neon-themed dashboard with live topology, charts, and sound alerts
+- **Displays** everything in a futuristic neon-themed dashboard optimized for 55" 4K NOC wall TVs, with live topology, charts, and sound alerts
+- **Auto-resolves** incidents when recovery events arrive (Interface Up, Bundle Active, BGP Up) — only genuinely unresolved faults remain
 
 <p align="center">
   <img src="docs/assets/pipeline-flow.svg" alt="Processing Pipeline" width="800"/>
@@ -59,7 +60,7 @@ Syslog (UDP 514) → Grafana Loki → WebSocket Tail → NetWatch Pipeline
                     │
               ┌─────▼──────┐     ┌──────────┐     ┌──────────┐
               │   Parser    │────▶│Classifier│────▶│ Enricher │
-              │ 4 IOS-XR   │     │ 25 rules │     │ 845 intf │
+              │ 4 IOS-XR   │     │ 26 rules │     │ 845 intf │
               │  formats    │     │ 121 AS   │     │ 33 devs  │
               └─────────────┘     └──────────┘     └────┬─────┘
                                                         │
@@ -102,10 +103,10 @@ The correlation engine uses the **network dependency tree** to automatically det
 | Interface mappings | **845** with descriptions |
 | BGP peers tracked | **294** (210 MLPE IX + 84 PNI/transit) |
 | AS number database | **121** entries with names and types |
-| Classification rules | **25** (10 CRITICAL, 6 WARNING, 6 INFO, 3 LOGIN) |
+| Classification rules | **26** (14 CRITICAL, 3 WARNING, 6 INFO, 3 LOGIN) |
 | Syslog formats parsed | **4** (IOS-XR +06, BDT, ADMIN, bare) |
 | Dedup windows | **5 min** standard, **2 min** BGP flap, **30 sec** bundle |
-| Test suite | **326 tests**, 85% coverage |
+| Test suite | **329 tests**, 85% coverage |
 
 ---
 
@@ -189,11 +190,23 @@ GRAFANA_DASHBOARD_UID=8sWAY1LMz
 DEDUP_WINDOW_SECONDS=300
 BGP_FLAP_WINDOW_SECONDS=120
 BUNDLE_GROUP_WINDOW_SECONDS=30
+
+# ASN organization lookup (BigDataCloud — cached in SQLite)
+ASN_API_KEY=...
 ```
 
 ---
 
 ## Dashboard Features
+
+### NOC Wall Display (55" 4K Optimized)
+The dashboard is designed for deployment on a 55-inch 4K TV in the Network Operations Center:
+- **Side-by-side layout** — Active Incidents (left 40%) + Alert Stream (right 60%)
+- **4K typography scaling** — base font 14px → 24px at `@media (min-width: 2000px)` for distance reading
+- **~49 visible alert rows** at 4K resolution, filling the full viewport height
+- **CRITICAL tab** is the default view on page load
+- **Chart.js font scaling** — legend/tooltip text adapts to viewport (10px desk → 16px 4K)
+- Responsive collapse to single column below 1100px for desk/dev use
 
 ### Neon-Themed UI
 Futuristic "Mission Control" design with:
@@ -206,15 +219,26 @@ Futuristic "Mission Control" design with:
 ### 6 Severity Tabs
 | Tab | Color | Content |
 |-----|-------|---------|
-| CRITICAL | `#ff0040` (red glow) | BGP down, faults, SFP alarms, interface down |
-| WARNING | `#ffdd00` (yellow) | Recovery events, BER clear, SFP clear |
+| CRITICAL | `#ff0040` (red glow) | BGP down/up, faults, SFP alarms, interface down/up, bundle active/expired |
+| WARNING | `#ffdd00` (yellow) | BGP max-prefix reached, BER clear, SFP clear |
 | INFO | `#00f0ff` (cyan) | Known noise, port creation failures, EEM scripts |
 | NOISE | `#555570` (dim) | Repeated known issues, hidden by default |
 | LOGIN | `#00ff88` (green) | SSH login/logout with session tracking |
 | STATS | `#8b5cf6` (purple) | Health score, charts, SLA metrics |
 
+### Active Incidents Panel
+- **Rich titles** with shortened interface names and actionable context:
+  - Bundle: `Bundle DOWN — KKT-Core-2, TGE0/0/1/7, BE201`
+  - BGP: `ADJCHANGE — KKT-Core-3 DOWN - Orange S.A.`
+  - Fault: `RXFault-KKT-Core-1 - TGE0/0/0/2 - Local Fault`
+- **Auto-resolution** — DOWN incidents automatically clear when the interface/BGP recovers
+- **Device-specific matching** — same interface name on different routers (connecting to different far-end equipment) is correctly treated as separate incidents
+- **ASN organization names** — resolved via BigDataCloud API, cached in SQLite (never re-fetched)
+
 ### Live Features
 - **Auto-reconnecting WebSocket** for real-time alert push
+- **Deduplication enforced** — DB storage, WebSocket broadcast, and in-memory store all respect the 5-minute dedup window
+- **Client-side dedup safety net** — 5-minute sliding-window check in the browser
 - **Web Audio API** sound alerts (critical alarm, warning chime, recovery arpeggio)
 - **Browser notifications** for CRITICAL events
 - **Keyboard shortcuts** — `1-5` switch tabs, `A` acknowledge, `N` mute, `/` search
@@ -225,32 +249,37 @@ Futuristic "Mission Control" design with:
 - Category donut (severity distribution)
 - Top devices bar chart
 - Network health gauge (0-100 score)
+- Chart cell overflow capped at 4K viewports
 
 ---
 
 ## Classification Rules
 
 <details>
-<summary><strong>10 CRITICAL rules</strong> (trigger Discord + Telegram notifications)</summary>
+<summary><strong>14 CRITICAL rules</strong> (trigger Discord + Telegram notifications)</summary>
 
 | Rule | Pattern | Event |
 |------|---------|-------|
 | `BGP_DOWN` | `ADJCHANGE.*Down` | BGP peer went down |
-| `BGP_MAXPFX` | `MAXPFX` | Max prefix threshold reached |
 | `LACP_EXPIRED` | `no longer Active` | Bundle member LACP expired |
-| `REMOTE_FAULT` | `Remote Fault` | Remote fault on physical interface |
-| `LOCAL_FAULT` | `Local Fault` | Local fault on physical interface |
+| `REMOTE_FAULT` | `RX_FAULT.*Remote Fault` | Remote fault (DPA) |
+| `LOCAL_FAULT` | `RX_FAULT.*Local Fault` | Local fault (DPA) |
+| `RFI_FAULT` | `RFI.*Detected.*Fault` | Remote/local fault (RFI) |
 | `SIGNAL_FAILURE` | `Signal failure` | Signal failure on interface |
 | `SFP_ALARM_SET` | `LOW_RX_POWER_ALARM.*Set` | SFP optic failing |
 | `DUPLICATE_IPV6` | `ADDRESS_DUPLICATE` | Duplicate IPv6 address |
 | `INTF_DOWN` | `UPDOWN.*Down` | Interface went down |
 | `LINEPROTO_DOWN` | `LINEPROTO.*Down` | Line protocol went down |
+| `BGP_UP` | `ADJCHANGE.*Up` | BGP peer came up (recovery) |
+| `INTF_UP` | `UPDOWN.*Up` | Interface came up (recovery) |
+| `LINEPROTO_UP` | `LINEPROTO.*Up` | Line protocol came up (recovery) |
+| `LACP_ACTIVE` | `BM-6-ACTIVE.*Active` | Bundle member became active (recovery) |
 </details>
 
 <details>
-<summary><strong>6 WARNING rules</strong></summary>
+<summary><strong>3 WARNING rules</strong></summary>
 
-`BER_CLEAR`, `BGP_UP`, `INTF_UP`, `LINEPROTO_UP`, `SFP_ALARM_CLEAR`, `LACP_ACTIVE`
+`BGP_MAXPFX` (max prefix threshold), `BER_CLEAR`, `SFP_ALARM_CLEAR`
 </details>
 
 <details>
@@ -295,7 +324,10 @@ Alert: BGP DOWN AS32934 Facebook
 | **Standard dedup** | 5 minutes | Same device + mnemonic + interface/neighbor |
 | **BGP flap detection** | 2 minutes | Down → Up → Down pattern → single "FLAPPING" alert |
 | **Bundle grouping** | 30 seconds | Multiple member events → grouped by parent bundle |
+| **Incident auto-resolution** | Real-time | Recovery event (Up/Active/Clear) removes matching DOWN incident |
 | **Escalation** | 15 minutes | Unacknowledged CRITICAL → escalation channel |
+
+Dedup is enforced at every layer: DB storage, WebSocket broadcast, and in-memory store all skip suppressed duplicates. Client-side dedup provides an additional safety net in the browser.
 
 ---
 
@@ -349,7 +381,7 @@ bsccl-netwatch/
 │   ├── config.py                  # Settings from .env
 │   ├── core/
 │   │   ├── parser.py              # 4-format IOS-XR syslog parser
-│   │   ├── classifier.py          # 25-rule classification engine
+│   │   ├── classifier.py          # 26-rule classification engine
 │   │   ├── enricher.py            # Device/interface/AS enrichment
 │   │   ├── correlator.py          # Event correlation + incidents
 │   │   ├── dedup.py               # Notification deduplication
@@ -358,13 +390,13 @@ bsccl-netwatch/
 │   │   ├── device_map.py          # 33 devices → IP/name/location
 │   │   ├── interface_map.py       # 845 interfaces → description
 │   │   ├── as_database.py         # 121 AS numbers → name/type
-│   │   ├── classification_rules.py # 25 compiled regex rules
+│   │   ├── classification_rules.py # 26 compiled regex rules
 │   │   └── topology.py            # Network dependency tree
 │   ├── database/
 │   │   ├── models.py              # 7 SQLAlchemy models
 │   │   ├── crud.py                # DB operations
 │   │   ├── migrations.py          # Auto table creation + WAL
-│   │   └── as_cache.py            # External AS lookup cache
+│   │   └── as_cache.py            # External AS lookup cache + BigDataCloud API
 │   ├── notifications/
 │   │   ├── discord.py             # Discord webhook sender
 │   │   ├── telegram.py            # Telegram bot sender
@@ -385,7 +417,7 @@ bsccl-netwatch/
 │       └── static/
 │           ├── css/neon-theme.css  # Full neon design system
 │           └── js/                # WebSocket, charts, topology, sounds, shortcuts
-├── tests/                         # 326 tests (unit + integration + e2e)
+├── tests/                         # 329 tests (unit + integration + e2e)
 ├── Dockerfile                     # Multi-stage, non-root, health check
 ├── docker-compose.yml             # Production deployment
 └── .github/workflows/ci.yml       # CI: ruff + black + mypy + pytest + coverage
