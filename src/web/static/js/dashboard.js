@@ -106,17 +106,31 @@
                 + '</span>');
         }
 
-        card.innerHTML = '<div class="alert-header">'
-            + '<span class="alert-severity ' + _esc(alert.classification) + '">' + _esc(sevLabel) + '</span>'
+        // data-severity attribute drives the CSS critical pulse animation
+        card.dataset.severity = alert.classification || 'INFO';
+
+        card.innerHTML = '<div class="alert-row">'
+            + '<span class="alert-sev-dot"></span>'
+            + (ts ? '<span class="alert-timestamp">' + _esc(ts) + '</span>' : '')
             + (device ? '<span class="alert-device">' + _esc(device) + '</span>' : '')
             + (mnemonic ? '<span class="alert-mnemonic">' + _esc(mnemonic) + '</span>' : '')
-            + (ts ? '<span class="alert-timestamp">' + _esc(ts) + '</span>' : '')
+            + '<span class="alert-message">' + _esc(message) + '</span>'
             + '</div>'
-            + '<div class="alert-message">' + _esc(message) + '</div>'
+            + '<div class="alert-detail">'
+            + '<div class="alert-message-full">' + _esc(message) + '</div>'
             + (metaItems.length ? '<div class="alert-meta">' + metaItems.join('') + '</div>' : '')
+            + '</div>'
             + '<div class="alert-actions">'
             + '<button class="btn-ack" data-alert-id="' + _esc(alert.id || '') + '">ACK</button>'
             + '</div>';
+
+        // Expand/collapse on row click
+        var row = card.querySelector('.alert-row');
+        if (row) {
+            row.addEventListener('click', function () {
+                card.classList.toggle('expanded');
+            });
+        }
 
         // Acknowledge handler
         var ackBtn = card.querySelector('.btn-ack');
@@ -124,6 +138,7 @@
             ackBtn.addEventListener('click', function (e) {
                 e.stopPropagation();
                 card.classList.add('acknowledged');
+                card.classList.remove('expanded');
             });
         }
 
