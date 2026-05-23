@@ -67,14 +67,32 @@ class Settings:
     )
 
     @property
+    def loki_datasource_id(self) -> int:
+        """Grafana Loki datasource ID for proxy access."""
+        return int(os.environ.get("LOKI_DATASOURCE_ID", "37"))
+
+    @property
+    def loki_query(self) -> str:
+        """Loki log query selector."""
+        return os.environ.get("LOKI_QUERY", '{job="Router-Logs"}')
+
+    @property
     def loki_ws_url(self) -> str:
-        """WebSocket URL for Loki tail endpoint."""
-        return f"ws://{self.monitor_host}:3000/loki/api/v1/tail"
+        """WebSocket URL for Loki tail via Grafana proxy."""
+        return (
+            f"ws://{self.monitor_host}:3000"
+            f"/api/datasources/proxy/{self.loki_datasource_id}"
+            f"/loki/api/v1/tail"
+        )
 
     @property
     def loki_http_url(self) -> str:
-        """HTTP URL for Loki query_range endpoint."""
-        return f"http://{self.monitor_host}:3000/loki/api/v1/query_range"
+        """HTTP URL for Loki query_range via Grafana proxy."""
+        return (
+            f"http://{self.monitor_host}:3000"
+            f"/api/datasources/proxy/{self.loki_datasource_id}"
+            f"/loki/api/v1/query_range"
+        )
 
     @property
     def grafana_url(self) -> str:

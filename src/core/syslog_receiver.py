@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 _HTTP_POLL_INTERVAL = 2  # seconds between HTTP poll requests
-_LOKI_QUERY = '{job="syslog"}'
+_LOKI_QUERY = '{job="Router-Logs"}'  # default; overridden by settings.loki_query
 
 
 class SyslogReceiver:
@@ -168,7 +168,9 @@ class SyslogReceiver:
 
     async def _ws_tail_once(self) -> None:
         """Single WebSocket tail session — read until connection closes."""
-        url = f"{self._settings.loki_ws_url}?query=%7Bjob%3D%22syslog%22%7D"
+        query = self._settings.loki_query
+        from urllib.parse import quote
+        url = f"{self._settings.loki_ws_url}?query={quote(query)}"
         async with websockets.connect(url) as ws:
             async for raw_msg in ws:
                 if isinstance(raw_msg, bytes):
@@ -195,7 +197,7 @@ class SyslogReceiver:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 self._settings.loki_http_url,
-                params={"query": _LOKI_QUERY, "limit": "100"},
+                params={"query": self._settings.loki_query, "limit": "100"},
                 timeout=10.0,
             )
             if resp.status_code == 200:

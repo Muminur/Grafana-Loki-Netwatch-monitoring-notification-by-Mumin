@@ -5,8 +5,17 @@ import pytest
 from src.config import Settings, get_settings
 
 
-def test_settings_defaults() -> None:
+def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     """Settings has sane defaults when no env vars are set."""
+    for var in (
+        "MONITOR_HOST", "SYSLOG_MODE", "SYSLOG_UDP_PORT", "DATABASE_URL",
+        "WEB_HOST", "WEB_PORT", "DISCORD_WEBHOOK_URL", "DISCORD_ENABLED",
+        "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_ENABLED",
+        "GRAFANA_API_KEY", "GRAFANA_DASHBOARD_UID", "DEDUP_WINDOW_SECONDS",
+        "BGP_FLAP_WINDOW_SECONDS", "BUNDLE_GROUP_WINDOW_SECONDS",
+        "LOKI_DATASOURCE_ID", "LOKI_QUERY",
+    ):
+        monkeypatch.delenv(var, raising=False)
     settings = Settings()
     assert settings.monitor_host == "192.168.200.230"
     assert settings.web_port == 8080
@@ -20,22 +29,29 @@ def test_settings_defaults() -> None:
     assert settings.grafana_dashboard_uid == "8sWAY1LMz"
 
 
-def test_loki_ws_url_constructed_from_host() -> None:
-    """Loki WS URL derives from monitor_host."""
+def test_loki_ws_url_constructed_from_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Loki WS URL derives from monitor_host via Grafana proxy."""
+    monkeypatch.delenv("MONITOR_HOST", raising=False)
     settings = Settings()
     assert "192.168.200.230:3000" in settings.loki_ws_url
     assert settings.loki_ws_url.startswith("ws://")
+    assert "/api/datasources/proxy/37/" in settings.loki_ws_url
+    assert "/loki/api/v1/tail" in settings.loki_ws_url
 
 
-def test_loki_http_url_constructed_from_host() -> None:
-    """Loki HTTP URL derives from monitor_host."""
+def test_loki_http_url_constructed_from_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Loki HTTP URL derives from monitor_host via Grafana proxy."""
+    monkeypatch.delenv("MONITOR_HOST", raising=False)
     settings = Settings()
     assert "192.168.200.230:3000" in settings.loki_http_url
     assert settings.loki_http_url.startswith("http://")
+    assert "/api/datasources/proxy/37/" in settings.loki_http_url
+    assert "/loki/api/v1/query_range" in settings.loki_http_url
 
 
-def test_grafana_url_constructed_from_host() -> None:
+def test_grafana_url_constructed_from_host(monkeypatch: pytest.MonkeyPatch) -> None:
     """Grafana URL derives from monitor_host."""
+    monkeypatch.delenv("MONITOR_HOST", raising=False)
     settings = Settings()
     assert "192.168.200.230:3000" in settings.grafana_url
 
