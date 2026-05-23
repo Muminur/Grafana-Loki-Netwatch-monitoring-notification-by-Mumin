@@ -13,6 +13,7 @@ def calculate_health_score(
     active_incidents: int,
     flapping_peers: int,
     total_devices: int = 34,
+    reporting_devices: int = 0,
 ) -> float:
     """Calculate network health score 0-100.
 
@@ -24,7 +25,7 @@ def calculate_health_score(
 
     Bonuses:
     - No CRITICALs present: +5 points
-    - All devices reporting (total_devices > 0): +5 points
+    - All devices reporting: +5 points (only when reporting_devices >= total_devices)
 
     The result is clamped to the [0, 100] range.
 
@@ -39,8 +40,11 @@ def calculate_health_score(
     flapping_peers:
         Number of BGP peers currently in a FLAPPING state.
     total_devices:
-        Total number of expected devices reporting syslog.
-        When > 0, the "all devices reporting" bonus is applied.
+        Total number of expected devices in the network.
+    reporting_devices:
+        Number of devices currently reporting syslog.  The "all devices
+        reporting" bonus is only applied when this equals or exceeds
+        ``total_devices``.
 
     Returns
     -------
@@ -58,7 +62,7 @@ def calculate_health_score(
     # Bonuses
     if critical_count == 0:
         score += 5.0
-    if total_devices > 0:
+    if total_devices > 0 and reporting_devices >= total_devices:
         score += 5.0
 
     # Clamp to [0, 100]

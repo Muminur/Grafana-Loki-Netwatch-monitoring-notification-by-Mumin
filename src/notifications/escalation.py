@@ -37,11 +37,11 @@ class EscalationEngine:
     def __init__(self, escalation_delay: int = 900) -> None:
         self._delay = timedelta(seconds=escalation_delay)
 
-        # (device_name, mnemonic) → (EnrichedLog, tracked_at datetime)
-        self._tracked: dict[tuple[str, str], tuple[EnrichedLog, datetime]] = {}
+        # (device_name, mnemonic, discriminator) → (EnrichedLog, tracked_at datetime)
+        self._tracked: dict[tuple[str, str, str], tuple[EnrichedLog, datetime]] = {}
 
         # Set of keys that have been acknowledged
-        self._acked: set[tuple[str, str]] = set()
+        self._acked: set[tuple[str, str, str]] = set()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -63,7 +63,8 @@ class EscalationEngine:
             )
             return
 
-        key = (enriched.device_name, enriched.parsed.mnemonic)
+        discriminator = enriched.bgp_neighbor or enriched.interface_name or ""
+        key = (enriched.device_name, enriched.parsed.mnemonic, discriminator)
         tracked_at = datetime.now(_UTC6)
         self._tracked[key] = (enriched, tracked_at)
         self._acked.discard(key)
@@ -89,12 +90,17 @@ class EscalationEngine:
             ``True`` if the alert was found and acknowledged,
             ``False`` if no matching tracked alert was found.
         """
-        key = (device_name, mnemonic)
-        if key not in self._tracked:
+        # Match all tracked alerts for (device, mnemonic) regardless of discriminator.
+        # The caller doesn't know the discriminator, so we acknowledge every match.
+        matching_keys = [
+            k for k in self._tracked if k[0] == device_name and k[1] == mnemonic
+        ]
+        if not matching_keys:
             _log.debug("Acknowledge: no tracked alert for %s/%s", device_name, mnemonic)
             return False
 
-        self._acked.add(key)
+        for key in matching_keys:
+            self._acked.add(key)
         _log.debug("Alert acknowledged: %s/%s", device_name, mnemonic)
         return True
 

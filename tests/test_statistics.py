@@ -6,7 +6,7 @@ All async tests use in-memory SQLite.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -88,7 +88,7 @@ def test_health_score_perfect():
 
 
 def test_health_score_deductions():
-    """2 criticals + 1 incident → 85 (after deductions and all-devices bonus)."""
+    """2 criticals + 1 incident → 80 (no all-devices bonus without reporting_devices)."""
     score = calculate_health_score(
         critical_count=2,
         warning_count=0,
@@ -96,9 +96,9 @@ def test_health_score_deductions():
         flapping_peers=0,
         total_devices=34,
     )
-    # 100 - (2*5) - (1*10) + 5 (all devices) = 85
-    # No +5 bonus for "no criticals" since critical_count=2.
-    assert score == 85.0
+    # 100 - (2*5) - (1*10) = 80. No +5 for "no criticals" (critical_count=2),
+    # no +5 for "all devices" (reporting_devices defaults to 0).
+    assert score == 80.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -384,8 +384,11 @@ async def test_digest_format(session: AsyncSession):
     """Generate a daily digest with mock data and verify required sections."""
     from src.notifications.digest import generate_daily_digest
 
-    # Insert some alerts
-    base_ts = datetime(2026, 5, 22, 10, 0, 0, tzinfo=UTC)
+    # Insert alerts with naive timestamps matching "today" in BDT, since
+    # the digest queries using naive BDT-midnight bounds (no UTC offset).
+    _bdt = timezone(timedelta(hours=6))
+    today_bdt = datetime.now(tz=_bdt).date()
+    base_ts = datetime(today_bdt.year, today_bdt.month, today_bdt.day, 10, 0, 0)
     for i in range(3):
         session.add(
             _make_alert(
