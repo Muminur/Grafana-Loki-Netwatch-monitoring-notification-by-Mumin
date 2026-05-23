@@ -434,7 +434,8 @@ async def get_incidents() -> list[dict[str, Any]]:
     incidents: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in rows:
-        key = f"{row.device_name}:{row.mnemonic}"
+        discriminator = row.bgp_neighbor or row.interface_name or ""
+        key = f"{row.device_name}:{row.mnemonic}:{discriminator}"
         if key in seen:
             for inc in incidents:
                 if inc.get("_key") == key:

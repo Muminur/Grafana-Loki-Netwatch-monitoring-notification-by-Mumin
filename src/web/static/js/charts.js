@@ -25,6 +25,8 @@
         text:       '#8888a0',
     };
 
+    var _isLargeDisplay = window.innerWidth >= 2000;
+
     // Chart default options shared across all charts
     var CHART_DEFAULTS = {
         responsive: true,
@@ -33,9 +35,9 @@
             legend: {
                 labels: {
                     color: COLORS.text,
-                    font: { family: 'JetBrains Mono', size: 10 },
-                    boxWidth: 10,
-                    padding: 8,
+                    font: { family: 'JetBrains Mono', size: _isLargeDisplay ? 16 : 10 },
+                    boxWidth: _isLargeDisplay ? 14 : 10,
+                    padding: _isLargeDisplay ? 12 : 8,
                 },
             },
             tooltip: {
@@ -44,8 +46,8 @@
                 borderWidth: 1,
                 titleColor: '#00f0ff',
                 bodyColor: '#e8e8f0',
-                titleFont: { family: 'Orbitron', size: 10 },
-                bodyFont: { family: 'JetBrains Mono', size: 11 },
+                titleFont: { family: 'Orbitron', size: _isLargeDisplay ? 16 : 10 },
+                bodyFont: { family: 'JetBrains Mono', size: _isLargeDisplay ? 17 : 11 },
             },
         },
     };

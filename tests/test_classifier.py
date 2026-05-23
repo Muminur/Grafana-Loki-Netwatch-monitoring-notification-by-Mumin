@@ -111,9 +111,9 @@ def _parse(raw: str) -> ParsedLog:
 # ---------------------------------------------------------------------------
 
 
-def test_rules_list_has_25_entries() -> None:
-    """CLASSIFICATION_RULES must contain exactly 25 entries."""
-    assert len(CLASSIFICATION_RULES) == 25
+def test_rules_list_has_26_entries() -> None:
+    """CLASSIFICATION_RULES must contain exactly 26 entries."""
+    assert len(CLASSIFICATION_RULES) == 26
 
 
 def test_all_rules_are_classification_rule_instances() -> None:
@@ -228,27 +228,27 @@ def test_classify_ber_clear(sample_ber_clear_log: str) -> None:
 
 
 def test_classify_bgp_up(sample_bgp_up_log: str) -> None:
-    """Rule BGP_UP: ADJCHANGE … Up → WARNING."""
+    """Rule BGP_UP: ADJCHANGE … Up → CRITICAL."""
     result = classify(_parse(sample_bgp_up_log))
     assert result.rule_id == "BGP_UP"
-    assert result.classification == "WARNING"
-    assert result.notify is False
+    assert result.classification == "CRITICAL"
+    assert result.notify is True
 
 
 def test_classify_intf_up(sample_interface_up_log: str) -> None:
-    """Rule INTF_UP: LINK-3-UPDOWN … changed state to Up → WARNING."""
+    """Rule INTF_UP: LINK-3-UPDOWN … changed state to Up → CRITICAL."""
     result = classify(_parse(sample_interface_up_log))
     assert result.rule_id == "INTF_UP"
-    assert result.classification == "WARNING"
-    assert result.notify is False
+    assert result.classification == "CRITICAL"
+    assert result.notify is True
 
 
 def test_classify_lineproto_up(sample_lineproto_up_log: str) -> None:
-    """Rule LINEPROTO_UP: LINEPROTO-5-UPDOWN … changed state to Up → WARNING."""
+    """Rule LINEPROTO_UP: LINEPROTO-5-UPDOWN … changed state to Up → CRITICAL."""
     result = classify(_parse(sample_lineproto_up_log))
     assert result.rule_id == "LINEPROTO_UP"
-    assert result.classification == "WARNING"
-    assert result.notify is False
+    assert result.classification == "CRITICAL"
+    assert result.notify is True
 
 
 def test_classify_sfp_alarm_clear(sample_sfp_alarm_clear_log: str) -> None:
@@ -260,11 +260,11 @@ def test_classify_sfp_alarm_clear(sample_sfp_alarm_clear_log: str) -> None:
 
 
 def test_classify_lacp_active(sample_lacp_active_log: str) -> None:
-    """Rule LACP_ACTIVE: BM-6-ACTIVE … now Active → WARNING."""
+    """Rule LACP_ACTIVE: BM-6-ACTIVE … Active → CRITICAL."""
     result = classify(_parse(sample_lacp_active_log))
     assert result.rule_id == "LACP_ACTIVE"
-    assert result.classification == "WARNING"
-    assert result.notify is False
+    assert result.classification == "CRITICAL"
+    assert result.notify is True
 
 
 # ---------------------------------------------------------------------------
@@ -482,7 +482,7 @@ def test_default_classification_returns_info_for_unknown() -> None:
 def test_notify_flag_all_critical_rules_true() -> None:
     """Every rule with classification=='CRITICAL' must have notify=True."""
     critical_rules = [r for r in CLASSIFICATION_RULES if r.classification == "CRITICAL"]
-    assert len(critical_rules) == 10, "Expected exactly 10 CRITICAL rules"
+    assert len(critical_rules) == 15, "Expected exactly 15 CRITICAL rules"
     for rule in critical_rules:
         assert rule.notify is True, f"Rule {rule.id} is CRITICAL but notify=False"
 

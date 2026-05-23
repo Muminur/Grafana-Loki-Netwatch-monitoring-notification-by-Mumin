@@ -112,11 +112,11 @@ async def _on_syslog_line(raw_line: str) -> None:
     # ── Store to DB ────────────────────────────────────────────────────────
     suppress = correlated.suppress_notification if correlated is not None else False
     will_notify = should_send and enriched.notify and not suppress
-    if _engine is not None:
+    incident_id = (
+        (correlated.incident_id or "") if correlated is not None else ""
+    )
+    if should_send and _engine is not None:
         try:
-            incident_id = (
-                (correlated.incident_id or "") if correlated is not None else ""
-            )
             alert = AlertLog(
                 timestamp=enriched.parsed.timestamp,
                 source_ip=enriched.parsed.source_ip,
@@ -146,7 +146,7 @@ async def _on_syslog_line(raw_line: str) -> None:
             _log.error("DB insert failed: %s", exc)
 
     # ── Update in-memory API store ─────────────────────────────────────────
-    if correlated is not None:
+    if should_send and correlated is not None:
         try:
             add_alert_to_store(enriched, correlated)
         except Exception as exc:  # noqa: BLE001
@@ -163,28 +163,27 @@ async def _on_syslog_line(raw_line: str) -> None:
             _escalation.track_alert(enriched)
 
     # ── Broadcast to WebSocket clients ─────────────────────────────────────
-    await _ws_manager.broadcast(
-        {
-            "type": "alert",
-            "classification": enriched.classification,
-            "device": enriched.device_name,
-            "hostname": enriched.parsed.hostname,
-            "mnemonic": enriched.parsed.mnemonic,
-            "message": enriched.parsed.message,
-            "timestamp": enriched.parsed.timestamp.isoformat(),
-            "interface": enriched.interface_name,
-            "interface_description": enriched.interface_description,
-            "client": enriched.client_name,
-            "neighbor": enriched.bgp_neighbor,
-            "as_number": enriched.as_number,
-            "as_name": enriched.as_name,
-            "event_type": enriched.event_type,
-            "incident_id": (
-                (correlated.incident_id or "") if correlated is not None else ""
-            ),
-            "suppress_notification": suppress,
-        }
-    )
+    if should_send:
+        await _ws_manager.broadcast(
+            {
+                "type": "alert",
+                "classification": enriched.classification,
+                "device": enriched.device_name,
+                "hostname": enriched.parsed.hostname,
+                "mnemonic": enriched.parsed.mnemonic,
+                "message": enriched.parsed.message,
+                "timestamp": enriched.parsed.timestamp.isoformat(),
+                "interface": enriched.interface_name,
+                "interface_description": enriched.interface_description,
+                "client": enriched.client_name,
+                "neighbor": enriched.bgp_neighbor,
+                "as_number": enriched.as_number,
+                "as_name": enriched.as_name,
+                "event_type": enriched.event_type,
+                "incident_id": incident_id,
+                "suppress_notification": suppress,
+            }
+        )
 
     increment_alerts_processed()
 

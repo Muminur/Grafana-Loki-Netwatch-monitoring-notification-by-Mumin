@@ -130,6 +130,16 @@ CLASSIFICATION_RULES: list[ClassificationRule] = [
         extract=["interface"],
         summary_template="{device}: Local Fault on {interface}",
     ),
+    # 5b. RFI (Remote Fault Indication) — different facility than RX_FAULT
+    _rule(
+        id="RFI_FAULT",
+        pattern=r"-RFI\b.*Detected.*Fault",
+        classification="CRITICAL",
+        event_type="Fault Detected (RFI)",
+        notify=True,
+        extract=["interface"],
+        summary_template="{device}: Fault detected (RFI) on {interface}",
+    ),
     # 6. Optical signal failure
     _rule(
         id="SIGNAL_FAILURE",
@@ -192,33 +202,33 @@ CLASSIFICATION_RULES: list[ClassificationRule] = [
         extract=["interface"],
         summary_template="{device}: BER clear on {interface}",
     ),
-    # 12. BGP peer came Up (recovery)
+    # 12. BGP peer came Up (recovery — still CRITICAL for NOC visibility)
     _rule(
         id="BGP_UP",
         pattern=r"%ROUTING-BGP-5-ADJCHANGE.*Up",
-        classification="WARNING",
+        classification="CRITICAL",
         event_type="BGP Peer Up",
-        notify=False,
+        notify=True,
         extract=["neighbor", "as_number", "vrf"],
         summary_template="{device}: BGP peer {neighbor} Up (AS {as_number})",
     ),
-    # 13. Interface link state → Up (recovery)
+    # 13. Interface link state → Up (recovery — still CRITICAL for NOC visibility)
     _rule(
         id="INTF_UP",
         pattern=r"%PKT_INFRA-LINK-3-UPDOWN.*changed state to Up",
-        classification="WARNING",
+        classification="CRITICAL",
         event_type="Interface Up",
-        notify=False,
+        notify=True,
         extract=["interface"],
         summary_template="{device}: {interface} changed state to Up",
     ),
-    # 14. Line protocol → Up (recovery)
+    # 14. Line protocol → Up (recovery — still CRITICAL for NOC visibility)
     _rule(
         id="LINEPROTO_UP",
         pattern=r"%PKT_INFRA-LINEPROTO-5-UPDOWN.*changed state to Up",
-        classification="WARNING",
+        classification="CRITICAL",
         event_type="Line Protocol Up",
-        notify=False,
+        notify=True,
         extract=["interface"],
         summary_template="{device}: Line protocol on {interface} changed state to Up",
     ),
@@ -232,15 +242,15 @@ CLASSIFICATION_RULES: list[ClassificationRule] = [
         extract=["interface"],
         summary_template="{device}: SFP low-rx-power alarm CLEARED on {interface}",
     ),
-    # 16. LACP bundle member became Active again (recovery)
+    # 16. LACP bundle member became Active (recovery — CRITICAL for NOC visibility)
     _rule(
         id="LACP_ACTIVE",
-        pattern=r"%L2-BM-6-ACTIVE.*now Active",
-        classification="WARNING",
+        pattern=r"%L2-BM-6-ACTIVE.*(?:is|now) Active",
+        classification="CRITICAL",
         event_type="LACP Bundle Member Active",
-        notify=False,
+        notify=True,
         extract=["interface", "bundle"],
-        summary_template="{device}: {interface} now Active in {bundle}",
+        summary_template="{device}: {interface} Active in {bundle}",
     ),
     # ── INFO (rules 17-22, notify=False) ────────────────────────────────────
     #
