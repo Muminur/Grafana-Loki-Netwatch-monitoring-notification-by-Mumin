@@ -1369,19 +1369,23 @@ kbd {
     .panel-title { font-size: 0.95rem; letter-spacing: 4px; }
     .panel-header { padding: 0.9rem 1.4rem; }
 
-    /* Alert stream rows */
-    .alert-row { min-height: 44px; gap: 0.75rem; padding: 0.45rem 0.9rem; }
+    /* Alert stream — maximise visible rows on the NOC wall.
+       Offset 280px = nav(60) + severity(~100) + panel-header(~55) + filter(~30) + tabs(~35). */
+    .alerts-container { max-height: calc(100vh - 280px); }
+    .alert-row { min-height: 36px; gap: 0.65rem; padding: 0.3rem 0.9rem; }
     .alert-timestamp { font-size: 0.95rem; }
     .alert-device    { font-size: 0.9rem; }
     .alert-mnemonic  { font-size: 0.9rem; }
     .alert-message   { font-size: 0.95rem; }
-    .tab { font-size: 0.8rem; padding: 10px 20px; }
+    .tab { font-size: 0.8rem; padding: 8px 16px; }
+    .filter-bar { padding: 0.25rem 0.5rem; }
     .filter-label  { font-size: 0.85rem; }
     .neon-select   { font-size: 0.85rem; }
     .search-input  { font-size: 0.85rem; }
     .empty-state   { font-size: 0.85rem; }
 
-    /* Active incidents */
+    /* Active incidents — stretch to fill the left column at 4K */
+    .incidents-list { max-height: calc(100vh - 200px); }
     .incident-card  { padding: 0.9rem 1.2rem; margin-bottom: 0.6rem; }
     .incident-title { font-size: 0.95rem; }
     .incident-meta  { font-size: 0.85rem; }
