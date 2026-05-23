@@ -1,12 +1,16 @@
 """AS number lookup cache backed by SQLite.
 
-External lookups (PeeringDB / bgpview / RIPE STAT) are expensive and
-rate-limited.  Results are stored in the ``as_cache`` table and expire
-after ``TTL_HOURS`` hours.  Callers should check :func:`get_cached_as`
-before performing a live lookup.
+External lookups (PeeringDB / bgpview / RIPE STAT / BigDataCloud) are
+expensive and rate-limited.  Results are stored in the ``as_cache`` table
+and expire after ``TTL_HOURS`` hours.  Callers should check
+:func:`get_cached_as` before performing a live lookup.
 """
 
 from __future__ import annotations
+
+import logging
+
+_log = logging.getLogger(__name__)
 
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -104,3 +108,57 @@ async def cache_as_lookup(
     await session.flush()
     await session.refresh(record)
     return record
+
+
+async def resolve_as_name(
+    session: AsyncSession,
+    asn: int,
+    api_key: str = "",
+) -> str:
+    """Resolve an AS number to an organization name.
+
+    Lookup order: static AS database → SQLite cache → BigDataCloud API.
+    API results are cached so subsequent lookups never hit the network.
+
+    Returns the org name, or ``""`` if all sources fail.
+    """
+    if asn <= 0:
+        return ""
+
+    from src.data.as_database import lookup_as  # noqa: PLC0415
+
+    static = lookup_as(asn)
+    if static is not None:
+        return static.name
+
+    cached = await get_cached_as(session, asn)
+    if cached is not None:
+        return cached.name
+
+    if not api_key:
+        return ""
+
+    try:
+        import httpx  # noqa: PLC0415
+
+        url = "https://api-bdc.net/data/asn-info"
+        params = {
+            "asn": f"AS{asn}",
+            "localityLanguage": "en",
+            "key": api_key,
+        }
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+
+        org_name = data.get("organisation", "") or data.get("name", "")
+
+        if org_name:
+            await cache_as_lookup(session, asn, org_name, "external", "bigdatacloud")
+            _log.info("Cached AS%d → %s (BigDataCloud)", asn, org_name)
+            return org_name
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("BigDataCloud ASN lookup failed for AS%d: %s", asn, exc)
+
+    return ""

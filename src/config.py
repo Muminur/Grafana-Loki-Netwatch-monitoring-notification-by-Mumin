@@ -68,6 +68,10 @@ class Settings:
     bundle_group_window_seconds: int = field(
         default_factory=lambda: int(os.environ.get("BUNDLE_GROUP_WINDOW_SECONDS", "30"))
     )
+    asn_api_key: str = field(
+        default_factory=lambda: os.environ.get("ASN_API_KEY", ""),
+        repr=False,
+    )
 
     @property
     def loki_datasource_id(self) -> int:

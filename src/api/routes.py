@@ -8,6 +8,7 @@ Milestone 8: DB-backed /api/alerts with period filter; /api/alerts/count.
 
 from __future__ import annotations
 
+import re
 import time
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
@@ -35,6 +36,103 @@ _maintenance_id_counter: int = 0
 
 # DB engine — set during lifespan startup via set_db_engine()
 _db_engine: object = None
+
+
+_IFACE_SHORT = [
+    ("TenGigE", "TGE"),
+    ("HundredGigE", "HGE"),
+    ("FortyGigE", "FGE"),
+    ("GigabitEthernet", "GE"),
+    ("Bundle-Ether", "BE"),
+]
+
+
+def _shorten_iface(name: str) -> str:
+    for long, short in _IFACE_SHORT:
+        name = name.replace(long, short)
+    return name
+
+
+def _extract_bundle_from_msg(message: str) -> str:
+    m = re.search(r"Bundle-Ether(\d+)", message)
+    return f"BE{m.group(1)}" if m else ""
+
+
+def _extract_bgp_state(message: str) -> str:
+    if "Interface flap" in message or "Flap" in message:
+        return "Flap"
+    if re.search(r"\bDown\b", message):
+        return "DOWN"
+    if re.search(r"\bUp\b", message):
+        return "UP"
+    return ""
+
+
+def _extract_fault_type(message: str) -> str:
+    if "Local Fault" in message and "Remote Fault" in message:
+        return "Local+Remote Fault"
+    if "Local Fault" in message:
+        return "Local Fault"
+    if "Remote Fault" in message:
+        return "Remote Fault"
+    return "Fault"
+
+
+def build_incident_title(
+    mnemonic: str,
+    device_name: str,
+    message: str,
+    interface_name: str = "",
+    as_name: str = "",
+) -> str:
+    """Build a rich incident title from alert fields.
+
+    Examples:
+        Bundle ACTIVE — KKT-Core-2, TGE0/0/1/7, BE201
+        ADJCHANGE — KKT-Core-3 DOWN - Orange
+        RXFault-KKT-Core-1 - TGE0/0/0/2 - Local Fault
+    """
+    iface_short = _shorten_iface(interface_name) if interface_name else ""
+
+    if mnemonic == "ACTIVE":
+        bundle = _extract_bundle_from_msg(message)
+        parts = [f"Bundle ACTIVE — {device_name}"]
+        if iface_short:
+            parts.append(iface_short)
+        if bundle:
+            parts.append(bundle)
+        return ", ".join(parts)
+
+    if mnemonic == "ADJCHANGE":
+        state = _extract_bgp_state(message)
+        title = f"ADJCHANGE — {device_name}"
+        if state:
+            title += f" {state}"
+        if as_name:
+            title += f" - {as_name}"
+        return title
+
+    if mnemonic in ("RFI", "RX_FAULT"):
+        fault = _extract_fault_type(message)
+        title = f"RXFault-{device_name}"
+        if iface_short:
+            title += f" - {iface_short}"
+        title += f" - {fault}"
+        return title
+
+    if mnemonic in ("UPDOWN", "LINEPROTO"):
+        state = "Down" if "Down" in message else "Up" if "Up" in message else ""
+        title = f"{mnemonic} — {device_name}"
+        if state:
+            title += f" {state}"
+        if iface_short:
+            title += f" - {iface_short}"
+        return title
+
+    parts = [f"{mnemonic} — {device_name}"]
+    if iface_short:
+        parts.append(iface_short)
+    return ", ".join(parts)
 
 
 def set_db_engine(engine: object) -> None:
@@ -139,8 +237,12 @@ def add_alert_to_store(enriched: Any, correlated: Any) -> None:
             _incidents_store.append(
                 {
                     "id": inc_id,
-                    "title": (
-                        f"{enriched.event_type} — {enriched.device_name}"
+                    "title": build_incident_title(
+                        mnemonic=enriched.parsed.mnemonic,
+                        device_name=enriched.device_name,
+                        message=enriched.parsed.message,
+                        interface_name=enriched.interface_name,
+                        as_name=enriched.as_name,
                     ),
                     "severity": enriched.classification,
                     "device": enriched.device_name,
@@ -445,7 +547,13 @@ async def get_incidents() -> list[dict[str, Any]]:
         incidents.append(
             {
                 "id": f"ALERT-{row.id}",
-                "title": f"{row.mnemonic} — {row.device_name}",
+                "title": build_incident_title(
+                    mnemonic=row.mnemonic,
+                    device_name=row.device_name,
+                    message=row.message or "",
+                    interface_name=row.interface_name or "",
+                    as_name=row.as_name or "",
+                ),
                 "severity": "CRITICAL",
                 "device": row.device_name,
                 "mnemonic": row.mnemonic,
