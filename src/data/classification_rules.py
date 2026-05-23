@@ -87,13 +87,13 @@ CLASSIFICATION_RULES: list[ClassificationRule] = [
         extract=["neighbor", "as_number", "vrf"],
         summary_template="{device}: BGP peer {neighbor} Down (AS {as_number})",
     ),
-    # 2. BGP max-prefix limit reached
+    # 2. BGP max-prefix limit reached — warning-level, not an outage
     _rule(
         id="BGP_MAXPFX",
         pattern=r"%ROUTING-BGP-5-MAXPFX",
-        classification="CRITICAL",
+        classification="WARNING",
         event_type="BGP Max Prefix Reached",
-        notify=True,
+        notify=False,
         extract=["neighbor", "prefix_count", "max_prefixes"],
         summary_template=(
             "{device}: BGP max-prefix on {neighbor} ({prefix_count}/{max_prefixes})"
