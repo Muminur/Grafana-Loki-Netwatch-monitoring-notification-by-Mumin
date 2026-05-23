@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo-animated.svg" alt="BSCCL NetWatch" width="700"/>
+  <img src="docs/assets/logo-animated.svg" alt="BSCPLC NetWatch" width="700"/>
 </p>
 
 <p align="center">
@@ -27,7 +27,7 @@
 
 ## What is this?
 
-BSCCL (Bangladesh Submarine Cable Company Limited) operates a multi-site ISP/carrier backbone spanning **5 locations across 2 countries** — from Dhaka and Cox's Bazar in Bangladesh to Singapore's Equinix data center. Their existing Grafana syslog dashboard shows thousands of raw, unclassified log lines, making it impossible to distinguish a critical fiber cut from routine noise.
+BSCPLC (Bangladesh Submarine Cables PLC) operates a multi-site ISP/carrier backbone spanning **5 locations across 2 countries** — from Dhaka and Cox's Bazar in Bangladesh to Singapore's Equinix data center. Their existing Grafana syslog dashboard shows thousands of raw, unclassified log lines, making it impossible to distinguish a critical fiber cut from routine noise.
 
 **NetWatch** replaces that chaos with an intelligent, real-time alert classification system that:
 
@@ -171,7 +171,7 @@ All configuration is via environment variables (`.env` file):
 
 ```env
 # Network access — choose your location
-MONITOR_HOST=192.168.200.230    # BSCCL office
+MONITOR_HOST=192.168.200.230    # BSCPLC office
 # MONITOR_HOST=103.16.152.8    # Remote / home
 
 # Notifications
@@ -427,7 +427,7 @@ GitHub Actions runs on every push and PR across a **4-cell matrix**:
 
 ---
 
-## BSCCL Network Sites
+## BSCPLC Network Sites
 
 | Site | Location | Devices | Role |
 |------|----------|---------|------|
@@ -440,6 +440,6 @@ GitHub Actions runs on every push and PR across a **4-cell matrix**:
 ---
 
 <p align="center">
-  <sub>Built for the Network Operations Center of Bangladesh Submarine Cable Company Limited</sub><br/>
+  <sub>Built for the Network Operations Center of Bangladesh Submarine Cables PLC</sub><br/>
   <sub>Monitoring Bangladesh's gateway to the global internet</sub>
 </p>

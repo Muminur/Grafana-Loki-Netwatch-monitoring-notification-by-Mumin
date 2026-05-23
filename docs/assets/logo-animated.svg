@@ -50,7 +50,7 @@
   </g>
 
   <!-- Title -->
-  <text x="110" y="85" font-family="'Segoe UI','Helvetica Neue',sans-serif" font-size="42" font-weight="900" letter-spacing="6" fill="url(#neonGrad)" filter="url(#glow)">BSCCL NETWATCH</text>
+  <text x="110" y="85" font-family="'Segoe UI','Helvetica Neue',sans-serif" font-size="42" font-weight="900" letter-spacing="6" fill="url(#neonGrad)" filter="url(#glow)">BSCPLC NETWATCH</text>
 
   <!-- Subtitle -->
   <text x="112" y="118" font-family="'Segoe UI','Helvetica Neue',sans-serif" font-size="14" font-weight="400" letter-spacing="4" fill="#8888a0">NETWORK OPERATIONS CENTER</text>
