@@ -496,6 +496,10 @@ class TestIncidentReconstructionFiltering:
 
         from src.api import routes
 
+        # Disable noise toggle so RX_FAULT appears in incidents
+        old_toggle = routes._hardware_defects_as_noise  # noqa: SLF001
+        routes._hardware_defects_as_noise = False  # noqa: SLF001
+
         async with AsyncSession(async_db) as session:
             resolved_alert = AlertLog(
                 timestamp=datetime(2026, 5, 23, 16, 22, 55, tzinfo=UTC),
@@ -538,6 +542,7 @@ class TestIncidentReconstructionFiltering:
             incidents = await routes.get_incidents()
         finally:
             routes._db_engine = old_engine  # noqa: SLF001
+            routes._hardware_defects_as_noise = old_toggle  # noqa: SLF001
 
         assert len(incidents) == 1
         assert "HundredGigE0/3/1/1" in incidents[0]["message"]
@@ -550,9 +555,15 @@ class TestIncidentReconstructionFiltering:
 
 class TestBgpUpResolutionIntegration:
     def setup_method(self):
-        from src.api.routes import _incidents_store
+        from src.api import routes
 
-        _incidents_store.clear()
+        routes._incidents_store.clear()  # noqa: SLF001
+        routes._hardware_defects_as_noise = False  # noqa: SLF001
+
+    def teardown_method(self):
+        from src.api import routes
+
+        routes._hardware_defects_as_noise = True  # noqa: SLF001
 
     def test_full_scenario_eq01_kkt01_bundle500(self):
         from src.api.routes import _incidents_store, add_alert_to_store
@@ -649,3 +660,77 @@ class TestBgpUpResolutionIntegration:
         add_alert_to_store(enriched, correlated)
 
         assert len([i for i in _incidents_store if i["mnemonic"] == "SIGNAL"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 8: Hardware Defects as Noise Toggle
+# ---------------------------------------------------------------------------
+
+
+class TestHardwareDefectsAsNoise:
+    def setup_method(self):
+        from src.api import routes
+
+        routes._incidents_store.clear()  # noqa: SLF001
+        routes._hardware_defects_as_noise = True  # noqa: SLF001
+
+    def teardown_method(self):
+        from src.api import routes
+
+        routes._hardware_defects_as_noise = True  # noqa: SLF001
+
+    def test_bundle_member_rx_fault_classified_as_noise(self):
+        """RX_FAULT on a backbone bundle member → NOISE classification."""
+        from src.api.routes import _alerts_store, _incidents_store, add_alert_to_store
+
+        enriched = _make_enriched(
+            device_name="Equinix-RTR-1",
+            source_ip="192.168.203.1",
+            mnemonic="RX_FAULT",
+            message="Interface TenGigE0/0/0/7, Detected Remote Fault",
+            interface_name="TenGigE0/0/0/7",
+        )
+        correlated = _make_correlated()
+        add_alert_to_store(enriched, correlated)
+
+        last_alert = _alerts_store[-1]
+        assert last_alert["classification"] == "NOISE"
+        assert len(_incidents_store) == 0
+
+    def test_non_member_rx_fault_stays_critical(self):
+        """RX_FAULT on a non-bundle interface → stays CRITICAL."""
+        from src.api.routes import _alerts_store, _incidents_store, add_alert_to_store
+
+        enriched = _make_enriched(
+            device_name="Equinix-RTR-1",
+            source_ip="192.168.203.1",
+            mnemonic="RX_FAULT",
+            message="Interface HundredGigE0/0/2/0, Detected Remote Fault",
+            interface_name="HundredGigE0/0/2/0",
+        )
+        correlated = _make_correlated()
+        add_alert_to_store(enriched, correlated)
+
+        last_alert = _alerts_store[-1]
+        assert last_alert["classification"] == "CRITICAL"
+
+    def test_toggle_disabled_allows_incidents(self):
+        """When toggle is OFF, RX_FAULT stays CRITICAL and creates incident."""
+        from src.api import routes
+        from src.api.routes import _alerts_store, _incidents_store, add_alert_to_store
+
+        routes._hardware_defects_as_noise = False  # noqa: SLF001
+
+        enriched = _make_enriched(
+            device_name="Equinix-RTR-1",
+            source_ip="192.168.203.1",
+            mnemonic="RX_FAULT",
+            message="Interface TenGigE0/0/0/7, Detected Remote Fault",
+            interface_name="TenGigE0/0/0/7",
+        )
+        correlated = _make_correlated()
+        add_alert_to_store(enriched, correlated)
+
+        last_alert = _alerts_store[-1]
+        assert last_alert["classification"] == "CRITICAL"
+        assert len(_incidents_store) == 1

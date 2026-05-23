@@ -66,6 +66,10 @@ _RECOVERY_MNEMONICS_ALWAYS = frozenset(
 
 _SILENT_FAULT_MNEMONICS = frozenset({"RX_FAULT", "SIGNAL", "RFI"})
 
+# Runtime toggle: treat hardware defects (RX_FAULT/SIGNAL/RFI) on backbone
+# bundle members as NOISE rather than CRITICAL incidents. Default ON.
+_hardware_defects_as_noise: bool = True
+
 
 def _is_recovery_event(mnemonic: str, message: str, rule_id: str = "") -> bool:
     if rule_id and rule_id in _RECOVERY_RULE_IDS:
@@ -309,6 +313,18 @@ def add_alert_to_store(enriched: Any, correlated: Any) -> None:
         "is_symptom": correlated.is_symptom,
         "suppress_notification": correlated.suppress_notification,
     }
+
+    # Hardware-defects-as-noise: reclassify silent faults on backbone members
+    if (
+        _hardware_defects_as_noise
+        and enriched.parsed.mnemonic in _SILENT_FAULT_MNEMONICS
+    ):
+        from src.data.topology import is_backhaul_member as _is_bh  # noqa: PLC0415
+
+        _is_member, _ = _is_bh(enriched.parsed.source_ip, enriched.interface_name)
+        if _is_member:
+            alert["classification"] = "NOISE"
+
     _alerts_store.append(alert)
 
     # Track CRITICAL fault alerts as incidents (skip recovery events like Up/Active)
@@ -401,7 +417,7 @@ def add_alert_to_store(enriched: Any, correlated: Any) -> None:
                         loop.create_task(_resolve_with_logging())
 
     if not is_recovery and (
-        enriched.classification == "CRITICAL"
+        alert["classification"] == "CRITICAL"
         or (correlated.incident_id and not correlated.is_symptom)
     ):
         inc_id = correlated.incident_id or f"ALERT-{alert['id']}"
@@ -707,6 +723,10 @@ async def get_incidents() -> list[dict[str, Any]]:
             .order_by(desc(AlertLog.timestamp))
             .limit(50)
         )
+        if _hardware_defects_as_noise:
+            stmt = stmt.where(
+                ~AlertLog.mnemonic.in_(sorted(_SILENT_FAULT_MNEMONICS))
+            )
         result = await session.execute(stmt)
         rows = result.scalars().all()
 
@@ -937,6 +957,30 @@ async def get_stats_yearly() -> dict[str, Any]:
         "years": years_list,
         "total": grand_total,
     }
+
+
+# ---------------------------------------------------------------------------
+# Runtime Settings
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/settings/hardware-noise")
+async def get_hardware_noise_setting() -> dict[str, bool]:
+    """Return the current state of the hardware-defects-as-noise toggle."""
+    return {"hardware_defects_as_noise": _hardware_defects_as_noise}
+
+
+@router.post("/api/settings/hardware-noise")
+async def set_hardware_noise_setting(enabled: bool = True) -> dict[str, bool]:
+    """Toggle the hardware-defects-as-noise setting.
+
+    When enabled (default), RX_FAULT/SIGNAL/RFI events on backbone bundle
+    member interfaces are reclassified as NOISE and excluded from active
+    incidents.
+    """
+    global _hardware_defects_as_noise  # noqa: PLW0603
+    _hardware_defects_as_noise = enabled
+    return {"hardware_defects_as_noise": _hardware_defects_as_noise}
 
 
 # ---------------------------------------------------------------------------

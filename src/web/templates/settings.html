@@ -58,6 +58,28 @@
         </form>
     </section>
 
+    <!-- ── Alert Classification ─────────────────────────────────────────── -->
+    <section class="panel settings-panel">
+        <div class="panel-header">
+            <span class="panel-title">
+                <span class="panel-icon">◈</span> ALERT CLASSIFICATION
+            </span>
+        </div>
+        <form class="settings-form" id="classificationForm">
+            <div class="form-group">
+                <label class="form-label" for="hwDefectsNoise">Hardware Defects as Noise</label>
+                <div class="toggle-row">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="hwDefectsNoise" name="hw_defects_noise" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="toggle-desc">Treat RX_FAULT / SIGNAL / RFI on backbone bundle members as NOISE (not active incidents)</span>
+                </div>
+                <span class="form-hint">When enabled, hardware optical faults on point-to-point backbone links are moved to the Noise tab instead of creating active incidents. These faults rarely have explicit clear messages from IOS-XR.</span>
+            </div>
+        </form>
+    </section>
+
     <!-- ── Sound Settings ────────────────────────────────────────────────── -->
     <section class="panel settings-panel">
         <div class="panel-header">
@@ -218,6 +240,23 @@ document.addEventListener('DOMContentLoaded', function() {
             if (window.NetwatchSounds) {
                 window.NetwatchSounds.setEnabled(soundToggle.checked);
             }
+        });
+    }
+
+    // Hardware Defects as Noise toggle
+    var hwToggle = document.getElementById('hwDefectsNoise');
+    if (hwToggle) {
+        fetch('/api/settings/hardware-noise')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                hwToggle.checked = data.hardware_defects_as_noise;
+            });
+        hwToggle.addEventListener('change', function() {
+            fetch('/api/settings/hardware-noise?enabled=' + hwToggle.checked, {method: 'POST'})
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    hwToggle.checked = data.hardware_defects_as_noise;
+                });
         });
     }
 });
