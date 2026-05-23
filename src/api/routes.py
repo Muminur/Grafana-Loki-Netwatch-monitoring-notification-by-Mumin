@@ -64,6 +64,17 @@ def _is_recovery_event(
     return False
 
 
+_IFACE_RE = re.compile(
+    r"((?:TenGigE|HundredGigE|FortyGigE|GigabitEthernet|Bundle-Ether)"
+    r"[\d/]+)"
+)
+
+
+def _extract_iface_from_msg(message: str) -> str:
+    m = _IFACE_RE.search(message)
+    return m.group(1) if m else ""
+
+
 _IFACE_SHORT = [
     ("TenGigE", "TGE"),
     ("HundredGigE", "HGE"),
@@ -260,14 +271,20 @@ def add_alert_to_store(enriched: Any, correlated: Any) -> None:
     # When a recovery event arrives, resolve matching DOWN incidents
     if is_recovery:
         dev = enriched.device_name
-        iface = enriched.interface_name
+        iface = (
+            enriched.interface_name
+            or _extract_iface_from_msg(enriched.parsed.message)
+        )
         neighbor = enriched.bgp_neighbor
         as_num = enriched.as_number
         resolved = []
         for i, inc in enumerate(_incidents_store):
             if inc["device"] != dev:
                 continue
-            if iface and inc.get("interface") == iface:
+            if iface and iface == (
+                inc.get("interface")
+                or _extract_iface_from_msg(inc.get("message", ""))
+            ):
                 resolved.append(i)
             elif neighbor and as_num and inc.get("mnemonic") == "ADJCHANGE":
                 inc_msg = inc.get("message", "")
@@ -589,11 +606,13 @@ async def get_incidents() -> list[dict[str, Any]]:
 
     # First pass: collect resolved keys — a DOWN incident is resolved if a
     # later recovery event exists for the same device + interface/AS.
+    # interface_name may be empty for some recovery events (e.g., LACP Active)
+    # so fall back to extracting it from the message text.
     resolved_keys: set[str] = set()
     for row in rows:
         if not _is_recovery_event(row.mnemonic, row.message or ""):
             continue
-        iface = row.interface_name or ""
+        iface = row.interface_name or _extract_iface_from_msg(row.message or "")
         if row.mnemonic == "ADJCHANGE" and row.as_number:
             resolved_keys.add(f"{row.device_name}:ADJCHANGE:{row.as_number}")
         elif iface:
