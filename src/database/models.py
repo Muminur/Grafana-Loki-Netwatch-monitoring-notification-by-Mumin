@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import String, Text
+from sqlalchemy import Index, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -20,6 +20,11 @@ class AlertLog(Base):
     """One parsed and classified syslog entry."""
 
     __tablename__ = "alert_log"
+    __table_args__ = (
+        Index("ix_alertlog_classification_ts", "classification", "timestamp"),
+        Index("ix_alertlog_device_ts", "device_name", "timestamp"),
+        Index("ix_alertlog_mnemonic", "mnemonic"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     timestamp: Mapped[datetime]

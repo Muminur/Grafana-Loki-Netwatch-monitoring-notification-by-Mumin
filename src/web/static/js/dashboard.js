@@ -143,7 +143,7 @@
         try {
             var d = new Date(iso);
             var pad = function (n) { return String(n).padStart(2, '0'); };
-            return pad(d.getUTCHours() + 6) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
+            return pad((d.getUTCHours() + 6) % 24) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
         } catch (e) {
             return iso;
         }

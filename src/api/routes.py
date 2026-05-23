@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from src.data.device_map import DEVICE_MAP
 from src.data.topology import NETWORK_TOPOLOGY
@@ -36,11 +36,19 @@ _maintenance_id_counter: int = 0
 class MaintenanceWindowCreate(BaseModel):
     """Request body for creating a maintenance window."""
 
-    device_name: str
+    device_name: str = Field(..., max_length=100)
     start_time: datetime
     end_time: datetime
-    reason: str = ""
-    created_by: str = ""
+    reason: str = Field(default="", max_length=1000)
+    created_by: str = Field(default="", max_length=100)
+
+    @model_validator(mode="after")
+    def end_after_start(self) -> MaintenanceWindowCreate:
+        """Validate that end_time is after start_time."""
+        if self.end_time <= self.start_time:
+            msg = "end_time must be after start_time"
+            raise ValueError(msg)
+        return self
 
 
 def increment_alerts_processed() -> None:
@@ -57,6 +65,44 @@ def set_active_connections(count: int) -> None:
 
 def add_alert(alert: dict[str, Any]) -> None:
     """Append an alert to the in-memory store (called by the ingestion pipeline)."""
+    _alerts_store.append(alert)
+
+
+def add_alert_to_store(enriched: Any, correlated: Any) -> None:
+    """Append a fully enriched + correlated alert to the in-memory store.
+
+    Converts the EnrichedLog + CorrelatedEvent into the dict format expected
+    by the REST API endpoints.
+
+    Parameters
+    ----------
+    enriched:
+        An ``EnrichedLog`` instance from the enricher.
+    correlated:
+        A ``CorrelatedEvent`` instance from the correlator.
+    """
+    alert: dict[str, Any] = {
+        "id": len(_alerts_store) + 1,
+        "timestamp": enriched.parsed.timestamp.isoformat(),
+        "source_ip": enriched.parsed.source_ip,
+        "device": enriched.device_name,
+        "hostname": enriched.parsed.hostname,
+        "facility": enriched.parsed.facility,
+        "mnemonic": enriched.parsed.mnemonic,
+        "message": enriched.parsed.message,
+        "classification": enriched.classification,
+        "event_type": enriched.event_type,
+        "interface": enriched.interface_name,
+        "interface_description": enriched.interface_description,
+        "client": enriched.client_name,
+        "neighbor": enriched.bgp_neighbor,
+        "as_number": enriched.as_number,
+        "as_name": enriched.as_name,
+        "vrf": enriched.vrf,
+        "incident_id": correlated.incident_id or "",
+        "is_symptom": correlated.is_symptom,
+        "suppress_notification": correlated.suppress_notification,
+    }
     _alerts_store.append(alert)
 
 

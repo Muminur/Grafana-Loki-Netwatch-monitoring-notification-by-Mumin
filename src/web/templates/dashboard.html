@@ -189,7 +189,7 @@
 <script>
 // Pass server-side config to JS (no secrets — only public operational params)
 window.NETWATCH_CONFIG = {
-    wsUrl: 'ws://' + window.location.host + '/ws',
+    wsUrl: (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws',
     apiBase: '/api',
 };
 </script>

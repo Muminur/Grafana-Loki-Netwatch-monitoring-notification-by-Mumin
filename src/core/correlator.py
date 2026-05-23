@@ -125,11 +125,12 @@ class CorrelationEngine:
 
         Steps:
         1. Purge stale entries from all sliding windows.
-        2. Check flapping for same device + key.
-        3. Check if a backhaul member is down → register backhaul failure.
-        4. Check if a BGP/interface event is downstream of a known backhaul failure.
-        5. Check for mass BGP event.
-        6. If none of the above → INDEPENDENT.
+        2. Purge incidents older than 24 hours from the incident registry.
+        3. Check flapping for same device + key.
+        4. Check if a backhaul member is down → register backhaul failure.
+        5. Check if a BGP/interface event is downstream of a known backhaul failure.
+        6. Check for mass BGP event.
+        7. If none of the above → INDEPENDENT.
 
         Parameters
         ----------
@@ -142,6 +143,7 @@ class CorrelationEngine:
         """
         now = enriched.parsed.timestamp
         self._purge_stale(now)
+        self._purge_stale_incidents(now)
 
         # Record this event in the recent list
         self._recent.append((now, enriched))
@@ -417,3 +419,40 @@ class CorrelationEngine:
         for key in list(self._backhaul_failures.keys()):
             if self._backhaul_failures[key] < bh_cutoff:
                 del self._backhaul_failures[key]
+
+    def _purge_stale_incidents(self, now: datetime) -> None:
+        """Remove incidents older than 24 hours from the in-memory registry.
+
+        Incidents that have been open for more than 24 hours without new activity
+        are unlikely to receive new correlated events and would cause unbounded
+        memory growth if never evicted.  This method removes such incidents from
+        ``_incidents`` and clears the matching entries in ``_device_incident``.
+
+        Parameters
+        ----------
+        now:
+            Current event timestamp used as the reference point.
+        """
+        cutoff = now - timedelta(hours=24)
+
+        stale_ids: set[str] = set()
+        for inc_id, events in list(self._incidents.items()):
+            if not events:
+                stale_ids.add(inc_id)
+                continue
+            # Use the timestamp of the most-recent correlated event as the
+            # last-activity marker for the incident.
+            last_ts = max(
+                (ev.parsed.timestamp for ev in events),
+                default=datetime.min.replace(tzinfo=UTC),
+            )
+            if last_ts < cutoff:
+                stale_ids.add(inc_id)
+
+        for inc_id in stale_ids:
+            del self._incidents[inc_id]
+
+        # Remove reverse-map entries that pointed to purged incidents
+        for key in list(self._device_incident.keys()):
+            if self._device_incident[key] in stale_ids:
+                del self._device_incident[key]

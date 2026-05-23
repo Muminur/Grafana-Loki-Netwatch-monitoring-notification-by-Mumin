@@ -34,14 +34,16 @@ class Settings:
         default_factory=lambda: int(os.environ.get("WEB_PORT", "8080"))
     )
     discord_webhook_url: str = field(
-        default_factory=lambda: os.environ.get("DISCORD_WEBHOOK_URL", "")
+        default_factory=lambda: os.environ.get("DISCORD_WEBHOOK_URL", ""),
+        repr=False,
     )
     discord_enabled: bool = field(
         default_factory=lambda: os.environ.get("DISCORD_ENABLED", "false").lower()
         == "true"
     )
     telegram_bot_token: str = field(
-        default_factory=lambda: os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        default_factory=lambda: os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+        repr=False,
     )
     telegram_chat_id: str = field(
         default_factory=lambda: os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -51,7 +53,8 @@ class Settings:
         == "true"
     )
     grafana_api_key: str = field(
-        default_factory=lambda: os.environ.get("GRAFANA_API_KEY", "")
+        default_factory=lambda: os.environ.get("GRAFANA_API_KEY", ""),
+        repr=False,
     )
     grafana_dashboard_uid: str = field(
         default_factory=lambda: os.environ.get("GRAFANA_DASHBOARD_UID", "8sWAY1LMz")

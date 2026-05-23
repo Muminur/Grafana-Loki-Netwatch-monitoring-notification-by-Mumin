@@ -17,7 +17,9 @@ import asyncio
 import json
 import logging
 import socket
+import time
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import httpx
 import websockets
@@ -55,6 +57,9 @@ class SyslogReceiver:
         self._callback = callback
         self._running = False
         self._tasks: list[asyncio.Task[None]] = []
+        # Tracks the nanosecond timestamp of the last successful HTTP poll
+        # so each poll only fetches logs newer than the previous request.
+        self._last_poll_ns: int = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -86,7 +91,16 @@ class SyslogReceiver:
             self._tasks.append(task)
 
     async def _ws_tail_with_fallback(self) -> None:
-        """Try WS tail; fall back to HTTP poll then UDP on initial failure."""
+        """Try WS tail; fall back to HTTP poll then UDP on initial failure.
+
+        Uses ``_ws_tail_once()`` as a connectivity probe.  If the probe
+        succeeds, the persistent ``_ws_tail()`` reconnect loop takes over.
+        If the probe raises, fall back to HTTP poll (then UDP).
+
+        Note: ``_ws_tail()`` starts a fresh WebSocket session internally, so
+        data read by the probe and data read by the persistent loop are from
+        separate connections with no overlap.
+        """
         try:
             await self._ws_tail_once()
             # Connection succeeded — hand off to the persistent reconnect loop
@@ -101,7 +115,7 @@ class SyslogReceiver:
                 await self._http_poll_once()
                 # HTTP reachable — run the persistent poll loop
                 await self._http_poll()
-            except Exception as http_exc:  # noqa: BLE001
+            except (httpx.RequestError, ConnectionError, OSError) as http_exc:
                 _log.warning(
                     "HTTP poll also failed (%s), falling back to UDP", http_exc
                 )
@@ -169,7 +183,6 @@ class SyslogReceiver:
     async def _ws_tail_once(self) -> None:
         """Single WebSocket tail session — read until connection closes."""
         query = self._settings.loki_query
-        from urllib.parse import quote
         url = f"{self._settings.loki_ws_url}?query={quote(query)}"
         async with websockets.connect(url) as ws:
             async for raw_msg in ws:
@@ -193,11 +206,25 @@ class SyslogReceiver:
             await asyncio.sleep(_HTTP_POLL_INTERVAL)
 
     async def _http_poll_once(self) -> None:
-        """Single HTTP poll request to Loki query_range."""
+        """Single HTTP poll request to Loki query_range.
+
+        Uses nanosecond timestamps (``start`` / ``end``) so each poll only
+        fetches log lines that arrived since the previous request, preventing
+        duplicate delivery across successive poll cycles.
+        """
+        now_ns = int(time.time() * 1_000_000_000)
+        # Default window: last 60 seconds on the very first poll
+        start_ns = self._last_poll_ns or (now_ns - 60_000_000_000)
+        params = {
+            "query": self._settings.loki_query,
+            "limit": "100",
+            "start": str(start_ns),
+            "end": str(now_ns),
+        }
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 self._settings.loki_http_url,
-                params={"query": self._settings.loki_query, "limit": "100"},
+                params=params,
                 timeout=10.0,
             )
             if resp.status_code == 200:
@@ -205,6 +232,7 @@ class SyslogReceiver:
                 lines = self._extract_lines_from_http(data)
                 for line in lines:
                     await self._callback(line)
+                self._last_poll_ns = now_ns
             else:
                 _log.warning("Loki HTTP poll returned %d", resp.status_code)
 

@@ -12,7 +12,7 @@ Scheduled to run at 08:00 BDT (02:00 UTC) via the background task scheduler.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import httpx
@@ -48,7 +48,8 @@ async def generate_daily_digest(session: AsyncSession) -> str:
     str
         A plain-text / Markdown-compatible summary string.
     """
-    today = datetime.now(tz=UTC).date()
+    _bdt = timezone(timedelta(hours=6))
+    today = datetime.now(tz=_bdt).date()
     daily = await get_daily_stats(session, today)
 
     critical: int = daily["critical"]  # type: ignore[assignment]

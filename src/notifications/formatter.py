@@ -67,7 +67,7 @@ def _grafana_deep_link(enriched: EnrichedLog, settings: Settings) -> str:
     base = settings.grafana_url
     uid = settings.grafana_dashboard_uid
     return (
-        f"{base}/d/{uid}/bsccl-netwatch"
+        f"{base}/d/{uid}/log-dashboard"
         f"?orgId=1&from={from_ms}&to={to_ms}"
         f"&var-device={enriched.device_name}"
     )

@@ -5,13 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}BSCCL NETWATCH{% endblock %}</title>
 
-    <!-- Google Fonts: Orbitron (display), JetBrains Mono (data), Inter (body) -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=JetBrains+Mono:wght@300;400;500;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <!-- Self-hosted fonts (offline-first); CDN fallback if local file missing -->
+    <link rel="stylesheet" href="/static/css/fonts.css"
+          onerror="this.onerror=null;this.href='https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=JetBrains+Mono:wght@300;400;500;700&family=Inter:wght@300;400;500;600&display=swap';">
 
-    <!-- Chart.js CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <!-- Chart.js self-hosted; CDN fallback -->
+    <script src="/static/vendor/chart.umd.min.js"></script>
+    <script>
+    if (typeof Chart === 'undefined') {
+        document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"><\/script>');
+    }
+    </script>
 
     <!-- Neon Theme CSS -->
     <link rel="stylesheet" href="/static/css/neon-theme.css">
@@ -88,7 +92,8 @@
     (function() {
         function updateClock() {
             var now = new Date();
-            // BDT = UTC+6
+            // BDT = UTC+6. Use timestamp offset so midnight/date rollover is
+            // handled correctly (e.g. 23:00 UTC → 05:00 BDT next day).
             var bdt = new Date(now.getTime() + (6 * 60 * 60 * 1000));
             var h = String(bdt.getUTCHours()).padStart(2, '0');
             var m = String(bdt.getUTCMinutes()).padStart(2, '0');

@@ -140,7 +140,7 @@
         _ensureBuckets();
         var labels = _timelineBuckets.map(function (b) {
             var d = new Date(b.minute * 60000);
-            return String(d.getUTCHours() + 6).padStart(2, '0')
+            return String((d.getUTCHours() + 6) % 24).padStart(2, '0')
                  + ':' + String(d.getUTCMinutes()).padStart(2, '0');
         });
 
@@ -328,7 +328,13 @@
 
         // Update donut using dashboard counters
         if (window.NetwatchDashboard) {
-            _updateCategoryDonut(window.NetwatchDashboard.getCounters());
+            var counters = window.NetwatchDashboard.getCounters();
+            _updateCategoryDonut(counters);
+            // Recalculate health score from live counters and update gauge
+            var total = Object.values(counters).reduce(function (a, b) { return a + b; }, 0);
+            var score = total === 0 ? 100 : Math.max(0, Math.min(100,
+                100 - Math.floor((counters.CRITICAL || 0) * 5 + (counters.WARNING || 0) * 1)));
+            _updateHealthGauge('healthGaugeChart', score, 'healthScoreValue');
         }
     }
 

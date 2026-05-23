@@ -8,12 +8,24 @@ from src.config import Settings, get_settings
 def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     """Settings has sane defaults when no env vars are set."""
     for var in (
-        "MONITOR_HOST", "SYSLOG_MODE", "SYSLOG_UDP_PORT", "DATABASE_URL",
-        "WEB_HOST", "WEB_PORT", "DISCORD_WEBHOOK_URL", "DISCORD_ENABLED",
-        "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_ENABLED",
-        "GRAFANA_API_KEY", "GRAFANA_DASHBOARD_UID", "DEDUP_WINDOW_SECONDS",
-        "BGP_FLAP_WINDOW_SECONDS", "BUNDLE_GROUP_WINDOW_SECONDS",
-        "LOKI_DATASOURCE_ID", "LOKI_QUERY",
+        "MONITOR_HOST",
+        "SYSLOG_MODE",
+        "SYSLOG_UDP_PORT",
+        "DATABASE_URL",
+        "WEB_HOST",
+        "WEB_PORT",
+        "DISCORD_WEBHOOK_URL",
+        "DISCORD_ENABLED",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_CHAT_ID",
+        "TELEGRAM_ENABLED",
+        "GRAFANA_API_KEY",
+        "GRAFANA_DASHBOARD_UID",
+        "DEDUP_WINDOW_SECONDS",
+        "BGP_FLAP_WINDOW_SECONDS",
+        "BUNDLE_GROUP_WINDOW_SECONDS",
+        "LOKI_DATASOURCE_ID",
+        "LOKI_QUERY",
     ):
         monkeypatch.delenv(var, raising=False)
     settings = Settings()
