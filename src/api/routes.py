@@ -279,6 +279,8 @@ def add_alert_to_store(enriched: Any, correlated: Any) -> None:
         as_num = enriched.as_number
         resolved = []
         for i, inc in enumerate(_incidents_store):
+            if inc["device"] != dev:
+                continue
             inc_iface = inc.get("interface") or _extract_iface_from_msg(
                 inc.get("message", "")
             )
@@ -287,7 +289,6 @@ def add_alert_to_store(enriched: Any, correlated: Any) -> None:
             elif (
                 neighbor
                 and as_num
-                and inc["device"] == dev
                 and inc.get("mnemonic") == "ADJCHANGE"
             ):
                 inc_msg = inc.get("message", "")
@@ -607,21 +608,19 @@ async def get_incidents() -> list[dict[str, Any]]:
         result = await session.execute(stmt)
         rows = result.scalars().all()
 
-    # First pass: collect resolved interfaces and BGP sessions.
-    # Interface resolution is device-agnostic: on a point-to-point fiber
-    # network, if one end's interface recovers (Active/Up), the other end's
-    # Remote Fault is implicitly resolved too.
-    # BGP resolution stays device-specific (sessions are per-device).
-    resolved_ifaces: set[str] = set()
-    resolved_bgp: set[str] = set()
+    # First pass: collect resolved device+interface pairs and BGP sessions.
+    # Resolution is DEVICE-SPECIFIC: the same interface name on different
+    # routers connects to different far-end equipment (e.g., KKT-Core-1
+    # TGE0/0/1/7 → Equinix vs KKT-Core-2 TGE0/0/1/7 → F@H-IPT-02).
+    resolved: set[str] = set()
     for row in rows:
         if not _is_recovery_event(row.mnemonic, row.message or ""):
             continue
         iface = row.interface_name or _extract_iface_from_msg(row.message or "")
         if row.mnemonic == "ADJCHANGE" and row.as_number:
-            resolved_bgp.add(f"{row.device_name}:{row.as_number}")
+            resolved.add(f"{row.device_name}:BGP:{row.as_number}")
         elif iface:
-            resolved_ifaces.add(iface)
+            resolved.add(f"{row.device_name}:{iface}")
 
     incidents: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -630,11 +629,11 @@ async def get_incidents() -> list[dict[str, Any]]:
             continue
         iface = row.interface_name or _extract_iface_from_msg(row.message or "")
         if row.mnemonic == "ADJCHANGE" and row.as_number:
-            if f"{row.device_name}:{row.as_number}" in resolved_bgp:
+            if f"{row.device_name}:BGP:{row.as_number}" in resolved:
                 continue
             discriminator = str(row.as_number)
         else:
-            if iface and iface in resolved_ifaces:
+            if iface and f"{row.device_name}:{iface}" in resolved:
                 continue
             discriminator = row.bgp_neighbor or iface or ""
         key = f"{row.device_name}:{row.mnemonic}:{discriminator}"
