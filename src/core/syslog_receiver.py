@@ -4,7 +4,7 @@ Receives syslog data from Loki (WebSocket tail or HTTP poll) with a UDP
 fallback for emergency direct syslog input.
 
 Connection strategy:
-  1. Loki WebSocket tail  (ws://{host}:3100/loki/api/v1/tail)
+  1. Loki WebSocket tail  (ws://{host}:3000/loki/api/v1/tail)
   2. Loki HTTP poll       (GET /loki/api/v1/query_range every 2 s)
   3. UDP listen           (emergency fallback on syslog_udp_port)
 

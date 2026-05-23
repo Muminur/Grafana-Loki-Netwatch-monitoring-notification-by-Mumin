@@ -23,14 +23,14 @@ def test_settings_defaults() -> None:
 def test_loki_ws_url_constructed_from_host() -> None:
     """Loki WS URL derives from monitor_host."""
     settings = Settings()
-    assert "192.168.200.230:3100" in settings.loki_ws_url
+    assert "192.168.200.230:3000" in settings.loki_ws_url
     assert settings.loki_ws_url.startswith("ws://")
 
 
 def test_loki_http_url_constructed_from_host() -> None:
     """Loki HTTP URL derives from monitor_host."""
     settings = Settings()
-    assert "192.168.200.230:3100" in settings.loki_http_url
+    assert "192.168.200.230:3000" in settings.loki_http_url
     assert settings.loki_http_url.startswith("http://")
 
 

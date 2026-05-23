@@ -69,12 +69,12 @@ class Settings:
     @property
     def loki_ws_url(self) -> str:
         """WebSocket URL for Loki tail endpoint."""
-        return f"ws://{self.monitor_host}:3100/loki/api/v1/tail"
+        return f"ws://{self.monitor_host}:3000/loki/api/v1/tail"
 
     @property
     def loki_http_url(self) -> str:
         """HTTP URL for Loki query_range endpoint."""
-        return f"http://{self.monitor_host}:3100/loki/api/v1/query_range"
+        return f"http://{self.monitor_host}:3000/loki/api/v1/query_range"
 
     @property
     def grafana_url(self) -> str:
