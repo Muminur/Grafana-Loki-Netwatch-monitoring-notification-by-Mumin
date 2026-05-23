@@ -74,6 +74,19 @@
                 </div>
             </div>
 
+            <!-- Time Range Filter -->
+            <div class="filter-bar">
+                <label class="filter-label" for="periodFilter">Period:</label>
+                <select id="periodFilter" class="neon-select" onchange="applyFilters()">
+                    <option value="today" selected>Today</option>
+                    <option value="yesterday">Yesterday</option>
+                    <option value="7d">Last 7 Days</option>
+                    <option value="30d">Last 30 Days</option>
+                    <option value="1y">Last Year</option>
+                    <option value="all">All Time</option>
+                </select>
+            </div>
+
             <!-- Tab Bar -->
             <div class="tab-bar" role="tablist">
                 <button class="tab active" data-tab="all" role="tab" aria-selected="true"

@@ -722,6 +722,69 @@ async def test_delete_maintenance_window_returns_404_for_unknown() -> None:
 # 30. test_get_maintenance_windows_filters_expired
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 31. test_get_alerts_count_returns_json
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_alerts_count_returns_json() -> None:
+    """GET /api/alerts/count must return HTTP 200 with a counts dict."""
+    from src.main import app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/alerts/count")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body, dict)
+    assert "counts" in body
+    assert "total" in body
+    assert "period" in body
+    assert isinstance(body["total"], int)
+
+
+# ---------------------------------------------------------------------------
+# 32. test_get_alerts_accepts_period_param
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_alerts_accepts_period_param() -> None:
+    """GET /api/alerts?period=today must return HTTP 200 with a JSON list."""
+    from src.main import app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        for period in ("today", "yesterday", "7d", "30d", "1y", "all"):
+            response = await client.get("/api/alerts", params={"period": period})
+            assert (
+                response.status_code == 200
+            ), f"period={period} returned {response.status_code}"  # noqa: PT018
+            body = response.json()
+            assert isinstance(body, list)
+
+
+# ---------------------------------------------------------------------------
+# 33. test_set_db_engine_registers_engine
+# ---------------------------------------------------------------------------
+
+
+def test_set_db_engine_registers_engine() -> None:
+    """set_db_engine stores the engine in _db_engine module var."""
+    import src.api.routes as routes_mod
+
+    original = routes_mod._db_engine  # noqa: SLF001
+    sentinel = object()
+    try:
+        routes_mod.set_db_engine(sentinel)
+        assert routes_mod._db_engine is sentinel  # noqa: SLF001
+    finally:
+        routes_mod._db_engine = original  # noqa: SLF001
+
 
 @pytest.mark.asyncio
 async def test_get_maintenance_windows_filters_expired() -> None:

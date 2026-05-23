@@ -1178,6 +1178,54 @@ kbd {
 
 .alert-card { animation: slide-in-top 0.2s ease; }
 
+/* ── Time Range Filter Bar ─────────────────────────────────────────────── */
+.filter-bar {
+    display: flex;
+    gap: 10px;
+    padding: 8px 1rem;
+    align-items: center;
+    border-bottom: 1px solid var(--border-default);
+    background: rgba(8, 8, 18, 0.4);
+}
+
+.filter-label {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+}
+
+.neon-select {
+    background: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    padding: 5px 10px;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238888a0'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    padding-right: 24px;
+}
+
+.neon-select:focus {
+    border-color: var(--neon-cyan);
+    outline: none;
+    box-shadow: 0 0 8px rgba(0, 240, 255, 0.2);
+}
+
+.neon-select option {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
 /* ── Responsive ────────────────────────────────────────────────────────── */
 @media (max-width: 1200px) {
     .dashboard-layout { grid-template-columns: 1fr; }

@@ -277,6 +277,58 @@
         }
     });
 
+    // ── Time filter / DB fetch ────────────────────────────────────────────────
+
+    /**
+     * Fetch historical alerts from the DB for the selected period and render
+     * them.  Also refreshes severity counters via /api/alerts/count.
+     *
+     * Called on page load and whenever the period selector changes.
+     * New real-time alerts from the WebSocket are prepended on top.
+     */
+    function applyFilters() {
+        var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
+        var periodEl = document.getElementById('periodFilter');
+        var period = periodEl ? periodEl.value : 'today';
+
+        // Fetch paginated alerts
+        fetch(apiBase + '/alerts?period=' + encodeURIComponent(period) + '&limit=500')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                // Replace in-memory store with DB results
+                _alerts = Array.isArray(data) ? data : [];
+
+                // Recount from the fetched data
+                _counters = { CRITICAL: 0, WARNING: 0, INFO: 0, NOISE: 0, USER_LOGIN: 0 };
+                _alerts.forEach(function (a) {
+                    var cls = a.classification;
+                    if (_counters.hasOwnProperty(cls)) { _counters[cls]++; }
+                });
+
+                _updateCounters();
+                _renderAlerts();
+            })
+            .catch(function () { /* non-fatal — keep current state */ });
+
+        // Also refresh counts badge via dedicated endpoint
+        fetch(apiBase + '/alerts/count?period=' + encodeURIComponent(period))
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data && data.counts) {
+                    Object.keys(data.counts).forEach(function (cls) {
+                        if (_counters.hasOwnProperty(cls)) {
+                            _counters[cls] = data.counts[cls];
+                        }
+                    });
+                    _updateCounters();
+                }
+            })
+            .catch(function () { /* non-fatal */ });
+    }
+
+    // Expose for the inline onchange attribute on the <select>
+    window.applyFilters = applyFilters;
+
     // ── Incidents ─────────────────────────────────────────────────────────────
     function _loadIncidents() {
         var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
@@ -319,6 +371,9 @@
         _updateCounters();
         _renderAlerts();
         _loadIncidents();
+
+        // Load historical alerts from DB for today on initial page load
+        applyFilters();
 
         // Refresh incidents every 30 s
         setInterval(_loadIncidents, 30000);

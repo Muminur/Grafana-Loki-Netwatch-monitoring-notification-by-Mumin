@@ -3,12 +3,13 @@
 Milestone 6: minimal health endpoint.
 Milestone 7: expanded alert, incident, device, topology, stats, BGP endpoints.
 Milestone 6/7 audit: monthly/yearly stats, maintenance window endpoints.
+Milestone 8: DB-backed /api/alerts with period filter; /api/alerts/count.
 """
 
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -31,6 +32,18 @@ _alerts_store: list[dict[str, Any]] = []
 _incidents_store: list[dict[str, Any]] = []
 _maintenance_store: list[dict[str, Any]] = []
 _maintenance_id_counter: int = 0
+
+# DB engine — set during lifespan startup via set_db_engine()
+_db_engine: object = None
+
+
+def set_db_engine(engine: object) -> None:
+    """Register the async DB engine for use by /api/alerts.
+
+    Called from ``main.py`` lifespan after the engine is created.
+    """
+    global _db_engine  # noqa: PLW0603
+    _db_engine = engine
 
 
 class MaintenanceWindowCreate(BaseModel):
@@ -136,14 +149,52 @@ async def health() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+_BDT = timezone(timedelta(hours=6))
+
+
+def _period_to_time_range(
+    period: str | None,
+) -> tuple[datetime | None, datetime | None]:
+    """Convert a period string into (start, end) datetime bounds (BDT-aware).
+
+    Returns (None, None) when the period is "all" or unrecognised.
+    """
+    if not period or period == "all":
+        return None, None
+
+    now = datetime.now(_BDT)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if period == "today":
+        return today_start, None
+    if period == "yesterday":
+        yesterday_start = today_start - timedelta(days=1)
+        return yesterday_start, today_start
+    if period == "7d":
+        return now - timedelta(days=7), None
+    if period == "30d":
+        return now - timedelta(days=30), None
+    if period == "1y":
+        return now - timedelta(days=365), None
+
+    return None, None
+
+
 @router.get("/api/alerts")
 async def get_alerts(
     severity: str | None = Query(default=None, description="Filter by severity"),
     device: str | None = Query(default=None, description="Filter by device name"),
-    limit: int = Query(default=100, ge=1, le=1000),
+    period: str | None = Query(
+        default=None,
+        description="Time filter: today, yesterday, 7d, 30d, 1y, all",
+    ),
+    limit: int = Query(default=200, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
 ) -> list[dict[str, Any]]:
-    """Return a paginated list of alerts, optionally filtered by severity or device.
+    """Return a paginated list of alerts from SQLite, newest-first.
+
+    Falls back to the in-memory store when the DB engine is not yet
+    available (e.g. during tests that do not start the lifespan).
 
     Parameters
     ----------
@@ -151,26 +202,136 @@ async def get_alerts(
         Optional severity filter (CRITICAL, WARNING, INFO, NOISE, USER_LOGIN).
     device:
         Optional device name filter.
+    period:
+        Optional time filter: today, yesterday, 7d, 30d, 1y, all.
     limit:
-        Maximum number of alerts to return (1-1000, default 100).
+        Maximum number of alerts to return (1-5000, default 200).
     offset:
         Number of alerts to skip (for pagination).
 
     Returns
     -------
     list[dict]
-        List of alert dicts from the in-memory store.
+        List of alert dicts ordered newest-first.
     """
-    results = list(_alerts_store)
+    if _db_engine is None:
+        # Fallback: serve from in-memory store (no period filter applied)
+        results = list(_alerts_store)
+        if severity is not None:
+            sev_upper = severity.upper()
+            results = [a for a in results if a.get("classification") == sev_upper]
+        if device is not None:
+            results = [a for a in results if a.get("device") == device]
+        return results[offset : offset + limit]
 
-    if severity is not None:
-        sev_upper = severity.upper()
-        results = [a for a in results if a.get("classification") == sev_upper]
+    from sqlalchemy import desc, select  # noqa: PLC0415
+    from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
 
-    if device is not None:
-        results = [a for a in results if a.get("device") == device]
+    from src.database.models import AlertLog  # noqa: PLC0415
 
-    return results[offset : offset + limit]
+    start, end = _period_to_time_range(period)
+
+    async with AsyncSession(_db_engine) as session:  # type: ignore[arg-type]
+        stmt = select(AlertLog).order_by(desc(AlertLog.timestamp))
+
+        if severity:
+            stmt = stmt.where(AlertLog.classification == severity.upper())
+        if device:
+            stmt = stmt.where(AlertLog.device_name == device)
+        if start is not None:
+            stmt = stmt.where(AlertLog.timestamp >= start)
+        if end is not None:
+            stmt = stmt.where(AlertLog.timestamp < end)
+
+        stmt = stmt.offset(offset).limit(limit)
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+
+    return [
+        {
+            "id": str(row.id),
+            "timestamp": row.timestamp.isoformat() if row.timestamp else "",
+            "classification": row.classification,
+            "device": row.device_name,
+            "hostname": row.hostname,
+            "mnemonic": row.mnemonic,
+            "message": row.message,
+            "facility": row.facility,
+            "severity_level": row.severity_level,
+            "interface_name": row.interface_name,
+            "interface_description": row.interface_description,
+            "client_name": row.client_name,
+            "neighbor": row.bgp_neighbor,
+            "as_number": row.as_number,
+            "as_name": row.as_name,
+            "incident_id": row.incident_id or "",
+            "notification_sent": row.notification_sent,
+            "source_ip": row.source_ip,
+        }
+        for row in rows
+    ]
+
+
+@router.get("/api/alerts/count")
+async def get_alerts_count(
+    period: str | None = Query(default="today"),
+) -> dict[str, Any]:
+    """Return alert counts grouped by classification for the given period.
+
+    Parameters
+    ----------
+    period:
+        Time filter: today (default), yesterday, 7d, 30d, 1y, all.
+
+    Returns
+    -------
+    dict
+        ``counts`` mapping classification → int, ``total`` int, ``period`` str.
+    """
+    classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
+    zero_counts: dict[str, int] = dict.fromkeys(classifications, 0)
+
+    if _db_engine is None:
+        # Fallback: count from in-memory store
+        for alert in _alerts_store:
+            cls = alert.get("classification", "")
+            if cls in zero_counts:
+                zero_counts[cls] += 1
+        return {
+            "period": period or "all",
+            "counts": zero_counts,
+            "total": sum(zero_counts.values()),
+        }
+
+    from sqlalchemy import func, select  # noqa: PLC0415
+    from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+    from src.database.models import AlertLog  # noqa: PLC0415
+
+    start, end = _period_to_time_range(period)
+
+    async with AsyncSession(_db_engine) as session:  # type: ignore[arg-type]
+        stmt = select(AlertLog.classification, func.count(AlertLog.id)).group_by(
+            AlertLog.classification
+        )
+        if start is not None:
+            stmt = stmt.where(AlertLog.timestamp >= start)
+        if end is not None:
+            stmt = stmt.where(AlertLog.timestamp < end)
+
+        result = await session.execute(stmt)
+        rows = result.all()
+
+    counts: dict[str, int] = dict.fromkeys(classifications, 0)
+    for cls, cnt in rows:
+        if cls in counts:
+            counts[cls] = cnt
+
+    return {
+        "period": period or "all",
+        "counts": counts,
+        "total": sum(counts.values()),
+    }
 
 
 @router.get("/api/alerts/{alert_id}")

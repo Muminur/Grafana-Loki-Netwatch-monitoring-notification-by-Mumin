@@ -33,7 +33,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.routes import add_alert_to_store, increment_alerts_processed, router
+from src.api.routes import (
+    add_alert_to_store,
+    increment_alerts_processed,
+    router,
+    set_db_engine,
+)
 from src.api.websocket import WebSocketManager
 from src.config import get_settings
 from src.core.correlator import CorrelationEngine
@@ -276,6 +281,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     engine = await get_engine(settings.database_url)
     await create_tables(engine)
     _engine = engine
+    set_db_engine(engine)
     _log.info("Database ready: %s", settings.database_url)
 
     # ── Pipeline singletons ────────────────────────────────────────────────
