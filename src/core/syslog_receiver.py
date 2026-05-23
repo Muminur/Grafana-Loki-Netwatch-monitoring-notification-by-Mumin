@@ -61,12 +61,18 @@ class SyslogReceiver:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Start receiving.  Tries WS → HTTP → UDP based on syslog_mode."""
+        """Start receiving.  Tries WS → HTTP → UDP based on syslog_mode.
+
+        When mode is ``loki_ws``, attempts a WebSocket connection first.  If
+        the initial connection fails (``ConnectionError``, ``OSError``, or
+        ``WebSocketException``), falls back automatically to ``loki_http``.
+        If the HTTP poll also fails on its first attempt, falls back to UDP.
+        """
         self._running = True
         mode = self._settings.syslog_mode
 
         if mode == "loki_ws":
-            task = asyncio.create_task(self._ws_tail())
+            task = asyncio.create_task(self._ws_tail_with_fallback())
             self._tasks.append(task)
         elif mode == "loki_http":
             task = asyncio.create_task(self._http_poll())
@@ -76,8 +82,30 @@ class SyslogReceiver:
             self._tasks.append(task)
         else:
             # Default: try WS with HTTP fallback
-            ws_task = asyncio.create_task(self._ws_tail())
-            self._tasks.append(ws_task)
+            task = asyncio.create_task(self._ws_tail_with_fallback())
+            self._tasks.append(task)
+
+    async def _ws_tail_with_fallback(self) -> None:
+        """Try WS tail; fall back to HTTP poll then UDP on initial failure."""
+        try:
+            await self._ws_tail_once()
+            # Connection succeeded — hand off to the persistent reconnect loop
+            await self._ws_tail()
+        except (
+            ConnectionError,
+            OSError,
+            websockets.exceptions.WebSocketException,
+        ) as exc:
+            _log.warning("WS connection failed (%s), falling back to HTTP poll", exc)
+            try:
+                await self._http_poll_once()
+                # HTTP reachable — run the persistent poll loop
+                await self._http_poll()
+            except Exception as http_exc:  # noqa: BLE001
+                _log.warning(
+                    "HTTP poll also failed (%s), falling back to UDP", http_exc
+                )
+                await self._udp_listen()
 
     async def stop(self) -> None:
         """Gracefully cancel all running receiver tasks."""

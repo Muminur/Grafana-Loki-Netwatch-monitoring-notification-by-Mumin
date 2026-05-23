@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from src.data.topology import is_backhaul_member
+from src.data.topology import get_downstream_devices, is_backhaul_member
 
 if TYPE_CHECKING:
     from src.core.enricher import EnrichedLog
@@ -270,8 +270,13 @@ class CorrelationEngine:
     def _find_root_cause(self, enriched: EnrichedLog) -> str | None:
         """Check if *enriched* is downstream of a known backhaul failure.
 
-        Looks up active backhaul failures for the same device IP and checks
-        whether they occurred within the correlation window.
+        Checks two cases:
+        1. Same-device: the event's device IP matches the device that has an
+           active backhaul failure (e.g. a BGP peer failing on EQ-RTR-01 after
+           a BE500 member went down on EQ-RTR-01).
+        2. Cross-device: the event's device IP is a downstream device of any
+           active backhaul failure (e.g. BGP peers failing on KKT-Core-01 after
+           EQ-RTR-01's BE500 bundle degraded).
 
         Parameters
         ----------
@@ -289,11 +294,18 @@ class CorrelationEngine:
         for (bh_device, bundle_name), failure_ts in list(
             self._backhaul_failures.items()
         ):
-            if bh_device != device_ip:
-                continue
             age = (now - failure_ts).total_seconds()
-            if age <= self.CORRELATION_WINDOW:
-                # This event is on the same device as an active backhaul failure
+            if age > self.CORRELATION_WINDOW:
+                continue
+
+            # Case 1: same device as the backhaul failure
+            same_device = bh_device == device_ip
+
+            # Case 2: this event's device is downstream of the failing bundle
+            downstream_ips = get_downstream_devices(bh_device, bundle_name)
+            is_downstream = device_ip in downstream_ips
+
+            if same_device or is_downstream:
                 # Create or reuse an incident for this backhaul event
                 bh_incident_key = f"{bh_device}:{bundle_name}"
                 if bh_incident_key not in self._device_incident:

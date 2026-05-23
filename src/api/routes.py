@@ -2,14 +2,17 @@
 
 Milestone 6: minimal health endpoint.
 Milestone 7: expanded alert, incident, device, topology, stats, BGP endpoints.
+Milestone 6/7 audit: monthly/yearly stats, maintenance window endpoints.
 """
 
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from src.data.device_map import DEVICE_MAP
 from src.data.topology import NETWORK_TOPOLOGY
@@ -26,6 +29,18 @@ _active_connections: int = 0
 # In-memory stores — will be replaced with DB in a later milestone
 _alerts_store: list[dict[str, Any]] = []
 _incidents_store: list[dict[str, Any]] = []
+_maintenance_store: list[dict[str, Any]] = []
+_maintenance_id_counter: int = 0
+
+
+class MaintenanceWindowCreate(BaseModel):
+    """Request body for creating a maintenance window."""
+
+    device_name: str
+    start_time: datetime
+    end_time: datetime
+    reason: str = ""
+    created_by: str = ""
 
 
 def increment_alerts_processed() -> None:
@@ -231,6 +246,183 @@ async def get_stats_weekly() -> dict[str, Any]:
         "counts": counts,
         "total": sum(counts.values()),
     }
+
+
+@router.get("/api/stats/monthly")
+async def get_stats_monthly() -> dict[str, Any]:
+    """Return monthly aggregated statistics.
+
+    Aggregates daily alert counts grouped by calendar month for all alerts
+    in the in-memory store.  Each entry in ``months`` covers one month.
+
+    Returns
+    -------
+    dict
+        ``period`` set to ``"monthly"``, ``months`` list (each with
+        ``year``, ``month``, and per-classification ``counts``), ``total``.
+    """
+    classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
+    monthly: dict[str, dict[str, int]] = {}
+
+    for alert in _alerts_store:
+        raw_ts = alert.get("timestamp", "")
+        try:
+            ts = datetime.fromisoformat(raw_ts) if isinstance(raw_ts, str) else raw_ts
+            key = f"{ts.year}-{ts.month:02d}"
+        except (ValueError, AttributeError, TypeError):
+            key = "unknown"
+
+        if key not in monthly:
+            monthly[key] = dict.fromkeys(classifications, 0)
+        cls = alert.get("classification", "")
+        if cls in monthly[key]:
+            monthly[key][cls] += 1
+
+    months_list = [
+        {"month": k, "counts": v, "total": sum(v.values())}
+        for k, v in sorted(monthly.items())
+    ]
+    grand_total = sum(m["total"] for m in months_list)  # type: ignore[misc]
+    return {
+        "period": "monthly",
+        "months": months_list,
+        "total": grand_total,
+    }
+
+
+@router.get("/api/stats/yearly")
+async def get_stats_yearly() -> dict[str, Any]:
+    """Return yearly aggregated statistics.
+
+    Aggregates monthly counts into per-year totals.
+
+    Returns
+    -------
+    dict
+        ``period`` set to ``"yearly"``, ``years`` list (each with
+        ``year`` and per-classification ``counts``), ``total``.
+    """
+    classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
+    yearly: dict[str, dict[str, int]] = {}
+
+    for alert in _alerts_store:
+        raw_ts = alert.get("timestamp", "")
+        try:
+            ts = datetime.fromisoformat(raw_ts) if isinstance(raw_ts, str) else raw_ts
+            key = str(ts.year)
+        except (ValueError, AttributeError, TypeError):
+            key = "unknown"
+
+        if key not in yearly:
+            yearly[key] = dict.fromkeys(classifications, 0)
+        cls = alert.get("classification", "")
+        if cls in yearly[key]:
+            yearly[key][cls] += 1
+
+    years_list = [
+        {"year": k, "counts": v, "total": sum(v.values())}
+        for k, v in sorted(yearly.items())
+    ]
+    grand_total = sum(y["total"] for y in years_list)  # type: ignore[misc]
+    return {
+        "period": "yearly",
+        "years": years_list,
+        "total": grand_total,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Maintenance windows
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/maintenance")
+async def get_maintenance_windows() -> list[dict[str, Any]]:
+    """List active and upcoming maintenance windows.
+
+    Returns all windows whose ``end_time`` is in the future (not yet expired).
+
+    Returns
+    -------
+    list[dict]
+        Maintenance window records, each with ``id``, ``device_name``,
+        ``start_time``, ``end_time``, ``reason``, ``created_by``.
+    """
+    now = datetime.now(UTC)
+    active: list[dict[str, Any]] = []
+    for window in _maintenance_store:
+        end_raw = window.get("end_time", "")
+        try:
+            end_ts = (
+                datetime.fromisoformat(end_raw) if isinstance(end_raw, str) else end_raw
+            )
+            # Make aware if naive
+            if end_ts.tzinfo is None:
+                end_ts = end_ts.replace(tzinfo=UTC)
+            if end_ts >= now:
+                active.append(window)
+        except (ValueError, AttributeError, TypeError):
+            active.append(window)
+    return active
+
+
+@router.post("/api/maintenance", status_code=201)
+async def create_maintenance_window(
+    body: MaintenanceWindowCreate,
+) -> dict[str, Any]:
+    """Create a new maintenance window.
+
+    Parameters
+    ----------
+    body:
+        ``device_name``, ``start_time``, ``end_time`` (required);
+        ``reason``, ``created_by`` (optional).
+
+    Returns
+    -------
+    dict
+        The created maintenance window record including its assigned ``id``.
+    """
+    global _maintenance_id_counter  # noqa: PLW0603
+    _maintenance_id_counter += 1
+    window: dict[str, Any] = {
+        "id": _maintenance_id_counter,
+        "device_name": body.device_name,
+        "start_time": body.start_time.isoformat(),
+        "end_time": body.end_time.isoformat(),
+        "reason": body.reason,
+        "created_by": body.created_by,
+    }
+    _maintenance_store.append(window)
+    return window
+
+
+@router.delete("/api/maintenance/{window_id}", status_code=200)
+async def delete_maintenance_window(window_id: int) -> dict[str, Any]:
+    """Delete a maintenance window by ID.
+
+    Parameters
+    ----------
+    window_id:
+        The numeric ID of the maintenance window to delete.
+
+    Raises
+    ------
+    HTTPException
+        404 if the window is not found.
+
+    Returns
+    -------
+    dict
+        ``{"status": "deleted", "id": window_id}``
+    """
+    for i, window in enumerate(_maintenance_store):
+        if window.get("id") == window_id:
+            _maintenance_store.pop(i)
+            return {"status": "deleted", "id": window_id}
+    raise HTTPException(
+        status_code=404, detail=f"Maintenance window {window_id} not found"
+    )
 
 
 # ---------------------------------------------------------------------------

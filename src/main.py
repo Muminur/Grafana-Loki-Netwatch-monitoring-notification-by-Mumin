@@ -19,6 +19,8 @@ Routes:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -104,6 +106,42 @@ async def _on_syslog_line(raw_line: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _digest_scheduler(engine: object) -> None:
+    """Background task: run daily digest at 02:00 UTC (08:00 BDT) every day.
+
+    Checks the current UTC hour every 60 seconds.  When the hour is 02 and
+    the digest has not yet been sent today, generates and dispatches it.
+
+    Parameters
+    ----------
+    engine:
+        The SQLAlchemy async engine used to open a session for the digest query.
+    """
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+    from src.notifications.digest import send_daily_digest  # noqa: PLC0415
+
+    last_sent_date: str = ""
+
+    while True:
+        try:
+            await asyncio.sleep(60)
+            now = datetime.now(UTC)
+            today = now.strftime("%Y-%m-%d")
+            if now.hour == 2 and last_sent_date != today:  # noqa: PLR2004
+                _log.info("Running daily digest for %s", today)
+                async with AsyncSession(engine) as session:  # type: ignore[arg-type]
+                    await send_daily_digest(session)
+                last_sent_date = today
+                _log.info("Daily digest dispatched for %s", today)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:  # noqa: BLE001
+            _log.error("Digest scheduler error: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     """Application lifespan: startup and shutdown logic.
@@ -112,11 +150,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     -------
     1. Load settings and create DB engine + tables.
     2. Start the syslog receiver (async background task).
+    3. Start the daily digest scheduler background task.
 
     Shutdown
     --------
     1. Stop the syslog receiver gracefully.
-    2. Dispose the DB engine.
+    2. Cancel digest scheduler.
+    3. Dispose the DB engine.
     """
     settings = get_settings()
 
@@ -130,11 +170,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     await receiver.start()
     _log.info("SyslogReceiver started (mode: %s)", settings.syslog_mode)
 
+    # ── Daily digest scheduler ─────────────────────────────────────────────
+    digest_task = asyncio.create_task(_digest_scheduler(engine))
+    _log.info("Daily digest scheduler started (fires at 02:00 UTC / 08:00 BDT)")
+
     yield  # application runs here
 
     # ── Shutdown ───────────────────────────────────────────────────────────
     _log.info("Shutting down SyslogReceiver…")
     await receiver.stop()
+
+    _log.info("Cancelling digest scheduler…")
+    digest_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await digest_task
 
     _log.info("Disposing DB engine…")
     await engine.dispose()

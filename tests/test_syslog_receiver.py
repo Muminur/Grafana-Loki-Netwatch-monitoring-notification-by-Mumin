@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import websockets
+import websockets.exceptions
 
 from src.config import Settings
 
@@ -289,6 +291,180 @@ def test_extract_lines_from_http_response() -> None:
 
     lines = receiver._extract_lines_from_http(resp)  # noqa: SLF001
     assert lines == [_SAMPLE_LOG]
+
+
+# ---------------------------------------------------------------------------
+# 8. test_ws_tail_with_fallback_calls_http_on_ws_failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ws_tail_with_fallback_calls_http_on_ws_failure() -> None:
+    """WS connection failure → _ws_tail_with_fallback falls back to HTTP poll."""
+    from src.core.syslog_receiver import SyslogReceiver  # noqa: PLC0415
+
+    received: list[str] = []
+
+    async def callback(line: str) -> None:
+        received.append(line)
+
+    settings = Settings(monitor_host="127.0.0.1")
+    receiver = SyslogReceiver(settings, callback)
+
+    # _ws_tail_once raises ConnectionError (WS unavailable)
+    ws_fail = AsyncMock(side_effect=ConnectionError("WS unavailable"))
+
+    loki_response = _make_loki_http_response(_SAMPLE_LOG)
+    mock_http_resp = MagicMock()
+    mock_http_resp.status_code = 200
+    mock_http_resp.json.return_value = loki_response
+
+    http_mock_client = AsyncMock()
+    http_mock_client.get = AsyncMock(return_value=mock_http_resp)
+    http_mock_client.__aenter__ = AsyncMock(return_value=http_mock_client)
+    http_mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    # _http_poll_once succeeds; _ws_tail / _http_poll are replaced with no-ops
+    # so _ws_tail_with_fallback doesn't run infinitely.
+    async def noop_http_poll() -> None:
+        pass
+
+    async def noop_ws_tail() -> None:
+        pass
+
+    with (
+        patch.object(receiver, "_ws_tail_once", ws_fail),
+        patch.object(receiver, "_ws_tail", noop_ws_tail),
+        patch.object(receiver, "_http_poll", noop_http_poll),
+        patch(
+            "src.core.syslog_receiver.httpx.AsyncClient",
+            return_value=http_mock_client,
+        ),
+    ):
+        await receiver._ws_tail_with_fallback()  # noqa: SLF001
+
+    # HTTP poll once should have been called and delivered the log
+    assert _SAMPLE_LOG in received
+
+
+# ---------------------------------------------------------------------------
+# 9. test_ws_tail_with_fallback_calls_udp_on_http_failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ws_tail_with_fallback_calls_udp_on_http_failure() -> None:
+    """WS and HTTP both fail → _ws_tail_with_fallback falls back to UDP."""
+    from src.core.syslog_receiver import SyslogReceiver  # noqa: PLC0415
+
+    received: list[str] = []
+
+    async def callback(line: str) -> None:
+        received.append(line)
+
+    settings = Settings(monitor_host="127.0.0.1")
+    receiver = SyslogReceiver(settings, callback)
+
+    ws_fail = AsyncMock(side_effect=ConnectionError("WS unavailable"))
+    http_fail = AsyncMock(side_effect=OSError("HTTP unavailable"))
+
+    udp_called: list[bool] = []
+
+    async def fake_udp_listen() -> None:
+        udp_called.append(True)
+
+    with (
+        patch.object(receiver, "_ws_tail_once", ws_fail),
+        patch.object(receiver, "_ws_tail", AsyncMock()),
+        patch.object(receiver, "_http_poll_once", http_fail),
+        patch.object(receiver, "_udp_listen", fake_udp_listen),
+    ):
+        await receiver._ws_tail_with_fallback()  # noqa: SLF001
+
+    assert udp_called, "UDP fallback must be invoked when both WS and HTTP fail"
+
+
+# ---------------------------------------------------------------------------
+# 10. test_ws_tail_with_fallback_stays_on_ws_when_successful
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ws_tail_with_fallback_stays_on_ws_when_successful() -> None:
+    """WS connects successfully → _ws_tail_with_fallback uses persistent _ws_tail."""
+    from src.core.syslog_receiver import SyslogReceiver  # noqa: PLC0415
+
+    received: list[str] = []
+
+    async def callback(line: str) -> None:
+        received.append(line)
+
+    settings = Settings(monitor_host="127.0.0.1")
+    receiver = SyslogReceiver(settings, callback)
+
+    msg = _make_loki_ws_message(_SAMPLE_LOG)
+    mock_ws = AsyncMock()
+    mock_ws.__aiter__ = MagicMock(return_value=aiter_from_list([msg]))
+
+    mock_cm = MagicMock()
+    mock_cm.__aenter__ = AsyncMock(return_value=mock_ws)
+    mock_cm.__aexit__ = AsyncMock(return_value=None)
+
+    http_poll_called: list[bool] = []
+
+    async def track_http_poll_once() -> None:
+        http_poll_called.append(True)
+
+    persistent_ws_called: list[bool] = []
+
+    async def track_ws_tail() -> None:
+        persistent_ws_called.append(True)
+
+    with (
+        patch("src.core.syslog_receiver.websockets.connect", return_value=mock_cm),
+        patch.object(receiver, "_ws_tail", track_ws_tail),
+        patch.object(receiver, "_http_poll_once", track_http_poll_once),
+    ):
+        await receiver._ws_tail_with_fallback()  # noqa: SLF001
+
+    assert persistent_ws_called, "Persistent _ws_tail must be called on WS success"
+    assert not http_poll_called, "HTTP poll must NOT be called when WS succeeds"
+
+
+# ---------------------------------------------------------------------------
+# 11. test_ws_tail_with_fallback_websocket_exception_triggers_fallback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ws_tail_with_fallback_websocket_exception_triggers_fallback() -> None:
+    """websockets.exceptions.WebSocketException → falls back to HTTP poll."""
+    from src.core.syslog_receiver import SyslogReceiver  # noqa: PLC0415
+
+    settings = Settings(monitor_host="127.0.0.1")
+    receiver = SyslogReceiver(settings, AsyncMock())
+
+    ws_fail = AsyncMock(
+        side_effect=websockets.exceptions.WebSocketException("bad handshake")
+    )
+
+    http_once_called: list[bool] = []
+
+    async def track_http_once() -> None:
+        http_once_called.append(True)
+
+    async def noop_http_poll() -> None:
+        pass
+
+    with (
+        patch.object(receiver, "_ws_tail_once", ws_fail),
+        patch.object(receiver, "_ws_tail", AsyncMock()),
+        patch.object(receiver, "_http_poll_once", track_http_once),
+        patch.object(receiver, "_http_poll", noop_http_poll),
+    ):
+        await receiver._ws_tail_with_fallback()  # noqa: SLF001
+
+    assert http_once_called, "HTTP poll must be attempted after WebSocketException"
 
 
 # ---------------------------------------------------------------------------
