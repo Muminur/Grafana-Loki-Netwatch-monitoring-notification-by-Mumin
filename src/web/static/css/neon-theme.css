@@ -31,10 +31,10 @@
     --neon-purple:    #aa44ff;
     --neon-orange:    #ff8800;
 
-    /* Text — all pass WCAG AA (4.5:1) against --bg-primary #080812 */
-    --text-primary:   #e8e8f0;
-    --text-secondary: #b0b0c8;
-    --text-muted:     #8080a0;
+    /* Text — high contrast for NOC readability */
+    --text-primary:   #ffffff;
+    --text-secondary: #e0e0f0;
+    --text-muted:     #b0b0c8;
     --text-accent:    #00f0ff;
 
     /* Borders */
@@ -153,7 +153,7 @@ button { cursor: pointer; }
     font-size: 0.75rem;
     font-weight: 400;
     letter-spacing: 0.2em;
-    color: var(--text-secondary);
+    color: #ffffff;
 }
 
 .nav-links {
