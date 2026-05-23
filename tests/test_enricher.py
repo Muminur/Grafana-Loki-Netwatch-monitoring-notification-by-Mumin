@@ -143,11 +143,11 @@ def test_enrich_unknown_device() -> None:
 
 
 def test_enrich_bgp_up_has_as(sample_bgp_up_log: str) -> None:
-    """BGP Up log → AS399077 extracted, WARNING classification."""
+    """BGP Up log → AS399077 extracted, CRITICAL classification."""
     result = enrich(_parse(sample_bgp_up_log))
 
     assert result.as_number == 399077
-    assert result.classification == "WARNING"
+    assert result.classification == "CRITICAL"
 
 
 # ---------------------------------------------------------------------------
