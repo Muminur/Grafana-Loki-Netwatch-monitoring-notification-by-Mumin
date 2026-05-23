@@ -610,7 +610,7 @@ button { cursor: pointer; }
 .alert-message {
     font-family: var(--font-mono);
     font-size: 0.78rem;
-    color: #d8d8e8;
+    color: #ffffff;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
