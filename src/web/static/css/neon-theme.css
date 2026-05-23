@@ -399,10 +399,15 @@ button { cursor: pointer; }
 
 /* ── Dashboard Layout ──────────────────────────────────────────────────── */
 .dashboard-layout {
-    display: block;
+    display: grid;
+    grid-template-columns: 2fr 3fr;   /* 40% incidents (left) / 60% alert stream (right) */
+    gap: 1rem;
+    align-items: start;
 }
 
-.dashboard-left  { min-width: 0; }
+/* min-width:0 stops long log lines from blowing the grid tracks out */
+.dashboard-left,
+.dashboard-right { min-width: 0; }
 
 .dashboard-bottom {
     display: grid;
@@ -686,7 +691,9 @@ button { cursor: pointer; }
 
 /* ── Incident Panel ────────────────────────────────────────────────────── */
 .incidents-list {
-    max-height: 200px;
+    /* Fill the left column; ~80px taller than the alert stream because the
+       incidents panel header has no filter/tab bars, so the lists bottom-align. */
+    max-height: calc(100vh - 300px);
     overflow-y: auto;
     padding: 0.5rem;
 }
@@ -1323,6 +1330,13 @@ kbd {
     .severity-bar { grid-template-columns: repeat(3, 1fr); }
 }
 
+/* Below ~1100px the side-by-side columns get too narrow — stack them
+   (incidents above alert stream) for desk-monitor / dev use. */
+@media (max-width: 1100px) {
+    .dashboard-layout { grid-template-columns: 1fr; }
+    .incidents-list { max-height: 240px; }
+}
+
 @media (max-width: 900px) {
     .severity-bar { grid-template-columns: repeat(2, 1fr); }
     .stats-layout { grid-template-columns: 1fr; }
@@ -1339,6 +1353,40 @@ kbd {
     .severity-bar { grid-template-columns: repeat(3, 1fr); }
     .summary-grid { grid-template-columns: repeat(2, 1fr); }
     .logo-sub { display: none; }
+}
+
+/* ── 55" 4K NOC wall display ───────────────────────────────────────────────
+   On a 3840px-wide panel viewed from across the room, the desk-tuned 14px base
+   is unreadable. Scale the whole UI up via the rem base, widen the container to
+   use the full screen, then nudge the few elements that are still too small. */
+@media (min-width: 2000px) {
+    html { font-size: 20px; }                 /* rem base 14px → 20px (~43% larger) */
+
+    .main-content { max-width: none; padding: 1.5rem 2.5rem; }
+
+    /* Panel chrome */
+    .panel-title { font-size: 0.95rem; letter-spacing: 4px; }
+    .panel-header { padding: 0.9rem 1.4rem; }
+
+    /* Alert stream rows — denser text needs the most help at distance */
+    .alert-row { min-height: 40px; gap: 0.75rem; padding: 0.45rem 0.9rem; }
+    .alert-timestamp { font-size: 0.95rem; }
+    .alert-device    { font-size: 0.9rem; }
+    .alert-mnemonic  { font-size: 0.9rem; }
+    .alert-message   { font-size: 0.95rem; }
+    .tab { font-size: 0.8rem; padding: 9px 18px; }
+
+    /* Active incidents */
+    .incident-card  { padding: 0.9rem 1.2rem; margin-bottom: 0.6rem; }
+    .incident-title { font-size: 0.95rem; }
+    .incident-meta  { font-size: 0.85rem; }
+
+    /* Severity counters across the top */
+    .sev-count { font-size: 2.6rem; }
+    .sev-label { font-size: 0.85rem; }
+
+    /* A touch more air between the two columns on the big wall */
+    .dashboard-layout { gap: 1.5rem; }
 }
 
 /* ── Scrollbar global ──────────────────────────────────────────────────── */

@@ -35,11 +35,11 @@
 </section>
 
 <!-- ══════════════════════════════════════════════
-     MAIN LAYOUT: LEFT (alerts) + RIGHT (mini panels)
+     MAIN LAYOUT: LEFT (active incidents) + RIGHT (alert stream)
 ══════════════════════════════════════════════ -->
 <div class="dashboard-layout">
 
-    <!-- LEFT COLUMN: Active incidents + Alert list -->
+    <!-- LEFT COLUMN: Active incidents -->
     <div class="dashboard-left">
 
         <!-- Active Incidents Panel -->
@@ -54,6 +54,11 @@
                 <div class="empty-state">No active incidents</div>
             </div>
         </section>
+
+    </div><!-- /.dashboard-left -->
+
+    <!-- RIGHT COLUMN: Alert stream -->
+    <div class="dashboard-right">
 
         <!-- Alert List with Tabs -->
         <section class="panel panel-alerts">
@@ -117,7 +122,7 @@
             </div>
         </section>
 
-    </div><!-- /.dashboard-left -->
+    </div><!-- /.dashboard-right -->
 
 </div><!-- /.dashboard-layout -->
 
