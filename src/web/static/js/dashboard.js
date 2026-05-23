@@ -142,10 +142,20 @@
     function _formatTimestamp(iso) {
         try {
             var d = new Date(iso);
+            if (isNaN(d.getTime())) { return String(iso); }
             var pad = function (n) { return String(n).padStart(2, '0'); };
-            return pad((d.getUTCHours() + 6) % 24) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
+            // Convert UTC to BDT (UTC+6)
+            var bdtMs = d.getTime() + 6 * 3600 * 1000;
+            var b = new Date(bdtMs);
+            var year  = b.getUTCFullYear();
+            var month = pad(b.getUTCMonth() + 1);
+            var day   = pad(b.getUTCDate());
+            var hh    = pad(b.getUTCHours());
+            var mm    = pad(b.getUTCMinutes());
+            var ss    = pad(b.getUTCSeconds());
+            return year + '-' + month + '-' + day + ' ' + hh + ':' + mm + ':' + ss + ' BDT';
         } catch (e) {
-            return iso;
+            return String(iso);
         }
     }
 
