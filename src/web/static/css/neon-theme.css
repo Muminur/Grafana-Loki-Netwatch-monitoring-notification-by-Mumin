@@ -31,10 +31,10 @@
     --neon-purple:    #aa44ff;
     --neon-orange:    #ff8800;
 
-    /* Text */
+    /* Text — all pass WCAG AA (4.5:1) against --bg-primary #080812 */
     --text-primary:   #e8e8f0;
-    --text-secondary: #8888a0;
-    --text-muted:     #555570;
+    --text-secondary: #b0b0c8;
+    --text-muted:     #8080a0;
     --text-accent:    #00f0ff;
 
     /* Borders */
@@ -256,7 +256,7 @@ button { cursor: pointer; }
     font-family: var(--font-display);
     font-size: 0.6rem;
     letter-spacing: 0.15em;
-    color: var(--text-muted);
+    color: var(--text-secondary);
 }
 
 /* Sound toggle */
@@ -584,8 +584,8 @@ button { cursor: pointer; }
 
 .alert-timestamp {
     font-family: var(--font-mono);
-    font-size: 0.65rem;
-    color: var(--text-muted);
+    font-size: 0.72rem;
+    color: var(--text-secondary);
     flex-shrink: 0;
     white-space: nowrap;
 }
@@ -785,9 +785,9 @@ button { cursor: pointer; }
 
 .chart-label {
     font-family: var(--font-display);
-    font-size: 0.6rem;
+    font-size: 0.65rem;
     letter-spacing: 0.12em;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     margin-bottom: 0.4rem;
 }
 
