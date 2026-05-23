@@ -41,7 +41,7 @@ from src.api.routes import (
 )
 from src.api.websocket import WebSocketManager
 from src.config import get_settings
-from src.core.correlator import CorrelationEngine
+from src.core.correlator import CorrelatedEvent, CorrelationEngine
 from src.core.dedup import DedupEngine
 from src.core.enricher import enrich
 from src.core.parser import parse_syslog
@@ -146,7 +146,9 @@ async def _on_syslog_line(raw_line: str) -> None:
             _log.error("DB insert failed: %s", exc)
 
     # ── Update in-memory API store ─────────────────────────────────────────
-    if should_send and correlated is not None:
+    if should_send:
+        if correlated is None:
+            correlated = CorrelatedEvent(enriched=enriched)
         try:
             add_alert_to_store(enriched, correlated)
         except Exception as exc:  # noqa: BLE001
@@ -164,7 +166,7 @@ async def _on_syslog_line(raw_line: str) -> None:
 
     # ── Broadcast to WebSocket clients ─────────────────────────────────────
     if should_send:
-        await _ws_manager.broadcast(
+        await _ws_manager.broadcast_filtered(
             {
                 "type": "alert",
                 "classification": enriched.classification,
@@ -182,7 +184,8 @@ async def _on_syslog_line(raw_line: str) -> None:
                 "event_type": enriched.event_type,
                 "incident_id": incident_id,
                 "suppress_notification": suppress,
-            }
+            },
+            enriched.classification,
         )
 
     increment_alerts_processed()

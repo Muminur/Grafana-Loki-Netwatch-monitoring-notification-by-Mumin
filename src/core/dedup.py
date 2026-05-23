@@ -29,14 +29,14 @@ _log = logging.getLogger(__name__)
 
 
 def _is_bgp_down(enriched: EnrichedLog) -> bool:
-    return enriched.rule_id in ("bgp_down", "bgp_maxpfx") or (
+    return enriched.rule_id in ("BGP_DOWN", "BGP_MAXPFX") or (
         "down" in enriched.parsed.message.lower()
         and enriched.parsed.mnemonic == "ADJCHANGE"
     )
 
 
 def _is_bgp_up(enriched: EnrichedLog) -> bool:
-    return enriched.rule_id == "bgp_up" or (
+    return enriched.rule_id == "BGP_UP" or (
         " up" in enriched.parsed.message.lower()
         and enriched.parsed.mnemonic == "ADJCHANGE"
         and not _is_bgp_down(enriched)

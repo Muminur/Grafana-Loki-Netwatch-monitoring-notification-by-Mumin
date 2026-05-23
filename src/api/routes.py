@@ -65,8 +65,8 @@ def _is_recovery_event(
 
 
 _IFACE_RE = re.compile(
-    r"((?:TenGigE|HundredGigE|FortyGigE|GigabitEthernet|Bundle-Ether)"
-    r"[\d/]+)"
+    r"((?:TwentyFiveGigE|HundredGigE|FiftyGigE|FortyGigE|TenGigE|GigabitEthernet|GigE|Bundle-Ether)"
+    r"[\d/.]+)"
 )
 
 
