@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import re
 import time
+from collections import deque
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
 
+from src.data.bgp_bundle_map import lookup_bundle_for_bgp_peer
 from src.data.device_map import DEVICE_MAP
 from src.data.topology import NETWORK_TOPOLOGY
 
@@ -28,8 +30,8 @@ _APP_START: float = time.monotonic()
 _alerts_processed: int = 0
 _active_connections: int = 0
 
-# In-memory stores — will be replaced with DB in a later milestone
-_alerts_store: list[dict[str, Any]] = []
+# In-memory stores — capped to prevent unbounded memory growth
+_alerts_store: deque[dict[str, Any]] = deque(maxlen=10000)
 _incidents_store: list[dict[str, Any]] = []
 _maintenance_store: list[dict[str, Any]] = []
 _maintenance_id_counter: int = 0
@@ -38,23 +40,34 @@ _maintenance_id_counter: int = 0
 _db_engine: object = None
 
 
-_RECOVERY_RULE_IDS = frozenset({
-    "BGP_UP", "INTF_UP", "LINEPROTO_UP", "LACP_ACTIVE",
-    "SFP_ALARM_CLEAR", "BER_CLEAR",
-})
+_RECOVERY_RULE_IDS = frozenset(
+    {
+        "BGP_UP",
+        "INTF_UP",
+        "LINEPROTO_UP",
+        "LACP_ACTIVE",
+        "SFP_ALARM_CLEAR",
+        "BER_CLEAR",
+    }
+)
 
-_RECOVERY_MNEMONICS_WITH_UP = frozenset({
-    "ADJCHANGE", "UPDOWN",
-})
+_RECOVERY_MNEMONICS_WITH_UP = frozenset(
+    {
+        "ADJCHANGE",
+        "UPDOWN",
+    }
+)
 
-_RECOVERY_MNEMONICS_ALWAYS = frozenset({
-    "ACTIVE",
-})
+_RECOVERY_MNEMONICS_ALWAYS = frozenset(
+    {
+        "ACTIVE",
+    }
+)
+
+_SILENT_FAULT_MNEMONICS = frozenset({"RX_FAULT", "SIGNAL", "RFI"})
 
 
-def _is_recovery_event(
-    mnemonic: str, message: str, rule_id: str = ""
-) -> bool:
+def _is_recovery_event(mnemonic: str, message: str, rule_id: str = "") -> bool:
     if rule_id and rule_id in _RECOVERY_RULE_IDS:
         return True
     if mnemonic in _RECOVERY_MNEMONICS_ALWAYS and "no longer" not in message:
@@ -183,6 +196,43 @@ def set_db_engine(engine: object) -> None:
     _db_engine = engine
 
 
+def get_maintenance_store() -> list[dict[str, Any]]:
+    """Return the in-memory maintenance window list (read-only access)."""
+    return _maintenance_store
+
+
+async def resolve_silent_faults_in_db(
+    engine: object,
+    device_name: str,
+    bundle_members: set[str],
+) -> int:
+    """Mark silent-fault alerts as resolved in the database.
+
+    Only resolves alerts from the last 24 hours to bound blast radius.
+    Returns the number of rows updated.
+    """
+    from sqlalchemy import update  # noqa: PLC0415
+    from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+    from src.database.models import AlertLog  # noqa: PLC0415
+
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(hours=24)
+    async with AsyncSession(engine) as session:  # type: ignore[arg-type]
+        stmt = (
+            update(AlertLog)
+            .where(AlertLog.device_name == device_name)
+            .where(AlertLog.mnemonic.in_(sorted(_SILENT_FAULT_MNEMONICS)))
+            .where(AlertLog.interface_name.in_(sorted(bundle_members)))
+            .where(AlertLog.resolved_at.is_(None))
+            .where(AlertLog.timestamp >= cutoff)
+            .values(resolved_at=now, resolution_reason="bgp_up_inferred")
+        )
+        result = await session.execute(stmt)
+        await session.commit()
+        return result.rowcount  # type: ignore[return-value]
+
+
 class MaintenanceWindowCreate(BaseModel):
     """Request body for creating a maintenance window."""
 
@@ -271,9 +321,8 @@ def add_alert_to_store(enriched: Any, correlated: Any) -> None:
     # When a recovery event arrives, resolve matching DOWN incidents
     if is_recovery:
         dev = enriched.device_name
-        iface = (
-            enriched.interface_name
-            or _extract_iface_from_msg(enriched.parsed.message)
+        iface = enriched.interface_name or _extract_iface_from_msg(
+            enriched.parsed.message
         )
         neighbor = enriched.bgp_neighbor
         as_num = enriched.as_number
@@ -286,25 +335,67 @@ def add_alert_to_store(enriched: Any, correlated: Any) -> None:
             )
             if iface and inc_iface == iface:
                 resolved.append(i)
-            elif (
-                neighbor
-                and as_num
-                and inc.get("mnemonic") == "ADJCHANGE"
-            ):
+            elif neighbor and as_num and inc.get("mnemonic") == "ADJCHANGE":
                 inc_msg = inc.get("message", "")
                 if str(as_num) in inc_msg or neighbor in inc_msg:
                     resolved.append(i)
         for idx in reversed(resolved):
             _incidents_store.pop(idx)
 
+    # BGP-UP auto-resolution for silent hardware faults.
+    # IOS-XR never sends clear messages for RX_FAULT/SIGNAL/RFI — but if a
+    # BGP session comes UP on a backbone P2P bundle, the physical links work.
+    # Guard: only BGP ADJCHANGE UP events trigger this, not other recovery types.
+    if (
+        is_recovery
+        and enriched.parsed.mnemonic == "ADJCHANGE"
+        and not getattr(correlated, "is_flapping", False)
+    ):
+        neighbor_ip = enriched.bgp_neighbor
+        device_source_ip = enriched.parsed.source_ip
+        bundle_name = lookup_bundle_for_bgp_peer(device_source_ip, neighbor_ip)
+        if bundle_name:
+            topo = NETWORK_TOPOLOGY.get(device_source_ip)
+            if topo and bundle_name in topo.upstreams:
+                members = set(topo.upstreams[bundle_name].members)
+                dev = enriched.device_name
+                bgp_resolved = []
+                for i, inc in enumerate(_incidents_store):
+                    if inc["device"] != dev:
+                        continue
+                    if inc.get("mnemonic") not in _SILENT_FAULT_MNEMONICS:
+                        continue
+                    inc_iface = inc.get("interface") or _extract_iface_from_msg(
+                        inc.get("message", "")
+                    )
+                    if inc_iface in members:
+                        bgp_resolved.append(i)
+                for idx in reversed(bgp_resolved):
+                    _incidents_store.pop(idx)
+                if bgp_resolved and _db_engine is not None:
+                    import asyncio  # noqa: PLC0415
+                    import logging  # noqa: PLC0415
+
+                    _log = logging.getLogger(__name__)
+
+                    async def _resolve_with_logging() -> None:
+                        try:
+                            await resolve_silent_faults_in_db(_db_engine, dev, members)
+                        except Exception:
+                            _log.exception(
+                                "Failed to persist BGP-UP resolution for %s/%s",
+                                dev,
+                                bundle_name,
+                            )
+
+                    asyncio.create_task(_resolve_with_logging())
+
     if not is_recovery and (
         enriched.classification == "CRITICAL"
         or (correlated.incident_id and not correlated.is_symptom)
     ):
         inc_id = correlated.incident_id or f"ALERT-{alert['id']}"
-        existing = next(
-            (i for i in _incidents_store if i["id"] == inc_id), None
-        )
+        existing = next((i for i in _incidents_store if i["id"] == inc_id), None)
         if existing:
             existing["alert_count"] = existing.get("alert_count", 0) + 1
             existing["last_alert"] = alert["timestamp"]
@@ -602,6 +693,7 @@ async def get_incidents() -> list[dict[str, Any]]:
         stmt = (
             select(AlertLog)
             .where(AlertLog.classification == "CRITICAL")
+            .where(AlertLog.resolved_at.is_(None))
             .order_by(desc(AlertLog.timestamp))
             .limit(50)
         )

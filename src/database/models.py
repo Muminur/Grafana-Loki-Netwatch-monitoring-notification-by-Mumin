@@ -48,6 +48,8 @@ class AlertLog(Base):
     as_name: Mapped[str] = mapped_column(String(128), default="")
     incident_id: Mapped[str | None] = mapped_column(String(32), default=None)
     notification_sent: Mapped[bool] = mapped_column(default=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(default=None)
+    resolution_reason: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
