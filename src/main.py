@@ -297,6 +297,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     except Exception as exc:  # noqa: BLE001
         _log.warning("Could not load historical alert count: %s", exc)
 
+    # Re-classify existing alerts whose rules may have changed since they
+    # were ingested (classification is stored at ingestion time).
+    try:
+        from src.core.classifier import classify  # noqa: PLC0415
+
+        async with AsyncSession(engine) as session:  # type: ignore[arg-type]
+            result = await session.execute(select(AlertLog))
+            rows = result.scalars().all()
+            fixed = 0
+            for row in rows:
+                if not row.raw:
+                    continue
+                parsed = parse_syslog(row.raw)
+                if parsed is None:
+                    continue
+                cls = classify(parsed)
+                if cls.classification != row.classification:
+                    row.classification = cls.classification
+                    session.add(row)
+                    fixed += 1
+            if fixed:
+                await session.commit()
+                _log.info("Re-classified %d alerts with updated rules", fixed)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("Could not re-classify alerts: %s", exc)
+
     _log.info("Database ready: %s", settings.database_url)
 
     # ── Pipeline singletons ────────────────────────────────────────────────
