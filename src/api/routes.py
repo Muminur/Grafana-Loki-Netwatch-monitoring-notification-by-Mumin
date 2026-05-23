@@ -70,6 +70,12 @@ def increment_alerts_processed() -> None:
     _alerts_processed += 1
 
 
+def _set_alerts_processed(count: int) -> None:
+    """Set the alert counter (restore from DB on startup)."""
+    global _alerts_processed  # noqa: PLW0603
+    _alerts_processed = count
+
+
 def set_active_connections(count: int) -> None:
     """Update the WebSocket connection count (called by WebSocketManager)."""
     global _active_connections  # noqa: PLW0603
@@ -155,14 +161,19 @@ _BDT = timezone(timedelta(hours=6))
 def _period_to_time_range(
     period: str | None,
 ) -> tuple[datetime | None, datetime | None]:
-    """Convert a period string into (start, end) datetime bounds (BDT-aware).
+    """Convert a period string into (start, end) naive datetime bounds.
+
+    SQLite stores timestamps as naive strings (timezone stripped on write).
+    The parser creates BDT-aware datetimes (UTC+6) which SQLite persists
+    as their face-value date/time without the offset. We produce naive
+    BDT datetimes here so the comparison matches what's in the DB.
 
     Returns (None, None) when the period is "all" or unrecognised.
     """
     if not period or period == "all":
         return None, None
 
-    now = datetime.now(_BDT)
+    now = datetime.now(_BDT).replace(tzinfo=None)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     if period == "today":

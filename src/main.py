@@ -282,6 +282,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     await create_tables(engine)
     _engine = engine
     set_db_engine(engine)
+
+    # Load historical alert count from DB so the counter doesn't reset on restart
+    try:
+        from sqlalchemy import func, select  # noqa: PLC0415
+
+        async with AsyncSession(engine) as session:  # type: ignore[arg-type]
+            result = await session.execute(select(func.count(AlertLog.id)))
+            existing_count = result.scalar() or 0
+        if existing_count > 0:
+            from src.api.routes import _set_alerts_processed  # noqa: PLC0415
+
+            _set_alerts_processed(existing_count)
+            _log.info("Loaded %d historical alerts from DB", existing_count)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("Could not load historical alert count: %s", exc)
+
     _log.info("Database ready: %s", settings.database_url)
 
     # ── Pipeline singletons ────────────────────────────────────────────────
