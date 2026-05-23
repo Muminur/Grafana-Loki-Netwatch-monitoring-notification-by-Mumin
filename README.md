@@ -16,8 +16,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-293_passing-00ff88?style=flat-square" alt="Tests"/>
-  <img src="https://img.shields.io/badge/coverage-88%25-00ff88?style=flat-square" alt="Coverage"/>
+  <img src="https://img.shields.io/badge/tests-326_passing-00ff88?style=flat-square" alt="Tests"/>
+  <img src="https://img.shields.io/badge/coverage-85%25-00ff88?style=flat-square" alt="Coverage"/>
   <img src="https://img.shields.io/badge/ruff-clean-00f0ff?style=flat-square" alt="Ruff"/>
   <img src="https://img.shields.io/badge/mypy-strict-8b5cf6?style=flat-square" alt="Mypy"/>
   <img src="https://img.shields.io/badge/license-proprietary-555570?style=flat-square" alt="License"/>
@@ -105,7 +105,7 @@ The correlation engine uses the **network dependency tree** to automatically det
 | Classification rules | **25** (10 CRITICAL, 6 WARNING, 6 INFO, 3 LOGIN) |
 | Syslog formats parsed | **4** (IOS-XR +06, BDT, ADMIN, bare) |
 | Dedup windows | **5 min** standard, **2 min** BGP flap, **30 sec** bundle |
-| Test suite | **293 tests**, 88% coverage |
+| Test suite | **326 tests**, 85% coverage |
 
 ---
 
@@ -385,7 +385,7 @@ bsccl-netwatch/
 │       └── static/
 │           ├── css/neon-theme.css  # Full neon design system
 │           └── js/                # WebSocket, charts, topology, sounds, shortcuts
-├── tests/                         # 293 tests (unit + integration + e2e)
+├── tests/                         # 326 tests (unit + integration + e2e)
 ├── Dockerfile                     # Multi-stage, non-root, health check
 ├── docker-compose.yml             # Production deployment
 └── .github/workflows/ci.yml       # CI: ruff + black + mypy + pytest + coverage
