@@ -1,0 +1,144 @@
+"""Cisco IOS-XR syslog parser for BSCCL NetWatch.
+
+Handles 4 distinct IOS-XR syslog formats:
+  1. +06 timezone offset with hostname prefix
+  2. BDT timezone name without hostname prefix
+  3. ADMIN plane (0/RP0/ADMIN0 location prefix)
+  4. No timezone, no hostname, no fractional seconds
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+
+# UTC+6 timezone (Bangladesh Standard Time / BDT)
+_UTC6 = timezone(timedelta(hours=6))
+
+# Syslog header: <month> <day> <time> <source_ip> <seq>:
+# Optionally followed by a hostname (uppercase word with dashes/digits)
+# Then the RP/LC/ADMIN location, colon, inner timestamp, process, and % code.
+#
+# The inner_ts uses a non-greedy .+? anchored by the process pattern
+# (\S+\[\d+\]) to correctly handle timestamps with colons (e.g. 21:12:21.651 +06).
+_HEADER_RE = re.compile(
+    r"^(?:\w+)\s+(?:\d+)\s+(?:\d{2}:\d{2}:\d{2})"
+    r"\s+(?P<source_ip>\d+\.\d+\.\d+\.\d+)"
+    r"\s+\d+:"
+    r"(?:\s+(?P<hostname>[A-Z][A-Z0-9_-]+))?"
+    r"\s+(?P<rp_location>(?:RP|LC)/\d+/[A-Z0-9]+/[A-Z0-9]+|0/RP\d+/ADMIN\d+)"
+    r":(?P<inner_ts>.+?):\s+(?P<process>\S+\[\d+\]):\s+"
+    r"%(?P<facility>[A-Z][A-Z0-9_]*)-(?P<subfacility>[A-Z][A-Z0-9_]*)-(?P<severity>\d)-(?P<mnemonic>[A-Z0-9_]+)"
+    r"\s+:\s+(?P<message>.+)$",
+)
+
+_INNER_TS_RE = re.compile(
+    r"(?P<month>\w+)\s+(?P<day>\d+)\s+"
+    r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})"
+    r"(?:\.(?P<frac>\d+))?"
+    r"(?:\s+(?P<tz>\+\d+|[A-Z]+))?"
+)
+
+
+@dataclass(frozen=True)
+class ParsedLog:
+    """Structured representation of a parsed Cisco IOS-XR syslog line."""
+
+    timestamp: datetime
+    source_ip: str
+    hostname: str
+    rp_location: str
+    facility: str
+    subfacility: str
+    severity_level: int
+    mnemonic: str
+    message: str
+    raw: str
+
+
+_MONTH_MAP = {
+    "Jan": 1,
+    "Feb": 2,
+    "Mar": 3,
+    "Apr": 4,
+    "May": 5,
+    "Jun": 6,
+    "Jul": 7,
+    "Aug": 8,
+    "Sep": 9,
+    "Oct": 10,
+    "Nov": 11,
+    "Dec": 12,
+}
+
+
+def _parse_inner_timestamp(inner: str) -> datetime:
+    """Parse the inner device timestamp (after RP location colon).
+
+    Handles three sub-formats:
+      - ``May 22 21:12:21.651 +06``
+      - ``May 22 19:33:37.787 BDT``
+      - ``May 22 05:27:59``   (no TZ, no fractional)
+    """
+    inner = inner.strip()
+    m = _INNER_TS_RE.search(inner)
+    if not m:
+        raise ValueError(f"Unparseable inner timestamp: {inner!r}")
+
+    month_str = m.group("month")
+    month = _MONTH_MAP.get(month_str)
+    if month is None:
+        raise ValueError(f"Unknown month abbreviation: {month_str!r}")
+    day = int(m.group("day"))
+    hour = int(m.group("hour"))
+    minute = int(m.group("minute"))
+    second = int(m.group("second"))
+    frac = m.group("frac")
+    microsecond = int(frac[:6].ljust(6, "0")) if frac else 0
+
+    # All BSCCL devices are UTC+6 regardless of whether the log says +06, BDT,
+    # or nothing.
+    return datetime(
+        year=datetime.now(_UTC6).year,
+        month=month,
+        day=day,
+        hour=hour,
+        minute=minute,
+        second=second,
+        microsecond=microsecond,
+        tzinfo=_UTC6,
+    )
+
+
+def parse_syslog(line: str) -> ParsedLog | None:
+    """Parse a single Cisco IOS-XR syslog line.
+
+    Returns ``None`` for empty/whitespace lines or lines that do not match
+    any known format.
+    """
+    if not line or not line.strip():
+        return None
+
+    m = _HEADER_RE.match(line)
+    if not m:
+        return None
+
+    inner_ts_raw = m.group("inner_ts")
+    try:
+        ts = _parse_inner_timestamp(inner_ts_raw)
+    except ValueError:
+        return None
+
+    return ParsedLog(
+        timestamp=ts,
+        source_ip=m.group("source_ip"),
+        hostname=m.group("hostname") or "",
+        rp_location=m.group("rp_location"),
+        facility=m.group("facility"),
+        subfacility=m.group("subfacility"),
+        severity_level=int(m.group("severity")),
+        mnemonic=m.group("mnemonic"),
+        message=m.group("message"),
+        raw=line,
+    )
