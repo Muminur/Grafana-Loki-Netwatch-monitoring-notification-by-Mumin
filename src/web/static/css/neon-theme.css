@@ -305,7 +305,7 @@ button { cursor: pointer; }
     font-size: 0.75rem;
     letter-spacing: 3px;
     text-transform: uppercase;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -584,8 +584,8 @@ button { cursor: pointer; }
 
 .alert-timestamp {
     font-family: var(--font-mono);
-    font-size: 0.72rem;
-    color: var(--text-secondary);
+    font-size: 0.78rem;
+    color: #c0c0d8;
     flex-shrink: 0;
     white-space: nowrap;
 }
@@ -601,16 +601,16 @@ button { cursor: pointer; }
 
 .alert-mnemonic {
     font-family: var(--font-mono);
-    font-size: 0.68rem;
-    color: var(--text-secondary);
+    font-size: 0.75rem;
+    color: #d0d0e0;
     flex-shrink: 0;
     white-space: nowrap;
 }
 
 .alert-message {
     font-family: var(--font-mono);
-    font-size: 0.75rem;
-    color: var(--text-primary);
+    font-size: 0.78rem;
+    color: #d8d8e8;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1292,8 +1292,20 @@ kbd {
 }
 
 .neon-select option {
-    background: var(--bg-secondary);
-    color: var(--text-primary);
+    background: #0d0d1a;
+    color: #e8e8f0;
+    padding: 8px;
+}
+
+.neon-select option:hover,
+.neon-select option:checked {
+    background: #1a1a3a;
+    color: #ffffff;
+}
+
+/* Force dark dropdown on all browsers */
+.neon-select {
+    color-scheme: dark;
 }
 
 /* ── Responsive ────────────────────────────────────────────────────────── */
