@@ -265,9 +265,26 @@
         });
     }
 
+    // ── Client-side dedup (safety net) ──────────────────────────────────────
+    var _recentKeys = {};
+    var _DEDUP_WINDOW_MS = 300000; // 5 minutes
+
+    function _isDuplicate(alert) {
+        var key = (alert.device || '') + ':' + (alert.mnemonic || '') + ':'
+                + (alert.neighbor || alert.interface || '');
+        var now = Date.now();
+        if (_recentKeys[key] && (now - _recentKeys[key]) < _DEDUP_WINDOW_MS) {
+            return true;
+        }
+        _recentKeys[key] = now;
+        return false;
+    }
+
     // ── WebSocket alert events ────────────────────────────────────────────────
     document.addEventListener('netwatch:alert', function (e) {
         var alert = e.detail;
+        if (_isDuplicate(alert)) return;
+
         alert.id = alert.id || ('a-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
 
         _alerts.unshift(alert);
