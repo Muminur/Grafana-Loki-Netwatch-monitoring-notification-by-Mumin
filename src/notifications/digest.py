@@ -12,7 +12,7 @@ Scheduled to run at 08:00 BDT (02:00 UTC) via the background task scheduler.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import httpx
@@ -74,8 +74,9 @@ async def generate_daily_digest(session: AsyncSession) -> str:
         flapping_peers=flapping_peers,
     )
 
-    # Top 5 most active devices today
-    start = datetime(today.year, today.month, today.day, 0, 0, 0, tzinfo=UTC)
+    # Top 5 most active devices today — use naive BDT bounds to match
+    # how SQLite stores timestamps (naive BDT face values, no UTC offset).
+    start = datetime(today.year, today.month, today.day, 0, 0, 0)
     end = start + timedelta(days=1)
     top_devices_stmt = (
         select(AlertLog.device_name, func.count(AlertLog.id).label("cnt"))

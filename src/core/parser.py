@@ -99,8 +99,11 @@ def _parse_inner_timestamp(inner: str) -> datetime:
 
     # All BSCCL devices are UTC+6 regardless of whether the log says +06, BDT,
     # or nothing.
-    return datetime(
-        year=datetime.now(_UTC6).year,
+    now = datetime.now(_UTC6)
+    year = now.year
+
+    parsed_ts = datetime(
+        year=year,
         month=month,
         day=day,
         hour=hour,
@@ -109,6 +112,13 @@ def _parse_inner_timestamp(inner: str) -> datetime:
         microsecond=microsecond,
         tzinfo=_UTC6,
     )
+
+    # Year-rollover heuristic: if the parsed month is far ahead of the current
+    # month (e.g. Dec log parsed in Jan), the log is from the previous year.
+    if parsed_ts.month > now.month + 1:
+        parsed_ts = parsed_ts.replace(year=year - 1)
+
+    return parsed_ts
 
 
 def parse_syslog(line: str) -> ParsedLog | None:

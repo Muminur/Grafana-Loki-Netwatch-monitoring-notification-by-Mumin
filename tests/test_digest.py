@@ -93,14 +93,15 @@ class TestGenerateDailyDigest:
 
     @pytest.mark.asyncio
     async def test_digest_contains_date(self) -> None:
-        """Digest text contains today's ISO date."""
-        from datetime import UTC, datetime
+        """Digest text contains today's BDT date."""
+        from datetime import datetime, timedelta, timezone
 
         from src.notifications.digest import generate_daily_digest
 
         session = _make_mock_session()
         text = await generate_daily_digest(session)
-        today_str = datetime.now(tz=UTC).date().isoformat()
+        _bdt = timezone(timedelta(hours=6))
+        today_str = datetime.now(tz=_bdt).date().isoformat()
         assert today_str in text
 
     @pytest.mark.asyncio
