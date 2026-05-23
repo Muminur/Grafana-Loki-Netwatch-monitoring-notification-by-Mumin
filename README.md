@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-329_passing-00ff88?style=flat-square" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-355_passing-00ff88?style=flat-square" alt="Tests"/>
   <img src="https://img.shields.io/badge/coverage-85%25-00ff88?style=flat-square" alt="Coverage"/>
   <img src="https://img.shields.io/badge/ruff-clean-00f0ff?style=flat-square" alt="Ruff"/>
   <img src="https://img.shields.io/badge/mypy-strict-8b5cf6?style=flat-square" alt="Mypy"/>
@@ -325,6 +325,7 @@ Alert: BGP DOWN AS32934 Facebook
 | **BGP flap detection** | 2 minutes | Down → Up → Down pattern → single "FLAPPING" alert |
 | **Bundle grouping** | 30 seconds | Multiple member events → grouped by parent bundle |
 | **Incident auto-resolution** | Real-time | Recovery event (Up/Active/Clear) removes matching DOWN incident |
+| **BGP-UP silent fault clear** | Real-time | BGP UP on backbone P2P bundle auto-resolves RX_FAULT/SIGNAL/RFI (IOS-XR never sends clears for these) |
 | **Escalation** | 15 minutes | Unacknowledged CRITICAL → escalation channel |
 
 Dedup is enforced at every layer: DB storage, WebSocket broadcast, and in-memory store all skip suppressed duplicates. Client-side dedup provides an additional safety net in the browser.
