@@ -6,8 +6,11 @@ PLANNING.md
 TASKS.md
 docs/
 !docs/assets/
-.claude/commands/*.md
-.claude/agents/*.md
+.claude/
+PLAN.md
+*.omc
+.serena/
+*.docx
 
 # ── Secrets / config (NEVER commit) ──────────────────────────────
 .env
