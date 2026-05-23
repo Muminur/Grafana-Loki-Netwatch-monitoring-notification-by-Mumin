@@ -5,6 +5,7 @@ CLAUDE.md
 PLANNING.md
 TASKS.md
 docs/
+!docs/assets/
 .claude/commands/*.md
 .claude/agents/*.md
 

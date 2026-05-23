@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 120" fill="none">
+  <defs>
+    <filter id="g"><feGaussianBlur stdDeviation="1.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="900" height="120" rx="10" fill="#080812"/>
+
+  <!-- Step boxes -->
+  <g font-family="monospace" font-size="11" text-anchor="middle">
+    <!-- Syslog -->
+    <rect x="15" y="25" width="100" height="50" rx="6" fill="none" stroke="#00f0ff" stroke-width="1.5"/>
+    <text x="65" y="48" fill="#00f0ff">Syslog</text>
+    <text x="65" y="63" font-size="8" fill="#555570">Loki WS/HTTP</text>
+
+    <!-- Arrow -->
+    <text x="135" y="55" fill="#555570" font-size="16">&#x2192;</text>
+
+    <!-- Parse -->
+    <rect x="155" y="25" width="100" height="50" rx="6" fill="none" stroke="#00f0ff" stroke-width="1.5"/>
+    <text x="205" y="48" fill="#00f0ff">Parse</text>
+    <text x="205" y="63" font-size="8" fill="#555570">4 formats</text>
+
+    <text x="275" y="55" fill="#555570" font-size="16">&#x2192;</text>
+
+    <!-- Classify -->
+    <rect x="295" y="25" width="100" height="50" rx="6" fill="none" stroke="#ff0040" stroke-width="1.5"/>
+    <text x="345" y="48" fill="#ff0040">Classify</text>
+    <text x="345" y="63" font-size="8" fill="#555570">25 rules</text>
+
+    <text x="415" y="55" fill="#555570" font-size="16">&#x2192;</text>
+
+    <!-- Enrich -->
+    <rect x="435" y="25" width="100" height="50" rx="6" fill="none" stroke="#00ff88" stroke-width="1.5"/>
+    <text x="485" y="48" fill="#00ff88">Enrich</text>
+    <text x="485" y="63" font-size="8" fill="#555570">845 interfaces</text>
+
+    <text x="555" y="55" fill="#555570" font-size="16">&#x2192;</text>
+
+    <!-- Correlate -->
+    <rect x="575" y="25" width="100" height="50" rx="6" fill="none" stroke="#8b5cf6" stroke-width="1.5"/>
+    <text x="625" y="48" fill="#8b5cf6">Correlate</text>
+    <text x="625" y="63" font-size="8" fill="#555570">Incidents</text>
+
+    <text x="695" y="55" fill="#555570" font-size="16">&#x2192;</text>
+
+    <!-- Notify -->
+    <rect x="715" y="25" width="100" height="50" rx="6" fill="none" stroke="#ff9500" stroke-width="1.5"/>
+    <text x="765" y="48" fill="#ff9500">Notify</text>
+    <text x="765" y="63" font-size="8" fill="#555570">Discord+TG</text>
+
+    <!-- Animated data pulse -->
+    <circle r="4" fill="#00f0ff" filter="url(#g)">
+      <animate attributeName="cx" values="65;205;345;485;625;765;850" dur="3s" repeatCount="indefinite"/>
+      <animate attributeName="cy" values="50;50;50;50;50;50;50" dur="3s" repeatCount="indefinite"/>
+      <animate attributeName="fill" values="#00f0ff;#00f0ff;#ff0040;#00ff88;#8b5cf6;#ff9500;#ff9500" dur="3s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="1;1;1;1;1;1;0" dur="3s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+
+  <!-- Bottom labels -->
+  <text x="450" y="105" text-anchor="middle" font-family="monospace" font-size="9" fill="#555570" letter-spacing="2">REAL-TIME PROCESSING PIPELINE — &lt;1s LATENCY</text>
+</svg>
