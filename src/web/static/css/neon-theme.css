@@ -585,7 +585,7 @@ button { cursor: pointer; }
 .alert-timestamp {
     font-family: var(--font-mono);
     font-size: 0.78rem;
-    color: #c0c0d8;
+    color: #ffffff;
     flex-shrink: 0;
     white-space: nowrap;
 }
