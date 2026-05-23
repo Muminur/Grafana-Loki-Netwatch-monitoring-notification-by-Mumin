@@ -143,11 +143,11 @@ def test_classify_bgp_down(sample_bgp_down_log: str) -> None:
 
 
 def test_classify_bgp_maxpfx(sample_maxpfx_log: str) -> None:
-    """Rule BGP_MAXPFX: %ROUTING-BGP-5-MAXPFX → CRITICAL."""
+    """Rule BGP_MAXPFX: %ROUTING-BGP-5-MAXPFX → WARNING."""
     result = classify(_parse(sample_maxpfx_log))
     assert result.rule_id == "BGP_MAXPFX"
-    assert result.classification == "CRITICAL"
-    assert result.notify is True
+    assert result.classification == "WARNING"
+    assert result.notify is False
 
 
 def test_classify_lacp_expired(sample_lacp_expired_log: str) -> None:
@@ -482,7 +482,7 @@ def test_default_classification_returns_info_for_unknown() -> None:
 def test_notify_flag_all_critical_rules_true() -> None:
     """Every rule with classification=='CRITICAL' must have notify=True."""
     critical_rules = [r for r in CLASSIFICATION_RULES if r.classification == "CRITICAL"]
-    assert len(critical_rules) == 15, "Expected exactly 15 CRITICAL rules"
+    assert len(critical_rules) == 14, "Expected exactly 14 CRITICAL rules"
     for rule in critical_rules:
         assert rule.notify is True, f"Rule {rule.id} is CRITICAL but notify=False"
 
