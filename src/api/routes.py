@@ -124,6 +124,38 @@ def add_alert_to_store(enriched: Any, correlated: Any) -> None:
     }
     _alerts_store.append(alert)
 
+    # Track CRITICAL alerts and correlator incidents in the incidents store
+    if enriched.classification == "CRITICAL" or (
+        correlated.incident_id and not correlated.is_symptom
+    ):
+        inc_id = correlated.incident_id or f"ALERT-{alert['id']}"
+        existing = next(
+            (i for i in _incidents_store if i["id"] == inc_id), None
+        )
+        if existing:
+            existing["alert_count"] = existing.get("alert_count", 0) + 1
+            existing["last_alert"] = alert["timestamp"]
+        else:
+            _incidents_store.append(
+                {
+                    "id": inc_id,
+                    "title": (
+                        f"{enriched.event_type} — {enriched.device_name}"
+                    ),
+                    "severity": enriched.classification,
+                    "device": enriched.device_name,
+                    "mnemonic": enriched.parsed.mnemonic,
+                    "message": enriched.parsed.message[:200],
+                    "status": "active",
+                    "alert_count": 1,
+                    "started_at": alert["timestamp"],
+                    "last_alert": alert["timestamp"],
+                    "interface": enriched.interface_name,
+                    "client": enriched.client_name,
+                    "as_name": enriched.as_name,
+                }
+            )
+
 
 # ---------------------------------------------------------------------------
 # Health
@@ -374,12 +406,60 @@ async def get_alert(alert_id: str) -> dict[str, Any]:
 async def get_incidents() -> list[dict[str, Any]]:
     """Return all active incidents.
 
-    Returns
-    -------
-    list[dict]
-        List of incident dicts from the in-memory store.
+    Returns from in-memory store. If empty but DB has recent CRITICAL
+    alerts, synthesises incidents from DB so the panel is useful after
+    a restart.
     """
-    return list(_incidents_store)
+    if _incidents_store:
+        return list(_incidents_store)
+
+    if _db_engine is None:
+        return []
+
+    from sqlalchemy import desc, select  # noqa: PLC0415
+    from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+    from src.database.models import AlertLog  # noqa: PLC0415
+
+    async with AsyncSession(_db_engine) as session:  # type: ignore[arg-type]
+        stmt = (
+            select(AlertLog)
+            .where(AlertLog.classification == "CRITICAL")
+            .order_by(desc(AlertLog.timestamp))
+            .limit(50)
+        )
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+
+    incidents: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        key = f"{row.device_name}:{row.mnemonic}"
+        if key in seen:
+            for inc in incidents:
+                if inc.get("_key") == key:
+                    inc["alert_count"] = inc.get("alert_count", 0) + 1
+            continue
+        seen.add(key)
+        incidents.append(
+            {
+                "id": f"ALERT-{row.id}",
+                "title": f"{row.mnemonic} — {row.device_name}",
+                "severity": "CRITICAL",
+                "device": row.device_name,
+                "mnemonic": row.mnemonic,
+                "message": (row.message or "")[:200],
+                "status": "active",
+                "alert_count": 1,
+                "started_at": row.timestamp.isoformat() if row.timestamp else "",
+                "last_alert": row.timestamp.isoformat() if row.timestamp else "",
+                "interface": row.interface_name or "",
+                "client": row.client_name or "",
+                "as_name": row.as_name or "",
+                "_key": key,
+            }
+        )
+    return incidents
 
 
 @router.get("/api/incidents/{incident_id}")

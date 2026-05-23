@@ -442,8 +442,9 @@ async def test_sla_calculation(session: AsyncSession):
     from src.statistics.sla import calculate_client_sla
 
     # Insert incident (resolved) representing 1 hour of downtime
-    start = datetime(2026, 5, 22, 10, 0, 0, tzinfo=UTC)
-    end = datetime(2026, 5, 22, 11, 0, 0, tzinfo=UTC)
+    now = datetime.now(UTC)
+    start = now - timedelta(hours=6)
+    end = now - timedelta(hours=5)
 
     incident = Incident(
         id="INC-20260522-001",
