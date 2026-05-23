@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.routes import (
     add_alert_to_store,
+    get_maintenance_store,
     increment_alerts_processed,
     router,
     set_db_engine,
@@ -153,6 +154,28 @@ async def _on_syslog_line(raw_line: str) -> None:
             add_alert_to_store(enriched, correlated)
         except Exception as exc:  # noqa: BLE001
             _log.error("add_alert_to_store failed: %s", exc)
+
+    # ── Maintenance window suppression ────────────────────────────────────
+    if will_notify:
+        from datetime import datetime as _dt  # noqa: PLC0415
+
+        _now = _dt.now(UTC)
+        for m in get_maintenance_store():
+            if m.get("device_name") != enriched.device_name:
+                continue
+            try:
+                s_raw, e_raw = m.get("start_time", ""), m.get("end_time", "")
+                m_start = _dt.fromisoformat(s_raw) if isinstance(s_raw, str) else s_raw
+                m_end = _dt.fromisoformat(e_raw) if isinstance(e_raw, str) else e_raw
+                if m_start.tzinfo is None:
+                    m_start = m_start.replace(tzinfo=UTC)
+                if m_end.tzinfo is None:
+                    m_end = m_end.replace(tzinfo=UTC)
+                if m_start <= _now <= m_end:
+                    will_notify = False
+                    break
+            except (ValueError, AttributeError, TypeError):
+                continue
 
     # ── Notify (Discord + Telegram) ────────────────────────────────────────
     if will_notify:
@@ -343,8 +366,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         settings.bundle_group_window_seconds,
     )
 
-    # ── Syslog receiver ────────────────────────────────────────────────────
-    receiver = SyslogReceiver(settings, _on_syslog_line)
+    # ── Syslog receiver (resume from last known DB timestamp) ────────────
+    resume_ns = 0
+    try:
+        async with AsyncSession(engine) as session:  # type: ignore[arg-type]
+            from sqlalchemy import func as sa_func  # noqa: PLC0415
+
+            result = await session.execute(
+                select(sa_func.max(AlertLog.timestamp))
+            )
+            last_ts = result.scalar()
+            if last_ts is not None:
+                resume_ns = int(last_ts.timestamp() * 1_000_000_000)
+                _log.info(
+                    "Resuming syslog poll from DB anchor: %s", last_ts
+                )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("Could not read last alert timestamp: %s", exc)
+
+    receiver = SyslogReceiver(settings, _on_syslog_line, resume_from_ns=resume_ns)
     await receiver.start()
     _log.info("SyslogReceiver started (mode: %s)", settings.syslog_mode)
 

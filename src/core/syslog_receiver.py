@@ -48,10 +48,14 @@ class SyslogReceiver:
         Called for every line extracted from every Loki message.
     """
 
+    _POLL_LIMIT = 500
+    _DEFAULT_LOOKBACK_NS = 30 * 60 * 1_000_000_000  # 30 minutes
+
     def __init__(
         self,
         settings: Settings,
         callback: Callable[[str], Awaitable[None]],
+        resume_from_ns: int = 0,
     ) -> None:
         self._settings = settings
         self._callback = callback
@@ -59,7 +63,8 @@ class SyslogReceiver:
         self._tasks: list[asyncio.Task[None]] = []
         # Tracks the nanosecond timestamp of the last successful HTTP poll
         # so each poll only fetches logs newer than the previous request.
-        self._last_poll_ns: int = 0
+        # Seeded from DB on startup so we resume exactly where we left off.
+        self._last_poll_ns: int = resume_from_ns
 
     # ------------------------------------------------------------------
     # Public API
@@ -197,27 +202,39 @@ class SyslogReceiver:
     # ------------------------------------------------------------------
 
     async def _http_poll(self) -> None:
-        """Poll Loki HTTP query_range every 2 seconds until stopped."""
+        """Poll Loki HTTP query_range every 2 seconds until stopped.
+
+        On the first poll cycle after startup, drains any backlog by
+        paginating until all historical logs are consumed (returns fewer
+        than ``_POLL_LIMIT`` lines).  After catching up, switches to
+        the normal 2-second interval.
+        """
         while self._running:
             try:
-                await self._http_poll_once()
+                count = await self._http_poll_once()
+                while count >= self._POLL_LIMIT and self._running:
+                    count = await self._http_poll_once()
             except Exception as exc:  # noqa: BLE001
                 _log.warning("HTTP poll error: %s", exc)
             await asyncio.sleep(_HTTP_POLL_INTERVAL)
 
-    async def _http_poll_once(self) -> None:
+    async def _http_poll_once(self) -> int:
         """Single HTTP poll request to Loki query_range.
 
         Uses nanosecond timestamps (``start`` / ``end``) so each poll only
-        fetches log lines that arrived since the previous request, preventing
-        duplicate delivery across successive poll cycles.
+        fetches log lines that arrived since the previous request.
+
+        When the response contains exactly ``_POLL_LIMIT`` lines, the cursor
+        advances to the last returned timestamp + 1 ns (not ``now``) so the
+        caller can immediately poll again to drain the remaining backlog.
+
+        Returns the number of lines processed (0 on error).
         """
         now_ns = int(time.time() * 1_000_000_000)
-        # Default window: last 60 seconds on the very first poll
-        start_ns = self._last_poll_ns or (now_ns - 60_000_000_000)
+        start_ns = self._last_poll_ns or (now_ns - self._DEFAULT_LOOKBACK_NS)
         params = {
             "query": self._settings.loki_query,
-            "limit": "100",
+            "limit": str(self._POLL_LIMIT),
             "start": str(start_ns),
             "end": str(now_ns),
         }
@@ -227,14 +244,24 @@ class SyslogReceiver:
                 params=params,
                 timeout=10.0,
             )
-            if resp.status_code == 200:
-                data = resp.json()
-                lines = self._extract_lines_from_http(data)
-                for line in lines:
-                    await self._callback(line)
-                self._last_poll_ns = now_ns
-            else:
+            if resp.status_code != 200:
                 _log.warning("Loki HTTP poll returned %d", resp.status_code)
+                return 0
+
+            data = resp.json()
+            entries = self._extract_entries_from_http(data)
+            for _ts_ns, line in entries:
+                await self._callback(line)
+
+            count = len(entries)
+            if count >= self._POLL_LIMIT and entries:
+                self._last_poll_ns = entries[-1][0] + 1
+            else:
+                self._last_poll_ns = now_ns
+
+            if count > 0:
+                _log.debug("HTTP poll: %d lines (start=%s)", count, start_ns)
+            return count
 
     # ------------------------------------------------------------------
     # UDP fallback
@@ -307,38 +334,27 @@ class SyslogReceiver:
                     lines.append(line)
         return lines
 
+    def _extract_entries_from_http(
+        self, payload: dict[str, Any]
+    ) -> list[tuple[int, str]]:
+        """Extract ``(nanosecond_ts, line)`` tuples from a Loki query_range response.
+
+        Entries are sorted by timestamp so the caller can use the last
+        entry's timestamp as the pagination cursor.
+        """
+        entries: list[tuple[int, str]] = []
+        data = payload.get("data", {})
+        for result in data.get("result", []):
+            for ts_str, line in result.get("values", []):
+                if line:
+                    entries.append((int(ts_str), line))
+        entries.sort(key=lambda e: e[0])
+        return entries
+
     def _extract_lines_from_http(self, payload: dict[str, Any]) -> list[str]:
         """Extract syslog line strings from a Loki query_range HTTP response.
 
-        Loki query_range format::
-
-            {
-              "status": "success",
-              "data": {
-                "resultType": "streams",
-                "result": [
-                  {
-                    "stream": {"job": "syslog"},
-                    "values": [["<nanosecond_ts>", "<log_line>"], ...]
-                  }
-                ]
-              }
-            }
-
-        Parameters
-        ----------
-        payload:
-            Parsed JSON dict from the Loki HTTP response.
-
-        Returns
-        -------
-        list[str]
-            All log lines extracted from the response.
+        Convenience wrapper around :meth:`_extract_entries_from_http` that
+        discards timestamps.
         """
-        lines: list[str] = []
-        data = payload.get("data", {})
-        for result in data.get("result", []):
-            for _ts, line in result.get("values", []):
-                if line:
-                    lines.append(line)
-        return lines
+        return [line for _ts, line in self._extract_entries_from_http(payload)]
