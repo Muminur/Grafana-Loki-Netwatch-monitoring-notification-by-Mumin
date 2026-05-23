@@ -399,14 +399,23 @@ button { cursor: pointer; }
 
 /* ── Dashboard Layout ──────────────────────────────────────────────────── */
 .dashboard-layout {
-    display: grid;
-    grid-template-columns: 1fr 380px;
-    gap: 1rem;
-    align-items: start;
+    display: block;
 }
 
 .dashboard-left  { min-width: 0; }
-.dashboard-right { min-width: 0; }
+
+.dashboard-bottom {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.charts-grid-wide {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+}
 
 /* ── Alert Tabs ────────────────────────────────────────────────────────── */
 .tab-bar {
@@ -1310,8 +1319,7 @@ kbd {
 
 /* ── Responsive ────────────────────────────────────────────────────────── */
 @media (max-width: 1200px) {
-    .dashboard-layout { grid-template-columns: 1fr; }
-    .dashboard-right { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .dashboard-bottom { grid-template-columns: 1fr; }
     .severity-bar { grid-template-columns: repeat(3, 1fr); }
 }
 
