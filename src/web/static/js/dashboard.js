@@ -10,7 +10,7 @@
 
     // ── State ────────────────────────────────────────────────────────────────
     var _alerts = [];        // all received alerts, newest-first
-    var _activeTab = 'all'; // current tab filter
+    var _activeTab = 'CRITICAL'; // current tab filter
     var _searchQuery = '';  // current search text
     var _counters = {
         CRITICAL: 0,
