@@ -12,7 +12,7 @@ import re
 import time
 from collections import deque
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
@@ -230,7 +230,7 @@ async def resolve_silent_faults_in_db(
         )
         result = await session.execute(stmt)
         await session.commit()
-        return result.rowcount  # type: ignore[return-value]
+        return cast(int, result.rowcount)
 
 
 class MaintenanceWindowCreate(BaseModel):
@@ -376,19 +376,29 @@ def add_alert_to_store(enriched: Any, correlated: Any) -> None:
                     import asyncio  # noqa: PLC0415
                     import logging  # noqa: PLC0415
 
-                    _log = logging.getLogger(__name__)
+                    try:
+                        loop = asyncio.get_running_loop()
+                    except RuntimeError:
+                        pass
+                    else:
+                        _bgp_log = logging.getLogger(__name__)
+                        _dev_capture = dev
+                        _bundle_capture = bundle_name
+                        _members_capture = members
 
-                    async def _resolve_with_logging() -> None:
-                        try:
-                            await resolve_silent_faults_in_db(_db_engine, dev, members)
-                        except Exception:
-                            _log.exception(
-                                "Failed to persist BGP-UP resolution for %s/%s",
-                                dev,
-                                bundle_name,
-                            )
+                        async def _resolve_with_logging() -> None:
+                            try:
+                                await resolve_silent_faults_in_db(
+                                    _db_engine, _dev_capture, _members_capture
+                                )
+                            except Exception:
+                                _bgp_log.exception(
+                                    "Failed to persist BGP-UP resolution for %s/%s",
+                                    _dev_capture,
+                                    _bundle_capture,
+                                )
 
-                    asyncio.create_task(_resolve_with_logging())
+                        loop.create_task(_resolve_with_logging())
 
     if not is_recovery and (
         enriched.classification == "CRITICAL"

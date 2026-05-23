@@ -52,3 +52,27 @@ async def create_tables(engine: AsyncEngine) -> None:
     """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    await _migrate_alert_log_resolution_columns(engine)
+
+
+async def _migrate_alert_log_resolution_columns(engine: AsyncEngine) -> None:
+    """Add resolved_at and resolution_reason columns if missing (v9 schema)."""
+    from sqlalchemy import text  # noqa: PLC0415
+
+    async with engine.begin() as conn:
+        result = await conn.execute(text("PRAGMA table_info(alert_log)"))
+        columns = {row[1] for row in result.fetchall()}
+
+        if "resolved_at" not in columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE alert_log ADD COLUMN resolved_at DATETIME DEFAULT NULL"
+                )
+            )
+        if "resolution_reason" not in columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE alert_log ADD COLUMN resolution_reason VARCHAR(64) DEFAULT ''"
+                )
+            )
