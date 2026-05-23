@@ -38,6 +38,32 @@ _maintenance_id_counter: int = 0
 _db_engine: object = None
 
 
+_RECOVERY_RULE_IDS = frozenset({
+    "BGP_UP", "INTF_UP", "LINEPROTO_UP", "LACP_ACTIVE",
+    "SFP_ALARM_CLEAR", "BER_CLEAR",
+})
+
+_RECOVERY_MNEMONICS_WITH_UP = frozenset({
+    "ADJCHANGE", "UPDOWN",
+})
+
+_RECOVERY_MNEMONICS_ALWAYS = frozenset({
+    "ACTIVE",
+})
+
+
+def _is_recovery_event(
+    mnemonic: str, message: str, rule_id: str = ""
+) -> bool:
+    if rule_id and rule_id in _RECOVERY_RULE_IDS:
+        return True
+    if mnemonic in _RECOVERY_MNEMONICS_ALWAYS and "no longer" not in message:
+        return True
+    if mnemonic in _RECOVERY_MNEMONICS_WITH_UP and re.search(r"\bUp\b", message):
+        return True
+    return False
+
+
 _IFACE_SHORT = [
     ("TenGigE", "TGE"),
     ("HundredGigE", "HGE"),
@@ -96,7 +122,9 @@ def build_incident_title(
 
     if mnemonic == "ACTIVE":
         bundle = _extract_bundle_from_msg(message)
-        parts = [f"Bundle ACTIVE — {device_name}"]
+        is_down = "no longer" in message
+        label = "Bundle DOWN" if is_down else "Bundle ACTIVE"
+        parts = [f"{label} — {device_name}"]
         if iface_short:
             parts.append(iface_short)
         if bundle:
@@ -222,9 +250,15 @@ def add_alert_to_store(enriched: Any, correlated: Any) -> None:
     }
     _alerts_store.append(alert)
 
-    # Track CRITICAL alerts and correlator incidents in the incidents store
-    if enriched.classification == "CRITICAL" or (
-        correlated.incident_id and not correlated.is_symptom
+    # Track CRITICAL fault alerts as incidents (skip recovery events like Up/Active)
+    is_recovery = _is_recovery_event(
+        enriched.parsed.mnemonic,
+        enriched.parsed.message,
+        enriched.rule_id,
+    )
+    if not is_recovery and (
+        enriched.classification == "CRITICAL"
+        or (correlated.incident_id and not correlated.is_symptom)
     ):
         inc_id = correlated.incident_id or f"ALERT-{alert['id']}"
         existing = next(
@@ -536,7 +570,12 @@ async def get_incidents() -> list[dict[str, Any]]:
     incidents: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in rows:
-        discriminator = row.bgp_neighbor or row.interface_name or ""
+        if _is_recovery_event(row.mnemonic, row.message or ""):
+            continue
+        if row.mnemonic == "ADJCHANGE" and row.as_number:
+            discriminator = str(row.as_number)
+        else:
+            discriminator = row.bgp_neighbor or row.interface_name or ""
         key = f"{row.device_name}:{row.mnemonic}:{discriminator}"
         if key in seen:
             for inc in incidents:
