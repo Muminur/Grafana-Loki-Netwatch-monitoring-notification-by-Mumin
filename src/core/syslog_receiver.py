@@ -410,14 +410,16 @@ class SyslogReceiver:
                 last_ts = entries[-1][0]
                 # Check whether multiple entries share the last timestamp.
                 entries_at_last_ts = [(ts, ln) for ts, ln in entries if ts == last_ts]
-                if len(entries_at_last_ts) > 1:
-                    # Ambiguous boundary: stay at last_ts so the next poll
-                    # re-fetches this nanosecond; deduplicate by remembering
-                    # what was already delivered.
+                if 1 < len(entries_at_last_ts) < count and new_entries:
+                    # Ambiguous boundary with real progress: stay at last_ts so
+                    # the next poll re-fetches this nanosecond; deduplicate by
+                    # remembering what was already delivered.
                     self._last_poll_ns = last_ts
                     self._seen_at_cursor = set(entries_at_last_ts)
                 else:
-                    # All timestamps distinct at the boundary: safe to advance.
+                    # Distinct boundary, an entire page sharing one timestamp,
+                    # or nothing new delivered — advance past last_ts to avoid
+                    # an infinite re-fetch loop on a pathological/hostile feed.
                     self._last_poll_ns = last_ts + 1
                     self._seen_at_cursor = set()
             else:

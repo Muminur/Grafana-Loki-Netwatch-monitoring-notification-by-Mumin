@@ -472,6 +472,36 @@ async def test_cursor_stays_when_last_timestamp_shared() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cursor_advances_when_entire_page_shares_one_timestamp() -> None:
+    """A full page where every entry shares one ts must advance, not loop.
+
+    Staying at the shared ts would re-fetch the identical page forever (all
+    entries already seen → zero progress). The cursor must move past it.
+    """
+    settings = _settings()
+    receiver = SyslogReceiver(settings, AsyncMock())
+    limit = receiver._POLL_LIMIT  # noqa: SLF001
+
+    shared_ts = 1_716_408_741_999_999_999
+    all_values = [[str(shared_ts), f"log {i}"] for i in range(limit)]
+    payload: dict = {  # type: ignore[type-arg]
+        "status": "success",
+        "data": {
+            "resultType": "streams",
+            "result": [{"stream": {"job": "syslog"}, "values": all_values}],
+        },
+    }
+    client = _mock_http_client(_ok_response(payload))
+
+    with patch("src.core.syslog_receiver.httpx.AsyncClient", return_value=client):
+        await receiver._http_poll_once()  # noqa: SLF001
+
+    # Must advance past the shared ts and clear the seen-set (no infinite loop).
+    assert receiver._last_poll_ns == shared_ts + 1  # noqa: SLF001
+    assert receiver._seen_at_cursor == set()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_cursor_deduplicates_on_refetch() -> None:
     """On re-fetch at shared ts, already-seen entries are not re-delivered."""
     settings = _settings()
