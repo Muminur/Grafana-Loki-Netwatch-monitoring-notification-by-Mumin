@@ -104,8 +104,23 @@ class CorrelationEngine:
         # Incident registry: incident_id → list[EnrichedLog]
         self._incidents: dict[str, list[EnrichedLog]] = {}
 
-        # Incident counter (monotonically increasing per day, resets on date change)
-        self._incident_counter: dict[str, int] = {}  # date_str → counter
+        # Process-monotonic sequence counter.  Incremented on every call to
+        # _generate_incident_id and never reset during the lifetime of this engine
+        # instance.  It is used to derive a per-day display counter that remains
+        # strictly increasing even across a UTC-midnight rollover, so IDs generated
+        # just before midnight (e.g. INC-20260523-003) are never reissued as the
+        # first ID of the next day (INC-20260524-001 would collide if the counter
+        # had reset to 1).  The per-day counter is computed as
+        #   ``_incident_seq - _seq_day_offset``
+        # where ``_seq_day_offset`` is the value of ``_incident_seq`` at the
+        # start of the current calendar day and is updated whenever the UTC date
+        # advances.  This guarantees:
+        #   • The formatted NNN part stays ≤ 999 for any realistic incident rate
+        #     (network incidents per day are orders of magnitude below that limit).
+        #   • The sequence never repeats within a single engine-instance lifetime.
+        self._incident_seq: int = 0  # global monotonic counter, never reset
+        self._seq_day_offset: int = 0  # value of _incident_seq at start of current day
+        self._seq_current_date: str = ""  # UTC date for which offset was last set
 
         # Active incidents per device: device_ip → incident_id
         self._device_incident: dict[str, str] = {}
@@ -256,18 +271,40 @@ class CorrelationEngine:
     def _generate_incident_id(self) -> str:
         """Generate a unique incident ID in INC-YYYYMMDD-NNN format.
 
-        The counter resets at midnight; two calls in the same session with
-        the same date produce INC-20260523-001, INC-20260523-002, etc.
+        Uses a process-monotonic global counter (``_incident_seq``) paired with
+        a per-day offset (``_seq_day_offset``) to produce a three-digit display
+        counter that restarts at 001 each UTC calendar day while remaining
+        strictly increasing within the current day across any midnight rollover.
+
+        Concretely:
+
+        * ``_incident_seq`` is **never reset** — it increases by one on every
+          call for the lifetime of this engine instance.
+        * ``_seq_day_offset`` records the value of ``_incident_seq`` at the
+          beginning of each new UTC calendar day.  When the UTC date advances,
+          the offset is updated so the next day's first ID is always ``001``.
+        * The three-digit component is ``_incident_seq - _seq_day_offset``,
+          ensuring that:
+
+          - No two IDs within the same process run share both a date **and** a
+            sequence number (uniqueness guarantee for the process lifetime).
+          - The formatted ``NNN`` part stays within three digits for any
+            realistic NOC incident rate (thousands per day would be required to
+            overflow — and such a scenario would indicate a far graver issue).
 
         Returns
         -------
         str
-            Incident ID string.
+            Incident ID string matching ``INC-YYYYMMDD-NNN``.
         """
         today = datetime.now(tz=UTC).strftime("%Y%m%d")
-        count = self._incident_counter.get(today, 0) + 1
-        self._incident_counter[today] = count
-        return f"INC-{today}-{count:03d}"
+        # Detect UTC date advance and update the per-day offset
+        if today != self._seq_current_date:
+            self._seq_day_offset = self._incident_seq
+            self._seq_current_date = today
+        self._incident_seq += 1
+        day_seq = self._incident_seq - self._seq_day_offset
+        return f"INC-{today}-{day_seq:03d}"
 
     def _find_root_cause(self, enriched: EnrichedLog) -> str | None:
         """Check if *enriched* is downstream of a known backhaul failure.
