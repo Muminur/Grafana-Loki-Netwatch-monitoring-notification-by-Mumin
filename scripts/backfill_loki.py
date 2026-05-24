@@ -1,7 +1,8 @@
 """One-time backfill: fetch missed logs from Loki and ingest them.
 
 Usage:
-    python -m scripts.backfill_loki --start "2026-05-23 16:32:00" --end "2026-05-23 16:52:00"
+    python -m scripts.backfill_loki \
+        --start "2026-05-23 16:32:00" --end "2026-05-23 16:52:00"
 
 Queries Loki via the Grafana proxy for the given time range, runs each
 log line through the full pipeline (parse → classify → enrich → store),
@@ -24,7 +25,6 @@ from src.config import get_settings
 from src.core.classifier import classify
 from src.core.enricher import enrich
 from src.core.parser import parse_syslog
-from src.database.crud import insert_alert
 from src.database.migrations import create_tables
 from src.database.models import AlertLog
 
@@ -102,11 +102,13 @@ async def _backfill(start_str: str, end_str: str) -> None:
             enriched = enrich(parsed)
 
             existing = await session.execute(
-                select(AlertLog.id).where(
+                select(AlertLog.id)
+                .where(
                     AlertLog.device_name == enriched.device_name,
                     AlertLog.mnemonic == enriched.parsed.mnemonic,
                     AlertLog.timestamp == enriched.parsed.timestamp,
-                ).limit(1)
+                )
+                .limit(1)
             )
             if existing.scalar() is not None:
                 skipped += 1
@@ -140,7 +142,12 @@ async def _backfill(start_str: str, end_str: str) -> None:
 
         await session.commit()
 
-    _log.info("Done: %d inserted, %d skipped (duplicate), %d failed (unparseable)", inserted, skipped, failed)
+    _log.info(
+        "Done: %d inserted, %d skipped (duplicate), %d failed (unparseable)",
+        inserted,
+        skipped,
+        failed,
+    )
     await engine.dispose()
 
 

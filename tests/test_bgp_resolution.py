@@ -699,7 +699,7 @@ class TestHardwareDefectsAsNoise:
 
     def test_non_member_rx_fault_stays_critical(self):
         """RX_FAULT on a non-bundle interface → stays CRITICAL."""
-        from src.api.routes import _alerts_store, _incidents_store, add_alert_to_store
+        from src.api.routes import _alerts_store, add_alert_to_store
 
         enriched = _make_enriched(
             device_name="Equinix-RTR-1",

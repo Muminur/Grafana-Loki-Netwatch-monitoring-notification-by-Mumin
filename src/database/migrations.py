@@ -73,6 +73,7 @@ async def _migrate_alert_log_resolution_columns(engine: AsyncEngine) -> None:
         if "resolution_reason" not in columns:
             await conn.execute(
                 text(
-                    "ALTER TABLE alert_log ADD COLUMN resolution_reason VARCHAR(64) DEFAULT ''"
+                    "ALTER TABLE alert_log "
+                    "ADD COLUMN resolution_reason VARCHAR(64) DEFAULT ''"
                 )
             )

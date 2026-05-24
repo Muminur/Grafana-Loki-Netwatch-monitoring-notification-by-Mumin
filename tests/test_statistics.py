@@ -88,7 +88,7 @@ def test_health_score_perfect():
 
 
 def test_health_score_deductions():
-    """2 criticals + 1 incident → 80 (no all-devices bonus without reporting_devices)."""
+    """2 criticals + 1 incident → 80 (no all-devices bonus without reporting)."""
     score = calculate_health_score(
         critical_count=2,
         warning_count=0,
@@ -388,7 +388,9 @@ async def test_digest_format(session: AsyncSession):
     # the digest queries using naive BDT-midnight bounds (no UTC offset).
     _bdt = timezone(timedelta(hours=6))
     today_bdt = datetime.now(tz=_bdt).date()
-    base_ts = datetime(today_bdt.year, today_bdt.month, today_bdt.day, 10, 0, 0)
+    base_ts = datetime(  # noqa: DTZ001
+        today_bdt.year, today_bdt.month, today_bdt.day, 10, 0, 0
+    )
     for i in range(3):
         session.add(
             _make_alert(
