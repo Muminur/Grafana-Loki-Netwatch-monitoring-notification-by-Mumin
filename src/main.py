@@ -40,6 +40,7 @@ from src.api.routes import (
     add_alert_to_store,
     get_maintenance_store,
     increment_alerts_processed,
+    load_persisted_state,
     router,
     set_db_engine,
 )
@@ -423,6 +424,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     except Exception as exc:  # noqa: BLE001
         _log.warning("Could not load historical alert count: %s", exc)
 
+    # Load persisted maintenance windows + hardware-noise toggle into cache
+    await load_persisted_state(engine)
+
     # Re-classify existing alerts whose rules may have changed since they
     # were ingested (classification is stored at ingestion time).
     try:
@@ -453,6 +457,44 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
 
     # ── Pipeline singletons ────────────────────────────────────────────────
     _correlator = CorrelationEngine()
+
+    # Seed the correlator incident-ID sequence from the DB so new IDs never
+    # collide with existing ones on the same UTC day after a restart.
+    try:
+        from datetime import UTC as _UTC  # noqa: PLC0415
+        from datetime import datetime as _datetime  # noqa: PLC0415
+
+        from sqlalchemy import Integer as _Integer  # noqa: PLC0415
+        from sqlalchemy import func as _sa_func  # noqa: PLC0415
+        from sqlalchemy import select as _sa_select
+
+        today_str = _datetime.now(_UTC).strftime("%Y%m%d")
+        inc_prefix = f"INC-{today_str}-%"
+        # INC-YYYYMMDD-NNN: 'INC-' (4) + YYYYMMDD (8) + '-' (1) = 13 chars
+        # before the NNN part, so SUBSTR(incident_id, 14) extracts NNN.
+        _SEQ_START = 14  # noqa: N806
+        async with AsyncSession(engine) as session:
+            seq_result = await session.execute(
+                _sa_select(
+                    _sa_func.max(
+                        _sa_func.cast(
+                            _sa_func.substr(AlertLog.incident_id, _SEQ_START),
+                            _Integer,
+                        )
+                    )
+                ).where(AlertLog.incident_id.like(inc_prefix))
+            )
+            max_seq = seq_result.scalar() or 0
+        if max_seq > 0:
+            _correlator.seed_sequence(max_seq)
+            _log.info(
+                "Seeded correlator incident sequence to %d for today (%s)",
+                max_seq,
+                today_str,
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("Could not seed correlator sequence: %s", exc)
+
     _dedup = DedupEngine(
         window_seconds=settings.dedup_window_seconds,
         flap_window=settings.bgp_flap_window_seconds,

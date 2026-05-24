@@ -139,6 +139,22 @@ class MaintenanceWindow(Base):
     end_time: Mapped[datetime]
     reason: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
+class AppSetting(Base):
+    """Generic key/value table for persisted runtime settings.
+
+    Each row stores one application-level setting as a string value.
+    The ``key`` column is the primary key (e.g. ``"hardware_defects_as_noise"``).
+    Boolean settings are stored as ``"true"`` or ``"false"``.
+    """
+
+    __tablename__ = "app_setting"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[str] = mapped_column(String(1024), default="")
+    updated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
 class UserLogin(Base):

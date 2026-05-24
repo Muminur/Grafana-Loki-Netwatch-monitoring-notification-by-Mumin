@@ -63,6 +63,7 @@ async def create_tables(engine: AsyncEngine) -> None:
 
     await _migrate_alert_log_resolution_columns(engine)
     await _migrate_alert_log_indexes(engine)
+    await _migrate_maintenance_window_created_at(engine)
 
 
 async def _migrate_alert_log_resolution_columns(engine: AsyncEngine) -> None:
@@ -121,3 +122,25 @@ async def _migrate_alert_log_indexes(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         for stmt in ddl_statements:
             await conn.execute(stmt)
+
+
+async def _migrate_maintenance_window_created_at(engine: AsyncEngine) -> None:
+    """Add created_at column to maintenance_window if missing (v11 schema).
+
+    Existing rows get the current UTC timestamp as their created_at value.
+    Safe to call on fresh databases (the ORM already creates the column via
+    ``Base.metadata.create_all``).
+    """
+    from sqlalchemy import text  # noqa: PLC0415
+
+    async with engine.begin() as conn:
+        result = await conn.execute(text("PRAGMA table_info(maintenance_window)"))
+        columns = {row[1] for row in result.fetchall()}
+
+        if "created_at" not in columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE maintenance_window "
+                    "ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                )
+            )
