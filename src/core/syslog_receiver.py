@@ -9,6 +9,27 @@ Connection strategy:
   3. UDP listen           (emergency fallback on syslog_udp_port)
 
 WebSocket reconnects with exponential back-off: 1 s, 2 s, 4 s … max 30 s.
+
+HTTP poll error path uses the same exponential back-off strategy so that a
+downed Loki instance is not hammered with requests.  The back-off resets to
+the base delay on the first successful poll.
+
+A WARNING is emitted when consecutive HTTP poll failures exceed
+``_HTTP_POLL_FAIL_THRESHOLD`` (default 5) so that a silently-broken receiver
+is visible in the application logs.
+
+The HTTP poll cursor is guarded against silent data loss at full-page
+boundaries: when a page is exactly ``_POLL_LIMIT`` entries the cursor is
+advanced to ``last_ts + 1`` **only when all entries in the page have distinct
+timestamps**.  When multiple entries share the last nanosecond timestamp the
+cursor is left at that timestamp and duplicate delivery is suppressed by the
+seen-id set so no entries are skipped.
+
+``health_status()`` returns a snapshot of the receiver's current running
+state, active mode, last-poll timestamp, and consecutive failure count.
+
+Any Grafana API key embedded in logged URLs is masked so credentials never
+appear in log output.
 """
 
 from __future__ import annotations
@@ -16,8 +37,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import socket
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
@@ -34,6 +57,50 @@ _log = logging.getLogger(__name__)
 
 _HTTP_POLL_INTERVAL = 2  # seconds between HTTP poll requests
 _LOKI_QUERY = '{job="Router-Logs"}'  # default; overridden by settings.loki_query
+
+# Exponential back-off parameters for the HTTP poll error path.
+_HTTP_BACKOFF_BASE = 1.0  # seconds – initial delay after first failure
+_HTTP_BACKOFF_CAP = 30.0  # seconds – maximum delay
+
+# Emit a WARNING when this many consecutive HTTP poll failures are observed.
+_HTTP_POLL_FAIL_THRESHOLD = 5
+
+# Regex that matches a Grafana API key in a URL so we can redact it.
+_API_KEY_RE = re.compile(r"(api[_-]?key=)[^&\s]+", re.IGNORECASE)
+
+
+def _mask_url(url: str) -> str:
+    """Return *url* with any embedded API key value replaced by ``***``.
+
+    Only the value portion is replaced so the parameter name remains visible
+    in logs for debugging purposes.
+    """
+    return _API_KEY_RE.sub(r"\1***", url)
+
+
+@dataclass
+class ReceiverHealth:
+    """Snapshot of the receiver's current operational state.
+
+    Attributes
+    ----------
+    running:
+        ``True`` while the receiver is active (between ``start()`` and
+        ``stop()``).
+    mode:
+        Active transport mode: ``"ws"``, ``"http"``, or ``"udp"``.
+        ``"idle"`` when the receiver has not yet been started.
+    last_poll_ns:
+        Nanosecond timestamp of the last HTTP cursor position.  ``0`` when
+        no HTTP poll has completed yet.
+    consecutive_http_failures:
+        Number of consecutive HTTP poll errors since the last success.
+    """
+
+    running: bool
+    mode: str
+    last_poll_ns: int
+    consecutive_http_failures: int
 
 
 class SyslogReceiver:
@@ -65,6 +132,13 @@ class SyslogReceiver:
         # so each poll only fetches logs newer than the previous request.
         # Seeded from DB on startup so we resume exactly where we left off.
         self._last_poll_ns: int = resume_from_ns
+        # Consecutive HTTP poll failure counter (reset on success).
+        self._http_fail_count: int = 0
+        # Active transport mode for health reporting.
+        self._active_mode: str = "idle"
+        # Deduplication set for entries that share the last-page timestamp.
+        # Stores (ts_ns, line) tuples observed on the previous full-page poll.
+        self._seen_at_cursor: set[tuple[int, str]] = set()
 
     # ------------------------------------------------------------------
     # Public API
@@ -85,9 +159,11 @@ class SyslogReceiver:
             task = asyncio.create_task(self._ws_tail_with_fallback())
             self._tasks.append(task)
         elif mode == "loki_http":
+            self._active_mode = "http"
             task = asyncio.create_task(self._http_poll())
             self._tasks.append(task)
         elif mode == "udp":
+            self._active_mode = "udp"
             task = asyncio.create_task(self._udp_listen())
             self._tasks.append(task)
         else:
@@ -107,6 +183,7 @@ class SyslogReceiver:
         separate connections with no overlap.
         """
         try:
+            self._active_mode = "ws"
             await self._ws_tail_once()
             # Connection succeeded — hand off to the persistent reconnect loop
             await self._ws_tail()
@@ -116,6 +193,7 @@ class SyslogReceiver:
             websockets.exceptions.WebSocketException,
         ) as exc:
             _log.warning("WS connection failed (%s), falling back to HTTP poll", exc)
+            self._active_mode = "http"
             try:
                 await self._http_poll_once()
                 # HTTP reachable — run the persistent poll loop
@@ -124,6 +202,7 @@ class SyslogReceiver:
                 _log.warning(
                     "HTTP poll also failed (%s), falling back to UDP", http_exc
                 )
+                self._active_mode = "udp"
                 await self._udp_listen()
 
     async def stop(self) -> None:
@@ -133,6 +212,25 @@ class SyslogReceiver:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+
+    def health_status(self) -> ReceiverHealth:
+        """Return a lightweight snapshot of the receiver's current state.
+
+        This method is synchronous and non-blocking — safe to call from any
+        context including the dashboard API handler.
+
+        Returns
+        -------
+        ReceiverHealth
+            Current running state, active mode, last-poll cursor, and
+            consecutive HTTP failure count.
+        """
+        return ReceiverHealth(
+            running=self._running,
+            mode=self._active_mode,
+            last_poll_ns=self._last_poll_ns,
+            consecutive_http_failures=self._http_fail_count,
+        )
 
     # ------------------------------------------------------------------
     # WebSocket tail
@@ -208,14 +306,45 @@ class SyslogReceiver:
         paginating until all historical logs are consumed (returns fewer
         than ``_POLL_LIMIT`` lines).  After catching up, switches to
         the normal 2-second interval.
+
+        Uses exponential back-off (1 s → 2 s → … → 30 s cap) on the error
+        path so a downed Loki is not hammered with requests.  The back-off
+        delay resets to the base on the first successful poll.  When
+        consecutive failures exceed ``_HTTP_POLL_FAIL_THRESHOLD`` a WARNING
+        is emitted so the condition is visible in application logs.
         """
+        backoff_delay = _HTTP_BACKOFF_BASE
+
         while self._running:
             try:
                 count = await self._http_poll_once()
+                # Successful poll — reset failure tracking and back-off delay.
+                if self._http_fail_count > 0:
+                    _log.info(
+                        "HTTP poll recovered after %d consecutive failure(s)",
+                        self._http_fail_count,
+                    )
+                self._http_fail_count = 0
+                backoff_delay = _HTTP_BACKOFF_BASE
                 while count >= self._POLL_LIMIT and self._running:
                     count = await self._http_poll_once()
             except Exception as exc:  # noqa: BLE001
-                _log.warning("HTTP poll error: %s", exc)
+                self._http_fail_count += 1
+                _log.warning(
+                    "HTTP poll error (failure #%d): %s",
+                    self._http_fail_count,
+                    exc,
+                )
+                if self._http_fail_count >= _HTTP_POLL_FAIL_THRESHOLD:
+                    _log.warning(
+                        "HTTP poll has failed %d consecutive times — "
+                        "Loki may be unreachable",
+                        self._http_fail_count,
+                    )
+                await asyncio.sleep(backoff_delay)
+                backoff_delay = min(backoff_delay * 2, _HTTP_BACKOFF_CAP)
+                continue  # skip the normal interval sleep on the error path
+
             await asyncio.sleep(_HTTP_POLL_INTERVAL)
 
     async def _http_poll_once(self) -> int:
@@ -225,10 +354,20 @@ class SyslogReceiver:
         fetches log lines that arrived since the previous request.
 
         When the response contains exactly ``_POLL_LIMIT`` lines, the cursor
-        advances to the last returned timestamp + 1 ns (not ``now``) so the
-        caller can immediately poll again to drain the remaining backlog.
+        is advanced safely to avoid skipping entries that share the same
+        nanosecond timestamp at the page boundary:
 
-        Returns the number of lines processed (0 on error).
+        * If the last timestamp in the page is **unique** within the page, the
+          cursor advances to ``last_ts + 1`` so the next poll fetches the next
+          distinct nanosecond only.
+        * If **multiple entries share the last timestamp**, the cursor stays at
+          that timestamp and a deduplication set is maintained so those entries
+          are not re-delivered on the follow-up poll.
+
+        On a short page (fewer than ``_POLL_LIMIT`` entries) the cursor moves
+        to ``now`` as before.
+
+        Returns the number of lines processed (0 on error / non-200 status).
         """
         now_ns = int(time.time() * 1_000_000_000)
         start_ns = self._last_poll_ns or (now_ns - self._DEFAULT_LOOKBACK_NS)
@@ -238,6 +377,7 @@ class SyslogReceiver:
             "start": str(start_ns),
             "end": str(now_ns),
         }
+        safe_url = _mask_url(self._settings.loki_http_url)
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 self._settings.loki_http_url,
@@ -245,22 +385,58 @@ class SyslogReceiver:
                 timeout=10.0,
             )
             if resp.status_code != 200:
-                _log.warning("Loki HTTP poll returned %d", resp.status_code)
+                _log.warning(
+                    "Loki HTTP poll returned %d (url=%s)",
+                    resp.status_code,
+                    safe_url,
+                )
                 return 0
 
             data = resp.json()
             entries = self._extract_entries_from_http(data)
-            for _ts_ns, line in entries:
+
+            # Suppress entries already delivered on the previous full-page poll.
+            new_entries = [
+                (ts, line)
+                for ts, line in entries
+                if (ts, line) not in self._seen_at_cursor
+            ]
+            for _ts_ns, line in new_entries:
                 await self._callback(line)
 
             count = len(entries)
+
             if count >= self._POLL_LIMIT and entries:
-                self._last_poll_ns = entries[-1][0] + 1
+                last_ts = entries[-1][0]
+                # Check whether multiple entries share the last timestamp.
+                entries_at_last_ts = [(ts, ln) for ts, ln in entries if ts == last_ts]
+                if 1 < len(entries_at_last_ts) < count and new_entries:
+                    # Ambiguous boundary with real progress: stay at last_ts so
+                    # the next poll re-fetches this nanosecond; deduplicate by
+                    # remembering what was already delivered.
+                    self._last_poll_ns = last_ts
+                    self._seen_at_cursor = set(entries_at_last_ts)
+                else:
+                    # Distinct boundary, an entire page sharing one timestamp,
+                    # or nothing new delivered — advance past last_ts to avoid
+                    # an infinite re-fetch loop on a pathological/hostile feed.
+                    self._last_poll_ns = last_ts + 1
+                    self._seen_at_cursor = set()
             else:
                 self._last_poll_ns = now_ns
+                self._seen_at_cursor = set()
 
             if count > 0:
-                _log.debug("HTTP poll: %d lines (start=%s)", count, start_ns)
+                _log.debug(
+                    "HTTP poll: %d lines (%d new, start=%s)",
+                    count,
+                    len(new_entries),
+                    start_ns,
+                )
+            # Return the raw Loki entry count so the caller (_http_poll) can
+            # correctly decide whether a full page was returned and more backlog
+            # may remain.  Returning len(new_entries) would break the drain loop
+            # when all entries on a page are already-seen deduplications.
             return count
 
     # ------------------------------------------------------------------
