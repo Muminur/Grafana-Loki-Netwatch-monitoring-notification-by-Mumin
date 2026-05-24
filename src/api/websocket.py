@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING
 
 from fastapi import WebSocketDisconnect
 
+from src.metrics import set_ws_connections
+
 if TYPE_CHECKING:
     from fastapi import WebSocket
 
@@ -98,6 +100,7 @@ class WebSocketManager:
 
         self._connections.append(websocket)
         self._filters[id(websocket)] = None
+        set_ws_connections(len(self._connections))
         _log.debug("WS connected (total: %d)", len(self._connections))
         return True
 
@@ -114,6 +117,7 @@ class WebSocketManager:
         with contextlib.suppress(ValueError):
             self._connections.remove(websocket)
         self._filters.pop(id(websocket), None)
+        set_ws_connections(len(self._connections))
         _log.debug("WS disconnected (total: %d)", len(self._connections))
 
     # ------------------------------------------------------------------

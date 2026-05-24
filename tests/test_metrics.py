@@ -237,3 +237,65 @@ def test_no_duplicate_registration_on_reimport() -> None:
     # Verify we got the same singleton registry back — same object identity
     # proves no new registrations occurred on the re-import.
     assert reloaded._REGISTRY is m._REGISTRY  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# Integration: the pipeline actually moves the counters (closes the wiring gap)
+# ---------------------------------------------------------------------------
+
+
+async def test_pipeline_wires_alert_and_dedup_counters(
+    sample_bgp_down_log: str,
+) -> None:
+    """Driving _on_syslog_line must increment alerts_processed and dedup_suppressed.
+
+    Guards against the helpers being defined but never called from the pipeline.
+    """
+    import src.main as main_mod  # noqa: PLC0415
+    from src.core.dedup import DedupEngine  # noqa: PLC0415
+    from src.core.enricher import enrich  # noqa: PLC0415
+    from src.core.parser import parse_syslog  # noqa: PLC0415
+    from src.metrics import _REGISTRY  # noqa: PLC0415
+
+    parsed = parse_syslog(sample_bgp_down_log)
+    assert parsed is not None
+    classification = enrich(parsed).classification
+
+    def _alerts() -> float:
+        return (
+            _REGISTRY.get_sample_value(
+                "netwatch_alerts_processed_total",
+                {"classification": classification},
+            )
+            or 0.0
+        )
+
+    def _suppressed() -> float:
+        return _REGISTRY.get_sample_value("netwatch_dedup_suppressed_total") or 0.0
+
+    saved = (
+        main_mod._engine,  # noqa: SLF001
+        main_mod._correlator,  # noqa: SLF001
+        main_mod._dedup,  # noqa: SLF001
+        main_mod._escalation,  # noqa: SLF001
+    )
+    a0, d0 = _alerts(), _suppressed()
+    try:
+        main_mod._engine = None  # noqa: SLF001
+        main_mod._correlator = None  # noqa: SLF001
+        main_mod._dedup = DedupEngine(window_seconds=300)  # noqa: SLF001
+        main_mod._escalation = None  # noqa: SLF001
+        await main_mod._on_syslog_line(sample_bgp_down_log)  # noqa: SLF001  # new
+        await main_mod._on_syslog_line(sample_bgp_down_log)  # noqa: SLF001  # dup
+    finally:
+        (
+            main_mod._engine,  # noqa: SLF001
+            main_mod._correlator,  # noqa: SLF001
+            main_mod._dedup,  # noqa: SLF001
+            main_mod._escalation,  # noqa: SLF001
+        ) = saved
+
+    # record_alert fires once per processed line; the 2nd identical line is
+    # suppressed by dedup (record_dedup_suppressed fires once).
+    assert _alerts() == a0 + 2
+    assert _suppressed() == d0 + 1
