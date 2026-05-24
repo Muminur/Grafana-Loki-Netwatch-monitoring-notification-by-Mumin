@@ -290,10 +290,13 @@ class TestExactWindowBoundary:
         first = _make_enriched(timestamp=ts_first)
         second = _make_enriched(timestamp=ts_second)
 
-        mono_start = time.monotonic()
-        with patch("src.core.dedup.time") as mock_time:
-            mock_time.monotonic.side_effect = [mono_start, mono_start + float(window)]
+        # Controllable monotonic clock via a lambda so the result is independent
+        # of how many times should_notify() calls time.monotonic() internally
+        # (a fixed side_effect list is fragile to per-path call-count differences).
+        clock = {"t": 1000.0}
+        with patch("src.core.dedup.time.monotonic", side_effect=lambda: clock["t"]):
             engine.should_notify(first)
+            clock["t"] = 1000.0 + float(window)  # advance exactly one window
             r2_allowed, r2_reason = engine.should_notify(second)
 
         # max(300, 300) = 300 <= 300 → suppressed
@@ -312,13 +315,10 @@ class TestExactWindowBoundary:
         first = _make_enriched(timestamp=ts_first)
         second = _make_enriched(timestamp=ts_second)
 
-        mono_start = time.monotonic()
-        with patch("src.core.dedup.time") as mock_time:
-            mock_time.monotonic.side_effect = [
-                mono_start,
-                mono_start + float(window + 1),
-            ]
+        clock = {"t": 1000.0}
+        with patch("src.core.dedup.time.monotonic", side_effect=lambda: clock["t"]):
             engine.should_notify(first)
+            clock["t"] = 1000.0 + float(window + 1)  # one second past the window
             r2_allowed, r2_reason = engine.should_notify(second)
 
         # max(301, 301) = 301 > 300 → allowed
