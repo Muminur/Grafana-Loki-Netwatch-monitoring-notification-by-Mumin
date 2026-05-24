@@ -9,10 +9,50 @@ Implements three distinct suppression strategies:
      Bundle-Ether parent within ``bundle_window`` (default 30 s) → suppress
      all but the first.
 
-All timestamps are taken from ``EnrichedLog.parsed.timestamp`` so that
-replayed / historical logs use the device clock rather than wall-clock time.
-This makes the engine deterministic and fully testable without ``time.sleep``
-(except for the window-expiry test which uses a short real sleep).
+Time-basis semantics
+--------------------
+All three strategies use **event timestamps** (``EnrichedLog.parsed.timestamp``)
+as their primary time source so that replayed / historical logs are handled
+deterministically based on when the events *happened*, not when they arrived.
+
+For the standard sliding-window dedup only, a wall-clock monotonic floor is
+also tracked and the elapsed time is computed as::
+
+    max(event_ts_delta_seconds, monotonic_delta_seconds)
+
+This ``max`` rule guarantees four safety properties simultaneously:
+
+1. **Replayed / historical logs** — two events whose *event* timestamps are
+   more than ``window_seconds`` apart will always be seen as outside the
+   window (``event_ts_delta > window``), even if they arrive within
+   milliseconds of each other on the wall clock.  This prevents the window
+   from being "stuck open" for storms of historical replayed messages.
+
+2. **Same-timestamp events** (e.g. identical ``ParsedLog`` objects submitted
+   twice in a test) — because ``event_ts_delta == 0``, the monotonic clock
+   component provides the real-time elapsed measurement, so a 1-second window
+   correctly expires after 1 real second.  The real-time dedup smoke-test
+   (``test_duplicate_after_window_allowed``) depends on this property.
+
+3. **NTP backward clock step** — if the system wall-clock steps backward the
+   monotonic clock never decreases, so ``monotonic_delta`` stays positive and
+   the window cannot be artificially re-opened.  Likewise, if event timestamps
+   step backward (NTP on the source device), the previous higher event-ts
+   delta means the new delta is smaller (or negative); the monotonic floor
+   prevents incorrect suppression.
+
+4. **Normal real-time path** — for live syslog streams both measures advance
+   together so no behaviour change is visible relative to the previous
+   implementation.
+
+BGP flap detection and bundle-member grouping use *only* event timestamps
+(no monotonic component) because:
+  - They are designed to be deterministic across log replays.
+  - Their windows (120 s flap, 30 s bundle) are short enough that the
+    difference between event-time and wall-time is operationally irrelevant
+    for production live streams.
+  - The existing tests for these two strategies exercise them with explicit
+    event-timestamp sequences and must remain green.
 """
 
 from __future__ import annotations
@@ -68,21 +108,22 @@ class DedupEngine:
         flap_window: int = 120,
         bundle_window: int = 30,
     ) -> None:
-        self._window = timedelta(seconds=window_seconds)
+        self._window_s: float = float(window_seconds)
         self._flap_window = timedelta(seconds=flap_window)
         self._bundle_window = timedelta(seconds=bundle_window)
 
-        # key → last_seen datetime (event timestamp)
+        # key → last_seen event timestamp
         self._seen: dict[str, datetime] = {}
 
-        # key → last_seen wall-clock monotonic time (for window expiry)
+        # key → last_seen wall-clock monotonic time (monotonic floor for
+        # the max-elapsed rule; never decreases, safe across NTP steps)
         self._seen_mono: dict[str, float] = {}
 
         # BGP flap state: bgp_key → list of (state, datetime) tuples
         # state is "down" or "up"
         self._bgp_states: dict[str, list[tuple[str, datetime]]] = {}
 
-        # Bundle grouping: bundle_key → first_seen datetime
+        # Bundle grouping: bundle_key → first_seen event timestamp
         self._bundle_seen: dict[str, datetime] = {}
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -103,6 +144,7 @@ class DedupEngine:
         event_ts = enriched.parsed.timestamp
 
         # 1. Bundle grouping check (before general dedup)
+        # Uses event timestamps exclusively — deterministic for log replays.
         if enriched.bundle_parent:
             bundle_key = self._bundle_key(enriched)
             last_bundle = self._bundle_seen.get(bundle_key)
@@ -126,8 +168,8 @@ class DedupEngine:
                 return flap_result
             if is_state_change:
                 # Direction changed (e.g. Down→Up) — always forward as new.
-                # Record in seen_mono so repeated same-direction events ARE
-                # suppressed by standard dedup on subsequent calls.
+                # Record both event-ts and monotonic so subsequent same-direction
+                # events are correctly suppressed by standard dedup.
                 key = self._dedup_key(enriched)
                 self._seen[key] = event_ts
                 self._seen_mono[key] = time.monotonic()
@@ -135,15 +177,25 @@ class DedupEngine:
             # Same direction repeated — fall through to standard dedup
 
         # 3. Standard window dedup (non-BGP events and repeated BGP same-state)
-        # Window expiry uses wall-clock (time.monotonic) so real-time sleep
-        # tests work regardless of the event timestamp in the log.
+        #
+        # Elapsed time = max(event_ts_delta_s, monotonic_delta_s).
+        # See module docstring for the four safety properties this satisfies.
         key = self._dedup_key(enriched)
         now_mono = time.monotonic()
+        last_event_ts = self._seen.get(key)
         last_mono = self._seen_mono.get(key)
-        window_s = self._window.total_seconds()
-        if last_mono is not None and (now_mono - last_mono) <= window_s:
-            _log.debug("Suppressed duplicate: %s", key)
-            return False, "suppressed_duplicate"
+
+        if last_event_ts is not None and last_mono is not None:
+            # Event-timestamp elapsed (may be negative if device clock stepped back)
+            event_ts_elapsed = (event_ts - last_event_ts).total_seconds()
+            # Monotonic elapsed (always non-negative)
+            mono_elapsed = now_mono - last_mono
+            # Use the larger of the two: whichever dimension shows more time
+            # has passed determines whether the window has expired.
+            elapsed_s = max(event_ts_elapsed, mono_elapsed)
+            if elapsed_s <= self._window_s:
+                _log.debug("Suppressed duplicate: %s", key)
+                return False, "suppressed_duplicate"
 
         self._seen[key] = event_ts
         self._seen_mono[key] = now_mono
