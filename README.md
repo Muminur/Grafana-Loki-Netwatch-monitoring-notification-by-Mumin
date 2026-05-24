@@ -462,7 +462,7 @@ bsccl-netwatch/
 │       └── static/
 │           ├── css/neon-theme.css  # Full neon design system
 │           └── js/                # WebSocket, charts, topology, sounds, shortcuts
-├── tests/                         # 650 tests (unit + integration + e2e)
+├── tests/                         # 790 tests (unit + integration + e2e)
 ├── Dockerfile                     # Multi-stage, non-root, pinned, healthcheck
 ├── docker-compose.yml             # Production deployment (limits, no-new-privileges)
 └── .github/workflows/ci.yml       # CI: ruff + black + mypy + pytest + coverage + pip-audit
