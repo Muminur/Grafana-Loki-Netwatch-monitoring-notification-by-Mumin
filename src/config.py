@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 from dataclasses import dataclass, field
@@ -54,13 +55,27 @@ def _validate_monitor_host(value: str) -> str:
     if not value or not value.strip():
         msg = "MONITOR_HOST must not be empty"
         raise ValueError(msg)
-    if _SCHEME_RE.match(value):
+    v = value.strip()
+    if _SCHEME_RE.match(v):
         msg = f"MONITOR_HOST must be a hostname or IP address, not a URI: {value!r}"
         raise ValueError(msg)
-    if not _HOSTNAME_RE.match(value.strip()):
+    # Anything that looks like an IP (dotted-decimal, or contains ':' for IPv6,
+    # or a bracketed IPv6 literal) must be a *valid* IP — this rejects malformed
+    # values such as "256.0.0.1" or "1.2.3.4.5" that would otherwise slip
+    # through the hostname-label pattern.
+    bracketed = v.startswith("[") and v.endswith("]")
+    candidate = v[1:-1] if bracketed else v
+    if bracketed or ":" in candidate or re.fullmatch(r"[0-9.]+", candidate):
+        try:
+            ipaddress.ip_address(candidate)
+        except ValueError as exc:
+            msg = f"MONITOR_HOST is not a valid IP address: {value!r}"
+            raise ValueError(msg) from exc
+        return v
+    if not _HOSTNAME_RE.match(v):
         msg = f"MONITOR_HOST is not a valid hostname or IP address: {value!r}"
         raise ValueError(msg)
-    return value.strip()
+    return v
 
 
 # ---------------------------------------------------------------------------

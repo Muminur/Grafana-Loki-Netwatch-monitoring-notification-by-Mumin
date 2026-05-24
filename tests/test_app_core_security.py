@@ -193,6 +193,22 @@ class TestMonitorHostValidation:
         with pytest.raises(ValueError, match="not a valid hostname"):
             Settings()
 
+    def test_rejects_out_of_range_octet(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A dotted-decimal value with an out-of-range octet is rejected."""
+        monkeypatch.setenv("MONITOR_HOST", "256.0.0.1")
+        with pytest.raises(ValueError, match="not a valid IP address"):
+            Settings()
+
+    def test_rejects_five_octet_pseudo_ip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A five-octet pseudo-IP is rejected (invalid IP, not a hostname)."""
+        monkeypatch.setenv("MONITOR_HOST", "1.2.3.4.5")
+        with pytest.raises(ValueError, match="not a valid IP address"):
+            Settings()
+
 
 # ---------------------------------------------------------------------------
 # Engine type annotation (structural)
