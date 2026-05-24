@@ -19,6 +19,13 @@ async def get_engine(database_url: str) -> AsyncEngine:
     WAL journal mode is applied via ``connect_args`` so every new
     connection automatically switches to WAL before any queries run.
 
+    ``pool_pre_ping=True`` causes SQLAlchemy to test each connection
+    before handing it to the application, transparently recycling stale
+    handles.  The aiosqlite engine uses a ``StaticPool`` for in-memory
+    URLs and an ``AsyncAdaptedQueuePool`` for file-backed URLs; pre-ping
+    adds negligible overhead while guarding against rare file-handle
+    recycling issues on long-running deployments.
+
     Args:
         database_url: SQLAlchemy-style async DB URL, e.g.
             ``sqlite+aiosqlite:///bsccl_netwatch.db`` or
@@ -30,6 +37,7 @@ async def get_engine(database_url: str) -> AsyncEngine:
     engine = create_async_engine(
         database_url,
         echo=False,
+        pool_pre_ping=True,
         connect_args={"check_same_thread": False},
     )
     # Enable WAL mode for SQLite on the first connection
@@ -54,6 +62,7 @@ async def create_tables(engine: AsyncEngine) -> None:
         await conn.run_sync(Base.metadata.create_all)
 
     await _migrate_alert_log_resolution_columns(engine)
+    await _migrate_alert_log_indexes(engine)
 
 
 async def _migrate_alert_log_resolution_columns(engine: AsyncEngine) -> None:
@@ -77,3 +86,38 @@ async def _migrate_alert_log_resolution_columns(engine: AsyncEngine) -> None:
                     "ADD COLUMN resolution_reason VARCHAR(64) DEFAULT ''"
                 )
             )
+
+
+async def _migrate_alert_log_indexes(engine: AsyncEngine) -> None:
+    """Ensure performance indexes exist on alert_log (v10 schema).
+
+    Uses ``CREATE INDEX IF NOT EXISTS`` so this is safe to call on both
+    fresh databases (where ``create_all`` already created the indexes via
+    ORM metadata) and existing deployments that were created before the
+    indexes were added to the model.
+
+    Indexes created here must match the names declared in
+    ``AlertLog.__table_args__`` so that SQLAlchemy and the migration stay
+    in sync.
+    """
+    from sqlalchemy import text  # noqa: PLC0415
+
+    ddl_statements = [
+        # incident_id — incident detail lookups (WHERE incident_id = ?)
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_alertlog_incident_id "
+            "ON alert_log (incident_id)"
+        ),
+        # (device_name, mnemonic, resolved_at) — BGP-UP silent-fault
+        # resolution query:
+        #   WHERE device_name = ? AND mnemonic IN (...)
+        #   AND resolved_at IS NULL AND timestamp >= ?
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_alertlog_device_mnemonic_resolved "
+            "ON alert_log (device_name, mnemonic, resolved_at)"
+        ),
+    ]
+
+    async with engine.begin() as conn:
+        for stmt in ddl_statements:
+            await conn.execute(stmt)
