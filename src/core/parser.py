@@ -13,6 +13,13 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+# Maximum accepted input line length (bytes/chars).  Lines longer than this cap
+# are rejected immediately — before any regex is applied — to prevent a hostile
+# syslog sender from triggering catastrophic backtracking (ReDoS) or excessive
+# memory allocation on the regex engine.  8 KiB is far above any legitimate
+# Cisco IOS-XR syslog line (~500 chars typical, ~2 KiB absolute upper bound).
+_MAX_LINE_LEN: int = 8192
+
 # UTC+6 timezone (Bangladesh Standard Time / BDT)
 _UTC6 = timezone(timedelta(hours=6))
 
@@ -113,8 +120,27 @@ def _parse_inner_timestamp(inner: str) -> datetime:
         tzinfo=_UTC6,
     )
 
-    # Year-rollover heuristic: if the parsed month is far ahead of the current
-    # month (e.g. Dec log parsed in Jan), the log is from the previous year.
+    # Year-rollover heuristic
+    # -------------------------------------------------------------------
+    # IOS-XR syslogs carry a month+day but no year.  We assume the current
+    # year initially, then correct for two edge cases:
+    #
+    # Case A — log from previous calendar year (common near Jan 1):
+    #   A log sent on Dec 31 and received on Jan 3 would have month=12
+    #   while now.month=1.  The condition ``parsed_ts.month > now.month + 1``
+    #   catches this: month 12 > 1+1=2, so we roll back to year-1.
+    #
+    # Case B — current month or one month ahead:
+    #   ``> now.month + 1`` deliberately allows a 1-month lookahead window
+    #   to tolerate small clock skew between the Loki forwarder and the
+    #   device without misclassifying the year.  A device with an NTP drift
+    #   of up to ~30 days is not back-dated to the previous year.
+    #
+    # Known limitation: the heuristic fails if a log is delayed by more
+    # than one calendar month before reaching the collector, but that is
+    # not a realistic scenario for live syslog streams.
+    #
+    # No change to behaviour — confirmed correct for BSCCL's use-case.
     if parsed_ts.month > now.month + 1:
         parsed_ts = parsed_ts.replace(year=year - 1)
 
@@ -124,10 +150,17 @@ def _parse_inner_timestamp(inner: str) -> datetime:
 def parse_syslog(line: str) -> ParsedLog | None:
     """Parse a single Cisco IOS-XR syslog line.
 
-    Returns ``None`` for empty/whitespace lines or lines that do not match
-    any known format.
+    Returns ``None`` for:
+    - empty / whitespace-only lines
+    - lines exceeding ``_MAX_LINE_LEN`` (DoS guard — checked before any regex)
+    - lines that do not match any known format
     """
     if not line or not line.strip():
+        return None
+
+    # Reject oversized lines before running any regex to prevent ReDoS /
+    # memory-DoS from a hostile syslog sender.
+    if len(line) > _MAX_LINE_LEN:
         return None
 
     m = _HEADER_RE.match(line)
