@@ -8,3 +8,4 @@ mypy
 types-python-dateutil
 types-aiofiles
 httpx
+pip-audit>=2.7.0
