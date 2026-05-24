@@ -12,7 +12,7 @@ import re
 import time
 from collections import deque
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
@@ -20,6 +20,12 @@ from pydantic import BaseModel, Field, model_validator
 from src.data.bgp_bundle_map import lookup_bundle_for_bgp_peer
 from src.data.device_map import DEVICE_MAP
 from src.data.topology import NETWORK_TOPOLOGY
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
+    from src.core.correlator import CorrelatedEvent
+    from src.core.enricher import EnrichedLog
 
 router = APIRouter()
 
@@ -33,11 +39,23 @@ _active_connections: int = 0
 # In-memory stores — capped to prevent unbounded memory growth
 _alerts_store: deque[dict[str, Any]] = deque(maxlen=10000)
 _incidents_store: list[dict[str, Any]] = []
-_maintenance_store: list[dict[str, Any]] = []
+_maintenance_store: deque[dict[str, Any]] = deque(maxlen=500)
 _maintenance_id_counter: int = 0
 
 # DB engine — set during lifespan startup via set_db_engine()
-_db_engine: object = None
+_db_engine: AsyncEngine | None = None
+
+# ---------------------------------------------------------------------------
+# Input validation allowlists
+# ---------------------------------------------------------------------------
+
+_VALID_SEVERITIES: frozenset[str] = frozenset(
+    {"CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"}
+)
+
+_VALID_PERIODS: frozenset[str] = frozenset(
+    {"today", "yesterday", "7d", "30d", "1y", "all"}
+)
 
 
 _RECOVERY_RULE_IDS = frozenset(
@@ -191,7 +209,7 @@ def build_incident_title(
     return ", ".join(parts)
 
 
-def set_db_engine(engine: object) -> None:
+def set_db_engine(engine: AsyncEngine) -> None:
     """Register the async DB engine for use by /api/alerts.
 
     Called from ``main.py`` lifespan after the engine is created.
@@ -200,13 +218,13 @@ def set_db_engine(engine: object) -> None:
     _db_engine = engine
 
 
-def get_maintenance_store() -> list[dict[str, Any]]:
+def get_maintenance_store() -> deque[dict[str, Any]]:
     """Return the in-memory maintenance window list (read-only access)."""
     return _maintenance_store
 
 
 async def resolve_silent_faults_in_db(
-    engine: object,
+    engine: AsyncEngine,
     device_name: str,
     bundle_members: set[str],
 ) -> int:
@@ -222,7 +240,7 @@ async def resolve_silent_faults_in_db(
 
     now = datetime.now(UTC)
     cutoff = now - timedelta(hours=24)
-    async with AsyncSession(engine) as session:  # type: ignore[arg-type]
+    async with AsyncSession(engine) as session:
         stmt = (
             update(AlertLog)
             .where(AlertLog.device_name == device_name)
@@ -278,7 +296,7 @@ def add_alert(alert: dict[str, Any]) -> None:
     _alerts_store.append(alert)
 
 
-def add_alert_to_store(enriched: Any, correlated: Any) -> None:
+def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> None:
     """Append a fully enriched + correlated alert to the in-memory store.
 
     Converts the EnrichedLog + CorrelatedEvent into the dict format expected
@@ -401,11 +419,12 @@ def add_alert_to_store(enriched: Any, correlated: Any) -> None:
                         _dev_capture = dev
                         _bundle_capture = bundle_name
                         _members_capture = members
+                        _engine_capture: AsyncEngine = _db_engine
 
                         async def _resolve_with_logging() -> None:
                             try:
                                 await resolve_silent_faults_in_db(
-                                    _db_engine, _dev_capture, _members_capture
+                                    _engine_capture, _dev_capture, _members_capture
                                 )
                             except Exception:
                                 _bgp_log.exception(
@@ -464,15 +483,30 @@ async def health() -> dict[str, Any]:
     -------
     dict
         ``status``, ``version``, ``uptime_seconds``, ``alerts_processed``,
-        and ``active_connections``.
+        ``active_connections``, and ``database_ok``.
+        ``status`` is ``"degraded"`` when the DB check fails.
     """
     uptime = time.monotonic() - _APP_START
+    database_ok = False
+    if _db_engine is not None:
+        try:
+            from sqlalchemy import text  # noqa: PLC0415
+            from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+            async with AsyncSession(_db_engine) as _session:
+                await _session.execute(text("SELECT 1"))
+            database_ok = True
+        except Exception:  # noqa: BLE001
+            database_ok = False
+
+    status = "ok" if database_ok or _db_engine is None else "degraded"
     return {
-        "status": "ok",
+        "status": status,
         "version": "0.1.0",
         "uptime_seconds": round(uptime, 1),
         "alerts_processed": _alerts_processed,
         "active_connections": _active_connections,
+        "database_ok": database_ok,
     }
 
 
@@ -550,7 +584,29 @@ async def get_alerts(
     -------
     list[dict]
         List of alert dicts ordered newest-first.
+
+    Raises
+    ------
+    HTTPException
+        400 if ``severity`` or ``period`` is not in the allowed set.
     """
+    if severity is not None and severity.upper() not in _VALID_SEVERITIES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid severity '{severity}'. "
+                f"Must be one of: {', '.join(sorted(_VALID_SEVERITIES))}"
+            ),
+        )
+    if period is not None and period not in _VALID_PERIODS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid period '{period}'. "
+                f"Must be one of: {', '.join(sorted(_VALID_PERIODS))}"
+            ),
+        )
+
     if _db_engine is None:
         # Fallback: serve from in-memory store (no period filter applied)
         results = list(_alerts_store)
@@ -567,8 +623,9 @@ async def get_alerts(
     from src.database.models import AlertLog  # noqa: PLC0415
 
     start, end = _period_to_time_range(period)
+    _engine = _db_engine  # narrowed: not None (checked above)
 
-    async with AsyncSession(_db_engine) as session:  # type: ignore[arg-type]
+    async with AsyncSession(_engine) as session:
         stmt = select(AlertLog).order_by(desc(AlertLog.timestamp))
 
         if severity:
@@ -624,7 +681,21 @@ async def get_alerts_count(
     -------
     dict
         ``counts`` mapping classification → int, ``total`` int, ``period`` str.
+
+    Raises
+    ------
+    HTTPException
+        400 if ``period`` is not in the allowed set.
     """
+    if period is not None and period not in _VALID_PERIODS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid period '{period}'. "
+                f"Must be one of: {', '.join(sorted(_VALID_PERIODS))}"
+            ),
+        )
+
     classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
     zero_counts: dict[str, int] = dict.fromkeys(classifications, 0)
 
@@ -646,8 +717,9 @@ async def get_alerts_count(
     from src.database.models import AlertLog  # noqa: PLC0415
 
     start, end = _period_to_time_range(period)
+    _engine = _db_engine  # narrowed: not None (checked above)
 
-    async with AsyncSession(_db_engine) as session:  # type: ignore[arg-type]
+    async with AsyncSession(_engine) as session:
         stmt = select(AlertLog.classification, func.count(AlertLog.id)).group_by(
             AlertLog.classification
         )
@@ -715,7 +787,8 @@ async def get_incidents() -> list[dict[str, Any]]:
 
     from src.database.models import AlertLog  # noqa: PLC0415
 
-    async with AsyncSession(_db_engine) as session:  # type: ignore[arg-type]
+    _engine = _db_engine  # narrowed: not None (checked above)
+    async with AsyncSession(_engine) as session:
         stmt = (
             select(AlertLog)
             .where(AlertLog.classification == "CRITICAL")
@@ -1066,9 +1139,9 @@ async def delete_maintenance_window(window_id: int) -> dict[str, Any]:
     dict
         ``{"status": "deleted", "id": window_id}``
     """
-    for i, window in enumerate(_maintenance_store):
+    for window in _maintenance_store:
         if window.get("id") == window_id:
-            _maintenance_store.pop(i)
+            _maintenance_store.remove(window)
             return {"status": "deleted", "id": window_id}
     raise HTTPException(
         status_code=404, detail=f"Maintenance window {window_id} not found"
