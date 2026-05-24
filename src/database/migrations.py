@@ -62,6 +62,7 @@ async def create_tables(engine: AsyncEngine) -> None:
         await conn.run_sync(Base.metadata.create_all)
 
     await _migrate_alert_log_resolution_columns(engine)
+    await _migrate_alert_log_acknowledged_at(engine)
     await _migrate_alert_log_indexes(engine)
     await _migrate_maintenance_window_created_at(engine)
 
@@ -122,6 +123,29 @@ async def _migrate_alert_log_indexes(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         for stmt in ddl_statements:
             await conn.execute(stmt)
+
+
+async def _migrate_alert_log_acknowledged_at(engine: AsyncEngine) -> None:
+    """Add acknowledged_at column to alert_log if missing (v12 schema).
+
+    Mirrors the pattern used by ``_migrate_alert_log_resolution_columns``.
+    Idempotent: guarded by a ``PRAGMA table_info`` existence check.
+    Safe to call on fresh databases (``create_all`` already creates the column
+    via ORM metadata).
+    """
+    from sqlalchemy import text  # noqa: PLC0415
+
+    async with engine.begin() as conn:
+        result = await conn.execute(text("PRAGMA table_info(alert_log)"))
+        columns = {row[1] for row in result.fetchall()}
+
+        if "acknowledged_at" not in columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE alert_log "
+                    "ADD COLUMN acknowledged_at DATETIME DEFAULT NULL"
+                )
+            )
 
 
 async def _migrate_maintenance_window_created_at(engine: AsyncEngine) -> None:
