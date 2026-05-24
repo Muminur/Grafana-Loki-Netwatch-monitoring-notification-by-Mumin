@@ -667,3 +667,36 @@ async def test_e2e_correlator_seeded_above_db_max(
     engine.seed_sequence(max_seq)
     next_id = engine._generate_incident_id()
     assert next_id == f"INC-{today_str}-004", f"Unexpected ID: {next_id}"
+
+
+async def test_delete_db_failure_warns_and_still_returns_deleted(
+    clean_stores: None,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failing DB delete must log a warning yet still report success.
+
+    The in-memory cache is already updated, so the endpoint returns 200; the
+    warning surfaces the DB/cache divergence (the row would otherwise silently
+    reappear on the next startup reload).
+    """
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    routes_mod.set_db_engine(engine)
+    # Seed the in-memory cache so the window is "found" and 200 is returned.
+    routes_mod._maintenance_store.append({"id": 4242, "device_name": "X"})
+
+    async def _boom(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("simulated DB delete failure")
+
+    monkeypatch.setattr("src.database.crud.delete_maintenance_window", _boom)
+
+    with caplog.at_level("WARNING"):
+        result = await routes_mod.delete_maintenance_window(4242)
+
+    await engine.dispose()
+    assert result == {"status": "deleted", "id": 4242}
+    assert any(
+        "may reappear after a restart" in rec.getMessage() for rec in caplog.records
+    )

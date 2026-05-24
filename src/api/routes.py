@@ -1310,8 +1310,18 @@ async def delete_maintenance_window(window_id: int) -> dict[str, Any]:
             async with _AsyncSession(_db_engine) as session:
                 await _db_delete(session, window_id)
                 await session.commit()
-        except Exception:  # noqa: BLE001, S110
-            pass  # DB failure is non-fatal; in-memory already updated
+        except Exception as exc:  # noqa: BLE001
+            import logging  # noqa: PLC0415
+
+            # Non-fatal: the in-memory cache is already updated, but the row
+            # survives in the DB and will reappear on the next startup reload.
+            # Surface it so operators can reconcile rather than silently drop.
+            logging.getLogger(__name__).warning(
+                "DB delete for maintenance window %d failed: %s — "
+                "the window may reappear after a restart",
+                window_id,
+                exc,
+            )
 
     if not in_memory_found:
         raise HTTPException(
