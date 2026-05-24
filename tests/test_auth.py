@@ -499,3 +499,46 @@ def test_require_api_key_enabled_missing_key_raises_401(
         monkeypatch.delenv("API_KEY", raising=False)
         if hasattr(get_settings, "cache_clear"):
             get_settings.cache_clear()
+
+
+def test_whitespace_only_key_disables_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A whitespace-only API_KEY resolves to disabled (safe misconfig default)."""
+    from src.auth import require_api_key
+    from src.config import get_settings
+
+    monkeypatch.setenv("API_KEY", "   ")
+    if hasattr(get_settings, "cache_clear"):
+        get_settings.cache_clear()
+    try:
+        # Must NOT raise: a whitespace-only key is treated as unset/disabled
+        # rather than enabling auth with a trivially guessable key.
+        require_api_key(x_api_key=None)
+    finally:
+        monkeypatch.delenv("API_KEY", raising=False)
+        if hasattr(get_settings, "cache_clear"):
+            get_settings.cache_clear()
+
+
+def test_401_sets_www_authenticate_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 401 challenge includes a WWW-Authenticate header (RFC 9110)."""
+    from fastapi import HTTPException
+
+    from src.auth import require_api_key
+    from src.config import get_settings
+
+    monkeypatch.setenv("API_KEY", "secret-xyz")
+    if hasattr(get_settings, "cache_clear"):
+        get_settings.cache_clear()
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            require_api_key(x_api_key=None)
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.headers == {"WWW-Authenticate": "ApiKey"}
+    finally:
+        monkeypatch.delenv("API_KEY", raising=False)
+        if hasattr(get_settings, "cache_clear"):
+            get_settings.cache_clear()

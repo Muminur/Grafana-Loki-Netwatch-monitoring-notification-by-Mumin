@@ -55,11 +55,19 @@ def require_api_key(
         ``401 Unauthorized`` when auth is enabled and the header is missing
         or does not match the configured key.
     """
-    configured_key = get_settings().api_key
+    # Strip surrounding whitespace so a whitespace-only API_KEY (a likely
+    # misconfiguration) resolves to "disabled" rather than enabling auth with a
+    # trivially guessable key, and so stray .env whitespace can't cause a silent
+    # mismatch.
+    configured_key = get_settings().api_key.strip()
     if not configured_key:
         # Auth disabled — allow every request (backward-compatible default).
         return
     # Auth enabled: require a matching header using constant-time comparison.
     provided = x_api_key or ""
     if not secrets.compare_digest(provided.encode(), configured_key.encode()):
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API key",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
