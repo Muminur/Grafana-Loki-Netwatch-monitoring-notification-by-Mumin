@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, model_validator
 
 from src.data.bgp_bundle_map import lookup_bundle_for_bgp_peer
@@ -508,6 +509,27 @@ async def health() -> dict[str, Any]:
         "active_connections": _active_connections,
         "database_ok": database_ok,
     }
+
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics
+# ---------------------------------------------------------------------------
+
+
+@router.get("/metrics", include_in_schema=False)
+async def metrics_endpoint() -> Response:
+    """Prometheus metrics exposition endpoint.
+
+    Returns the current metric values in the Prometheus text exposition
+    format (``text/plain`` with version negotiated by prometheus-client).
+    Unauthenticated — scrapers need direct access.  Uses a dedicated
+    :class:`CollectorRegistry` so it never interferes with other
+    instrumented components.
+    """
+    from src.metrics import render  # noqa: PLC0415
+
+    content, media_type = render()
+    return Response(content=content, media_type=media_type)
 
 
 # ---------------------------------------------------------------------------

@@ -54,6 +54,11 @@ from src.database.crud import insert_alert
 from src.database.migrations import create_tables, get_engine
 from src.database.models import AlertLog
 from src.logging_config import configure_logging
+from src.metrics import (
+    record_alert,
+    record_dedup_suppressed,
+    record_notification,
+)
 from src.notifications.discord import send_discord_alert
 from src.notifications.escalation import EscalationEngine
 from src.notifications.telegram import send_telegram_alert
@@ -192,6 +197,8 @@ async def _on_syslog_line(raw_line: str) -> None:
     # ── Dedup check ────────────────────────────────────────────────────────
     if _dedup is not None:
         should_send, _reason = _dedup.should_notify(enriched)
+        if not should_send:
+            record_dedup_suppressed()
     else:
         should_send = True
 
@@ -264,10 +271,10 @@ async def _on_syslog_line(raw_line: str) -> None:
     # ── Notify (Discord + Telegram) ────────────────────────────────────────
     if will_notify:
         settings = get_settings()
-        if settings.discord_enabled:
-            await send_discord_alert(enriched, settings)
-        if settings.telegram_enabled:
-            await send_telegram_alert(enriched, settings)
+        if settings.discord_enabled and await send_discord_alert(enriched, settings):
+            record_notification("discord")
+        if settings.telegram_enabled and await send_telegram_alert(enriched, settings):
+            record_notification("telegram")
         if _escalation is not None:
             _escalation.track_alert(enriched)
 
@@ -296,6 +303,7 @@ async def _on_syslog_line(raw_line: str) -> None:
         )
 
     increment_alerts_processed()
+    record_alert(enriched.classification)
 
 
 # ---------------------------------------------------------------------------
