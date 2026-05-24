@@ -24,6 +24,20 @@ class AlertLog(Base):
         Index("ix_alertlog_classification_ts", "classification", "timestamp"),
         Index("ix_alertlog_device_ts", "device_name", "timestamp"),
         Index("ix_alertlog_mnemonic", "mnemonic"),
+        # Incident detail lookups: WHERE incident_id = ?
+        Index("ix_alertlog_incident_id", "incident_id"),
+        # BGP-UP silent-fault resolution query:
+        #   WHERE device_name = ? AND mnemonic IN (...)
+        #   AND interface_name IN (...) AND resolved_at IS NULL
+        #   AND timestamp >= ?
+        # Prefix (device_name, mnemonic, resolved_at) covers the equality +
+        # IS NULL filter; timestamp range is applied after the prefix scan.
+        Index(
+            "ix_alertlog_device_mnemonic_resolved",
+            "device_name",
+            "mnemonic",
+            "resolved_at",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
