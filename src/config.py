@@ -178,6 +178,10 @@ class Settings:
         default_factory=lambda: os.environ.get("ASN_API_KEY", ""),
         repr=False,
     )
+    api_key: str = field(
+        default_factory=lambda: os.environ.get("API_KEY", ""),
+        repr=False,
+    )
     cors_origins: list[str] = field(
         default_factory=lambda: [
             o.strip()

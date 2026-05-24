@@ -14,10 +14,11 @@ from collections import deque
 from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, model_validator
 
+from src.auth import require_api_key
 from src.data.bgp_bundle_map import lookup_bundle_for_bgp_peer
 from src.data.device_map import DEVICE_MAP
 from src.data.topology import NETWORK_TOPOLOGY
@@ -966,9 +967,14 @@ async def get_incident(incident_id: str) -> dict[str, Any]:
     raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found")
 
 
-@router.post("/api/incidents/{incident_id}/acknowledge")
+@router.post(
+    "/api/incidents/{incident_id}/acknowledge",
+    dependencies=[Depends(require_api_key)],
+)
 async def acknowledge_incident(incident_id: str) -> dict[str, Any]:
     """Acknowledge an active incident.
+
+    Protected when ``API_KEY`` is configured; open when ``API_KEY`` is unset.
 
     Parameters
     ----------
@@ -978,6 +984,7 @@ async def acknowledge_incident(incident_id: str) -> dict[str, Any]:
     Raises
     ------
     HTTPException
+        401 if API-key auth is enabled and the header is missing/wrong.
         404 if the incident is not found.
     """
     for incident in _incidents_store:
@@ -1124,9 +1131,14 @@ async def get_hardware_noise_setting() -> dict[str, bool]:
     return {"hardware_defects_as_noise": _hardware_defects_as_noise}
 
 
-@router.post("/api/settings/hardware-noise")
+@router.post(
+    "/api/settings/hardware-noise",
+    dependencies=[Depends(require_api_key)],
+)
 async def set_hardware_noise_setting(enabled: bool = True) -> dict[str, bool]:
     """Toggle the hardware-defects-as-noise setting.
+
+    Protected when ``API_KEY`` is configured; open when ``API_KEY`` is unset.
 
     When enabled (default), RX_FAULT/SIGNAL/RFI events on backbone bundle
     member interfaces are reclassified as NOISE and excluded from active
@@ -1193,11 +1205,17 @@ async def get_maintenance_windows() -> list[dict[str, Any]]:
     return active
 
 
-@router.post("/api/maintenance", status_code=201)
+@router.post(
+    "/api/maintenance",
+    status_code=201,
+    dependencies=[Depends(require_api_key)],
+)
 async def create_maintenance_window(
     body: MaintenanceWindowCreate,
 ) -> dict[str, Any]:
     """Create a new maintenance window.
+
+    Protected when ``API_KEY`` is configured; open when ``API_KEY`` is unset.
 
     Parameters
     ----------
@@ -1263,9 +1281,15 @@ async def create_maintenance_window(
     return window
 
 
-@router.delete("/api/maintenance/{window_id}", status_code=200)
+@router.delete(
+    "/api/maintenance/{window_id}",
+    status_code=200,
+    dependencies=[Depends(require_api_key)],
+)
 async def delete_maintenance_window(window_id: int) -> dict[str, Any]:
     """Delete a maintenance window by ID.
+
+    Protected when ``API_KEY`` is configured; open when ``API_KEY`` is unset.
 
     Parameters
     ----------
@@ -1275,6 +1299,7 @@ async def delete_maintenance_window(window_id: int) -> dict[str, Any]:
     Raises
     ------
     HTTPException
+        401 if API-key auth is enabled and the header is missing/wrong.
         404 if the window is not found (in-memory cache is the authoritative
         check when no DB is available; DB check applies when the engine is set).
 
