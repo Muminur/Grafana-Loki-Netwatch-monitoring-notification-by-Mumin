@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -10,13 +11,71 @@ from dotenv import load_dotenv
 
 _env_path = Path(__file__).resolve().parent.parent / ".env"
 
+# ---------------------------------------------------------------------------
+# MONITOR_HOST validation
+# ---------------------------------------------------------------------------
+
+# Reject anything that looks like a URI scheme (e.g. file://, http://).
+_SCHEME_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+\-.]*://")
+
+# Minimal hostname / IPv4 / IPv6-bracket validity check.
+# Accepts dotted-decimal IPv4, bracketed IPv6, and RFC-1123 hostnames.
+_HOSTNAME_RE = re.compile(
+    r"""
+    ^
+    (
+        # IPv4: four octets 0-255
+        (?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)
+        |
+        # IPv6 bracket form: [::1] etc.
+        \[[\da-fA-F:]+\]
+        |
+        # Hostname: labels of alnum + hyphen, no leading/trailing hyphen
+        (?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*
+        [a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?
+    )
+    $
+    """,
+    re.VERBOSE,
+)
+
+
+def _validate_monitor_host(value: str) -> str:
+    """Validate *value* as a safe host for outbound connections.
+
+    Raises
+    ------
+    ValueError
+        When *value* is empty, contains a URI scheme, or does not match a
+        valid IP address or hostname pattern.  This guards against SSRF via
+        mis-configuration (e.g. ``file://...`` or an empty string that would
+        produce a malformed URL).
+    """
+    if not value or not value.strip():
+        msg = "MONITOR_HOST must not be empty"
+        raise ValueError(msg)
+    if _SCHEME_RE.match(value):
+        msg = f"MONITOR_HOST must be a hostname or IP address, not a URI: {value!r}"
+        raise ValueError(msg)
+    if not _HOSTNAME_RE.match(value.strip()):
+        msg = f"MONITOR_HOST is not a valid hostname or IP address: {value!r}"
+        raise ValueError(msg)
+    return value.strip()
+
+
+# ---------------------------------------------------------------------------
+# Settings dataclass
+# ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class Settings:
     """Application settings derived from environment variables."""
 
     monitor_host: str = field(
-        default_factory=lambda: os.environ.get("MONITOR_HOST", "192.168.200.230")
+        default_factory=lambda: _validate_monitor_host(
+            os.environ.get("MONITOR_HOST", "192.168.200.230")
+        )
     )
     syslog_mode: str = field(
         default_factory=lambda: os.environ.get("SYSLOG_MODE", "loki_ws")
@@ -71,6 +130,15 @@ class Settings:
     asn_api_key: str = field(
         default_factory=lambda: os.environ.get("ASN_API_KEY", ""),
         repr=False,
+    )
+    cors_origins: list[str] = field(
+        default_factory=lambda: [
+            o.strip()
+            for o in os.environ.get(
+                "CORS_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080"
+            ).split(",")
+            if o.strip()
+        ]
     )
 
     @property

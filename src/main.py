@@ -28,10 +28,11 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.api.routes import (
     add_alert_to_store,
@@ -55,9 +56,54 @@ from src.notifications.escalation import EscalationEngine
 from src.notifications.telegram import send_telegram_alert
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
 _log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Security-headers middleware
+# ---------------------------------------------------------------------------
+
+# Content-Security-Policy rationale:
+#   * default-src 'self'        — restrict all resource types to same origin
+#   * script-src 'self' 'unsafe-inline' cdn.jsdelivr.net
+#                               — Chart.js CDN fallback; inline clock script
+#                                 in base.html and JS in templates
+#   * style-src 'self' 'unsafe-inline' fonts.googleapis.com
+#                               — neon-theme.css + Chart.js inline styles;
+#                                 Google Fonts CDN fallback in base.html
+#   * font-src 'self' fonts.gstatic.com
+#                               — Google Fonts glyph files fallback
+#   * img-src 'self' data:      — data: URIs used by Chart.js for canvas export
+#   * connect-src 'self' ws: wss:
+#                               — WebSocket connections (/ws, /ws/filtered)
+#   * frame-ancestors 'none'    — equivalent defence-in-depth alongside
+#                                 X-Frame-Options: DENY
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' fonts.googleapis.com; "
+    "font-src 'self' fonts.gstatic.com; "
+    "img-src 'self' data:; "
+    "connect-src 'self' ws: wss:; "
+    "frame-ancestors 'none'"
+)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Attach security-related HTTP response headers to every response."""
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Content-Security-Policy"] = _CSP
+        return response
+
 
 # ---------------------------------------------------------------------------
 # Application-level singletons
@@ -66,7 +112,7 @@ _log = logging.getLogger(__name__)
 _ws_manager = WebSocketManager()
 
 # Pipeline singletons — populated during lifespan startup
-_engine: object = None
+_engine: AsyncEngine | None = None
 _correlator: CorrelationEngine | None = None
 _dedup: DedupEngine | None = None
 _escalation: EscalationEngine | None = None
@@ -138,7 +184,7 @@ async def _on_syslog_line(raw_line: str) -> None:
                 incident_id=incident_id,
                 notification_sent=will_notify,
             )
-            async with AsyncSession(_engine) as session:  # type: ignore[arg-type]
+            async with AsyncSession(_engine) as session:
                 await insert_alert(session, alert)
                 await session.commit()
         except Exception as exc:  # noqa: BLE001
@@ -421,13 +467,32 @@ app = FastAPI(
 )
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
+# Origins are loaded from CORS_ORIGINS env var via Settings.cors_origins.
+# Default: http://localhost:8080, http://127.0.0.1:8080
+#
+# NOTE: Starlette processes middleware in reverse-add order (last added =
+# outermost).  CORSMiddleware must be added BEFORE SecurityHeadersMiddleware
+# so that CORS is innermost and SecurityHeadersMiddleware (added last, outermost)
+# runs on every response — including OPTIONS preflight short-circuits from CORS.
+try:
+    _cors_origins = get_settings().cors_origins
+except ValueError as _cfg_err:
+    # Fail fast at startup with a clear message rather than a bare attribute
+    # error later when the CORS middleware tries to use an unset variable.
+    _log.critical("Invalid configuration — cannot start: %s", _cfg_err)
+    raise
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080", "http://127.0.0.1:8080"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
+
+# ── Security headers (outermost — must be added LAST so it wraps everything) ─
+# Added after CORSMiddleware so it is outermost and runs on ALL responses,
+# including CORS preflight (OPTIONS) short-circuit responses.
+app.add_middleware(SecurityHeadersMiddleware)
 
 # ── Static files ─────────────────────────────────────────────────────────────
 app.mount(
@@ -485,13 +550,17 @@ async def settings_page(request: Request) -> HTMLResponse:
 @app.websocket("/ws")
 async def ws_all(websocket: WebSocket) -> None:
     """Live WebSocket — broadcasts all classified alerts."""
+    from starlette.websockets import WebSocketDisconnect  # noqa: PLC0415
+
     await _ws_manager.connect(websocket)
     try:
         while True:
             # Keep alive; ignore inbound messages from browser clients
             await websocket.receive_text()
-    except Exception:  # noqa: BLE001,S110
-        _log.debug("WebSocket /ws client disconnected")
+    except WebSocketDisconnect:
+        _log.debug("WebSocket /ws client disconnected normally")
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("WebSocket /ws unexpected error: %s", exc)
     finally:
         await _ws_manager.disconnect(websocket)
 
@@ -499,13 +568,17 @@ async def ws_all(websocket: WebSocket) -> None:
 @app.websocket("/ws/filtered")
 async def ws_filtered(websocket: WebSocket) -> None:
     """Filtered WebSocket — client sends its classification filter as first message."""
+    from starlette.websockets import WebSocketDisconnect  # noqa: PLC0415
+
     await _ws_manager.connect(websocket)
     try:
         classification = await websocket.receive_text()
         _ws_manager.set_filter(websocket, classification.strip().upper())
         while True:
             await websocket.receive_text()
-    except Exception:  # noqa: BLE001,S110
-        _log.debug("WebSocket /ws/filtered client disconnected")
+    except WebSocketDisconnect:
+        _log.debug("WebSocket /ws/filtered client disconnected normally")
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("WebSocket /ws/filtered unexpected error: %s", exc)
     finally:
         await _ws_manager.disconnect(websocket)
