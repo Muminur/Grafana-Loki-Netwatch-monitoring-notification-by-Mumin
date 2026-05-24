@@ -508,6 +508,74 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         settings.bundle_group_window_seconds,
     )
 
+    # ── Restore in-flight escalation state from DB ─────────────────────────
+    # Reconstruct _escalation from AlertLog rows so in-flight timers are
+    # preserved across restarts.  The original tracked_at is approximated
+    # from the row's timestamp (the moment the alert was first ingested).
+    # Only CRITICAL rows that are unresolved AND unacknowledged within a
+    # bounded recent window are considered — capped at 200 rows so startup
+    # remains fast even against very large DBs.
+    try:
+        from datetime import datetime as _datetime  # noqa: PLC0415
+        from datetime import timedelta as _timedelta  # noqa: PLC0415
+        from datetime import timezone as _timezone  # noqa: PLC0415
+
+        from sqlalchemy import and_ as _and  # noqa: PLC0415
+        from sqlalchemy import select as _select  # noqa: PLC0415
+
+        _utc6_tz = _timezone(_timedelta(hours=6))
+        # Use 2× the delay as the lookback window; access via public-friendly
+        # notation by reading the already-set private attr once at startup.
+        _esc_delay_secs = _escalation._delay.total_seconds()  # noqa: SLF001
+        _esc_cutoff = _datetime.now(_utc6_tz) - _timedelta(seconds=_esc_delay_secs * 2)
+
+        async with AsyncSession(engine) as session:
+            _esc_stmt = (
+                _select(AlertLog)
+                .where(
+                    _and(
+                        AlertLog.classification == "CRITICAL",
+                        AlertLog.resolved_at.is_(None),
+                        AlertLog.acknowledged_at.is_(None),
+                        AlertLog.timestamp >= _esc_cutoff,
+                    )
+                )
+                .order_by(AlertLog.timestamp.asc())
+                .limit(200)
+            )
+            _esc_result = await session.execute(_esc_stmt)
+            _esc_rows = _esc_result.scalars().all()
+
+        _restored = 0
+        for _row in _esc_rows:
+            if not _row.raw:
+                continue
+            try:
+                _parsed = parse_syslog(_row.raw)
+                if _parsed is None:
+                    continue
+                _enriched = enrich(_parsed)
+                _tracked_at = _row.timestamp
+                if _tracked_at.tzinfo is None:
+                    _tracked_at = _tracked_at.replace(tzinfo=_utc6_tz)
+                _escalation.restore(
+                    _enriched,
+                    tracked_at=_tracked_at,
+                    acknowledged=False,
+                )
+                _restored += 1
+            except Exception as _row_exc:  # noqa: BLE001
+                _log.debug(
+                    "Escalation restore: skipping row id=%s: %s",
+                    _row.id,
+                    _row_exc,
+                )
+
+        if _restored:
+            _log.info("Restored %d in-flight escalation entries from DB", _restored)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("Could not restore escalation state from DB: %s", exc)
+
     # ── Syslog receiver (resume from last known DB timestamp) ────────────
     resume_ns = 0
     try:

@@ -64,6 +64,7 @@ class AlertLog(Base):
     notification_sent: Mapped[bool] = mapped_column(default=False)
     resolved_at: Mapped[datetime | None] = mapped_column(default=None)
     resolution_reason: Mapped[str] = mapped_column(String(64), default="")
+    acknowledged_at: Mapped[datetime | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 

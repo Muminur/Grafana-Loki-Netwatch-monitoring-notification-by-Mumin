@@ -6,8 +6,10 @@ as pending escalations after a configurable delay (default 15 minutes).
 Only CRITICAL-classified events are tracked.  Non-critical events passed to
 ``track_alert`` are silently ignored.
 
-This is a purely in-memory implementation — escalation state is lost on
-restart.  A database-backed implementation is planned for a later milestone.
+In-flight escalation state (unresolved, unacknowledged CRITICAL alerts) is
+reconstructed from the ``AlertLog`` database table on application startup via
+:meth:`EscalationEngine.restore`, preserving the original escalation clock
+across restarts.
 """
 
 from __future__ import annotations
@@ -103,6 +105,58 @@ class EscalationEngine:
             self._acked.add(key)
         _log.debug("Alert acknowledged: %s/%s", device_name, mnemonic)
         return True
+
+    def restore(
+        self,
+        enriched: EnrichedLog,
+        tracked_at: datetime,
+        acknowledged: bool,
+    ) -> None:
+        """Restore a previously tracked alert from persisted state.
+
+        Repopulates ``_tracked`` (and optionally ``_acked``) exactly as
+        ``track_alert`` would, but uses the supplied ``tracked_at`` timestamp
+        so the original escalation clock is preserved across restarts.
+
+        Non-CRITICAL alerts are silently ignored (same guard as
+        ``track_alert``).
+
+        Parameters
+        ----------
+        enriched:
+            The fully enriched syslog event.
+        tracked_at:
+            The original wall-clock time at which the alert was first tracked.
+            Preserving this value ensures that an alert tracked 14 minutes
+            before a restart remains 14 minutes into its escalation window
+            after the restart, rather than restarting the clock from zero.
+        acknowledged:
+            If ``True`` the key is added to ``_acked`` so the alert is not
+            re-escalated.  If ``False`` the key is discarded from ``_acked``
+            (same behaviour as a fresh ``track_alert`` call).
+        """
+        if enriched.classification != "CRITICAL":
+            _log.debug(
+                "restore: skipping non-CRITICAL event: %s/%s",
+                enriched.device_name,
+                enriched.parsed.mnemonic,
+            )
+            return
+
+        discriminator = enriched.bgp_neighbor or enriched.interface_name or ""
+        key = (enriched.device_name, enriched.parsed.mnemonic, discriminator)
+        self._tracked[key] = (enriched, tracked_at)
+        if acknowledged:
+            self._acked.add(key)
+        else:
+            self._acked.discard(key)
+        _log.debug(
+            "Restored escalation tracking: %s/%s (tracked_at=%s acknowledged=%s)",
+            enriched.device_name,
+            enriched.parsed.mnemonic,
+            tracked_at.isoformat(),
+            acknowledged,
+        )
 
     def get_pending_escalations(self) -> list[EnrichedLog]:
         """Return alerts that need escalation (unacknowledged after delay).
