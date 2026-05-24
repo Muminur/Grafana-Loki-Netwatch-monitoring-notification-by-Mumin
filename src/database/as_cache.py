@@ -8,6 +8,7 @@ and expire after ``TTL_HOURS`` hours.  Callers should check
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -22,6 +23,29 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 TTL_HOURS: int = 24  # Cache time-to-live in hours
+
+# External HTTP request settings
+_HTTP_TIMEOUT: float = 4.0  # seconds — tight timeout for external AS API
+_MAX_RETRIES: int = 2  # maximum attempts (1 original + 1 retry)
+_RETRY_BACKOFF: float = 0.5  # seconds to wait between retries
+
+# HTTP status codes that warrant a retry (transient server errors)
+_RETRYABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+
+
+def _safe_url(url: str, params: dict[str, str]) -> str:
+    """Return a log-safe representation of a URL with sensitive params redacted.
+
+    Any parameter named ``key``, ``api_key``, ``apikey``, or ``token``
+    is replaced with ``<redacted>`` so that secrets never appear in log
+    output or exception messages.
+    """
+    safe_params = {
+        k: ("<redacted>" if k.lower() in {"key", "api_key", "apikey", "token"} else v)
+        for k, v in params.items()
+    }
+    param_str = "&".join(f"{k}={v}" for k, v in safe_params.items())
+    return f"{url}?{param_str}" if param_str else url
 
 
 async def get_cached_as(session: AsyncSession, asn: int) -> ASCache | None:
@@ -46,7 +70,8 @@ async def get_cached_as(session: AsyncSession, asn: int) -> ASCache | None:
 
     expiry_threshold = datetime.now(tz=UTC) - timedelta(hours=TTL_HOURS)
 
-    # Support both timezone-aware and timezone-naive datetimes stored in SQLite
+    # Normalise tz-naive timestamps (SQLite strips tzinfo on round-trip) to UTC
+    # before comparing so the comparison is always between two aware datetimes.
     cached_at = record.cached_at
     if cached_at.tzinfo is None:
         cached_at = cached_at.replace(tzinfo=UTC)
@@ -119,6 +144,11 @@ async def resolve_as_name(
     Lookup order: static AS database → SQLite cache → BigDataCloud API.
     API results are cached so subsequent lookups never hit the network.
 
+    The external HTTP call uses a tight timeout (``_HTTP_TIMEOUT`` seconds)
+    and retries up to ``_MAX_RETRIES`` times for transient errors (connect
+    failures, 429/5xx responses).  All failures return ``""`` — this function
+    never raises.  Secrets (api_key) are never written to logs.
+
     Returns the org name, or ``""`` if all sources fail.
     """
     if asn <= 0:
@@ -137,27 +167,85 @@ async def resolve_as_name(
     if not api_key:
         return ""
 
-    try:
-        import httpx  # noqa: PLC0415
+    import httpx  # noqa: PLC0415
 
-        url = "https://api-bdc.net/data/asn-info"
-        params = {
-            "asn": f"AS{asn}",
-            "localityLanguage": "en",
-            "key": api_key,
-        }
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url, params=params)
+    url = "https://api-bdc.net/data/asn-info"
+    params: dict[str, str] = {
+        "asn": f"AS{asn}",
+        "localityLanguage": "en",
+        "key": api_key,
+    }
+    safe_url = _safe_url(url, params)
+
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+                resp = await client.get(url, params=params)
+
+            if resp.status_code in _RETRYABLE_STATUS:
+                if attempt < _MAX_RETRIES:
+                    _log.warning(
+                        "BigDataCloud ASN lookup transient HTTP %d for AS%d "
+                        "(attempt %d/%d); retrying",
+                        resp.status_code,
+                        asn,
+                        attempt,
+                        _MAX_RETRIES,
+                    )
+                    await asyncio.sleep(_RETRY_BACKOFF)
+                    continue
+                _log.warning(
+                    "BigDataCloud ASN lookup HTTP %d for AS%d after %d attempts; "
+                    "url=%s",
+                    resp.status_code,
+                    asn,
+                    attempt,
+                    safe_url,
+                )
+                return ""
+
             resp.raise_for_status()
             data = resp.json()
 
-        org_name: str = data.get("organisation", "") or data.get("name", "")
+            org_name: str = data.get("organisation", "") or data.get("name", "")
 
-        if org_name:
-            await cache_as_lookup(session, asn, org_name, "external", "bigdatacloud")
-            _log.info("Cached AS%d → %s (BigDataCloud)", asn, org_name)
-            return org_name
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("BigDataCloud ASN lookup failed for AS%d: %s", asn, exc)
+            if org_name:
+                await cache_as_lookup(
+                    session, asn, org_name, "external", "bigdatacloud"
+                )
+                _log.info("Cached AS%d → %s (BigDataCloud)", asn, org_name)
+                return org_name
 
-    return ""
+            return ""
+
+        except (httpx.TimeoutException, httpx.ConnectError) as exc:
+            if attempt < _MAX_RETRIES:
+                _log.warning(
+                    "BigDataCloud ASN lookup transient error for AS%d "
+                    "(attempt %d/%d): %s; retrying",
+                    asn,
+                    attempt,
+                    _MAX_RETRIES,
+                    type(exc).__name__,
+                )
+                await asyncio.sleep(_RETRY_BACKOFF)
+                continue
+            _log.warning(
+                "BigDataCloud ASN lookup failed for AS%d after %d attempts: %s; url=%s",
+                asn,
+                attempt,
+                type(exc).__name__,
+                safe_url,
+            )
+            return ""
+
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "BigDataCloud ASN lookup failed for AS%d: %s; url=%s",
+                asn,
+                type(exc).__name__,
+                safe_url,
+            )
+            return ""
+
+    return ""  # pragma: no cover
