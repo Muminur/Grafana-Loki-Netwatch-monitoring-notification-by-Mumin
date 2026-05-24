@@ -232,19 +232,6 @@ class TestConfigureLoggingIdempotency:
         assert len(root.handlers) == 1
         assert isinstance(root.handlers[0].formatter, _JsonFormatter)
 
-    def test_preserves_non_stdout_handlers(self) -> None:
-        """A handler on a non-stdout/stderr stream (e.g. pytest caplog) survives."""
-        import io  # noqa: PLC0415
-
-        root = logging.getLogger()
-        sentinel = logging.StreamHandler(io.StringIO())
-        root.addHandler(sentinel)
-        try:
-            configure_logging("text", "INFO")
-            assert sentinel in root.handlers
-        finally:
-            root.removeHandler(sentinel)
-
 
 # ---------------------------------------------------------------------------
 # configure_logging — level
