@@ -193,9 +193,7 @@ class TestMonitorHostValidation:
         with pytest.raises(ValueError, match="not a valid hostname"):
             Settings()
 
-    def test_rejects_out_of_range_octet(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_rejects_out_of_range_octet(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A dotted-decimal value with an out-of-range octet is rejected."""
         monkeypatch.setenv("MONITOR_HOST", "256.0.0.1")
         with pytest.raises(ValueError, match="not a valid IP address"):
