@@ -79,6 +79,38 @@ def _validate_monitor_host(value: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# LOG_FORMAT / LOG_LEVEL validators
+# ---------------------------------------------------------------------------
+
+_VALID_LOG_FORMATS: frozenset[str] = frozenset({"text", "json"})
+_VALID_LOG_LEVELS: frozenset[str] = frozenset(
+    {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+)
+
+
+def _validate_log_format(value: str) -> str:
+    """Return *value* normalised to lower-case if it is a valid log format.
+
+    Falls back to ``"text"`` for unrecognised values so the application
+    continues to work with a safe default even when ``LOG_FORMAT`` is
+    mis-configured.
+    """
+    v = value.strip().lower()
+    return v if v in _VALID_LOG_FORMATS else "text"
+
+
+def _validate_log_level(value: str) -> str:
+    """Return *value* normalised to upper-case if it is a valid log level.
+
+    Falls back to ``"INFO"`` for unrecognised values so the application
+    continues to work with a safe default even when ``LOG_LEVEL`` is
+    mis-configured.
+    """
+    v = value.strip().upper()
+    return v if v in _VALID_LOG_LEVELS else "INFO"
+
+
+# ---------------------------------------------------------------------------
 # Settings dataclass
 # ---------------------------------------------------------------------------
 
@@ -154,6 +186,14 @@ class Settings:
             ).split(",")
             if o.strip()
         ]
+    )
+    log_format: str = field(
+        default_factory=lambda: _validate_log_format(
+            os.environ.get("LOG_FORMAT", "text")
+        )
+    )
+    log_level: str = field(
+        default_factory=lambda: _validate_log_level(os.environ.get("LOG_LEVEL", "INFO"))
     )
 
     @property

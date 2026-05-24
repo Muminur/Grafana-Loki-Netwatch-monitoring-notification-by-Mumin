@@ -22,6 +22,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -51,6 +53,7 @@ from src.core.syslog_receiver import SyslogReceiver
 from src.database.crud import insert_alert
 from src.database.migrations import create_tables, get_engine
 from src.database.models import AlertLog
+from src.logging_config import configure_logging
 from src.notifications.discord import send_discord_alert
 from src.notifications.escalation import EscalationEngine
 from src.notifications.telegram import send_telegram_alert
@@ -102,6 +105,42 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Content-Security-Policy"] = _CSP
+        return response
+
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Assign a unique request ID to each request and log the access line.
+
+    Behaviour
+    ---------
+    * Generates a UUID4 per request.
+    * Stores it on ``request.state.request_id`` so downstream handlers can
+      reference it (e.g. for structured logging in route handlers).
+    * Adds ``X-Request-ID`` to the response headers so clients can correlate
+      their own logs with server-side logs.
+    * Logs a single INFO line containing the HTTP method, path, response
+      status code, elapsed time in milliseconds, and the request ID.
+    """
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        request_id = str(uuid.uuid4())
+        request.state.request_id = request_id
+        start = time.monotonic()
+        response = await call_next(request)
+        duration_ms = (time.monotonic() - start) * 1000
+        response.headers["X-Request-ID"] = request_id
+        _log.info(
+            "%s %s %s %.1fms rid=%s",
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration_ms,
+            request_id,
+        )
         return response
 
 
@@ -347,6 +386,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
 
     settings = get_settings()
 
+    # ── Logging ────────────────────────────────────────────────────────────
+    configure_logging(settings.log_format, settings.log_level)
+    _log.info(
+        "Logging configured (format=%s level=%s)",
+        settings.log_format,
+        settings.log_level,
+    )
+
     # ── Database ───────────────────────────────────────────────────────────
     engine = await get_engine(settings.database_url)
     await create_tables(engine)
@@ -488,6 +535,14 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
+
+# ── Request-ID middleware (added second; wraps CORS, wrapped by SecurityHeaders) ─
+# Starlette processes middleware in reverse-add order, so the last-added
+# middleware is outermost.  Add order: CORS(1) → RequestID(2) → Security(3).
+# Response path: App → CORS → RequestID (sets X-Request-ID) → SecurityHeaders
+# (adds sec headers).  RequestID therefore runs BEFORE SecurityHeaders on the
+# response path, which is correct: the header is present when Security sees it.
+app.add_middleware(RequestIDMiddleware)
 
 # ── Security headers (outermost — must be added LAST so it wraps everything) ─
 # Added after CORSMiddleware so it is outermost and runs on ALL responses,
