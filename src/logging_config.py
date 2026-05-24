@@ -165,8 +165,16 @@ def configure_logging(log_format: str, log_level: str) -> None:
 
     handler.setFormatter(formatter)
 
-    # Replace all existing root handlers (idempotent).
+    # Replace only the stdout/stderr stream handlers this module manages,
+    # preserving any others (e.g. pytest's caplog LogCaptureHandler — itself a
+    # StreamHandler subclass writing to a StringIO — or file handlers) so test
+    # log-capture and external log sinks keep working. Idempotent for our own
+    # handler.
     root = logging.getLogger()
-    root.handlers.clear()
+    for existing in root.handlers[:]:
+        if isinstance(existing, logging.StreamHandler) and getattr(
+            existing, "stream", None
+        ) in (sys.stdout, sys.stderr):
+            root.removeHandler(existing)
     root.addHandler(handler)
     root.setLevel(numeric_level)
