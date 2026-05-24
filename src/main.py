@@ -113,9 +113,7 @@ async def _on_syslog_line(raw_line: str) -> None:
     # ── Store to DB ────────────────────────────────────────────────────────
     suppress = correlated.suppress_notification if correlated is not None else False
     will_notify = should_send and enriched.notify and not suppress
-    incident_id = (
-        (correlated.incident_id or "") if correlated is not None else ""
-    )
+    incident_id = (correlated.incident_id or "") if correlated is not None else ""
     if should_send and _engine is not None:
         try:
             alert = AlertLog(
@@ -157,6 +155,7 @@ async def _on_syslog_line(raw_line: str) -> None:
 
     # ── Maintenance window suppression ────────────────────────────────────
     if will_notify:
+        from datetime import UTC  # noqa: PLC0415
         from datetime import datetime as _dt  # noqa: PLC0415
 
         _now = _dt.now(UTC)
@@ -312,9 +311,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     try:
         from sqlalchemy import func, select  # noqa: PLC0415
 
-        async with AsyncSession(engine) as session:  # type: ignore[arg-type]
-            result = await session.execute(select(func.count(AlertLog.id)))
-            existing_count = result.scalar() or 0
+        async with AsyncSession(engine) as session:
+            count_result = await session.execute(select(func.count(AlertLog.id)))
+            existing_count = count_result.scalar() or 0
         if existing_count > 0:
             from src.api.routes import _set_alerts_processed  # noqa: PLC0415
 
@@ -328,9 +327,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     try:
         from src.core.classifier import classify  # noqa: PLC0415
 
-        async with AsyncSession(engine) as session:  # type: ignore[arg-type]
-            result = await session.execute(select(AlertLog))
-            rows = result.scalars().all()
+        async with AsyncSession(engine) as session:
+            reclass_result = await session.execute(select(AlertLog))
+            rows = reclass_result.scalars().all()
             fixed = 0
             for row in rows:
                 if not row.raw:
@@ -369,18 +368,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     # ── Syslog receiver (resume from last known DB timestamp) ────────────
     resume_ns = 0
     try:
-        async with AsyncSession(engine) as session:  # type: ignore[arg-type]
+        async with AsyncSession(engine) as session:
             from sqlalchemy import func as sa_func  # noqa: PLC0415
 
-            result = await session.execute(
-                select(sa_func.max(AlertLog.timestamp))
-            )
-            last_ts = result.scalar()
+            ts_result = await session.execute(select(sa_func.max(AlertLog.timestamp)))
+            last_ts = ts_result.scalar()
             if last_ts is not None:
                 resume_ns = int(last_ts.timestamp() * 1_000_000_000)
-                _log.info(
-                    "Resuming syslog poll from DB anchor: %s", last_ts
-                )
+                _log.info("Resuming syslog poll from DB anchor: %s", last_ts)
     except Exception as exc:  # noqa: BLE001
         _log.warning("Could not read last alert timestamp: %s", exc)
 

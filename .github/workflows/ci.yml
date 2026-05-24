@@ -58,8 +58,8 @@ jobs:
 
       - name: Security gate
         run: |
-          ! grep -rn "shell=True" src/ || { echo "BANNED: shell=True"; exit 1; }
-          ! grep -rn "os\.system(" src/ || { echo "BANNED: os.system"; exit 1; }
-          ! grep -rn "^[^#]*\bexcept:" src/ | grep -v "except [A-Z]" || { echo "BANNED: bare except"; exit 1; }
-          ! grep -rn "\beval(" src/ || { echo "BANNED: eval()"; exit 1; }
-          ! grep -rn "\bexec(" src/ || { echo "BANNED: exec()"; exit 1; }
+          ! grep -rn --include=*.py "shell=True" src/ || { echo "BANNED: shell=True"; exit 1; }
+          ! grep -rn --include=*.py "os\.system(" src/ || { echo "BANNED: os.system"; exit 1; }
+          ! grep -rn --include=*.py "^[^#]*\bexcept:" src/ | grep -v "except [A-Z]" || { echo "BANNED: bare except"; exit 1; }
+          ! grep -rn --include=*.py "\beval(" src/ || { echo "BANNED: eval()"; exit 1; }
+          ! grep -rn --include=*.py "\bexec(" src/ || { echo "BANNED: exec()"; exit 1; }

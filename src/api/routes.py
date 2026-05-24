@@ -76,9 +76,9 @@ def _is_recovery_event(mnemonic: str, message: str, rule_id: str = "") -> bool:
         return True
     if mnemonic in _RECOVERY_MNEMONICS_ALWAYS and "no longer" not in message:
         return True
-    if mnemonic in _RECOVERY_MNEMONICS_WITH_UP and re.search(r"\bUp\b", message):
-        return True
-    return False
+    return mnemonic in _RECOVERY_MNEMONICS_WITH_UP and bool(
+        re.search(r"\bUp\b", message)
+    )
 
 
 _IFACE_RE = re.compile(
@@ -215,7 +215,7 @@ async def resolve_silent_faults_in_db(
     Only resolves alerts from the last 24 hours to bound blast radius.
     Returns the number of rows updated.
     """
-    from sqlalchemy import update  # noqa: PLC0415
+    from sqlalchemy import CursorResult, update  # noqa: PLC0415
     from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
 
     from src.database.models import AlertLog  # noqa: PLC0415
@@ -232,9 +232,9 @@ async def resolve_silent_faults_in_db(
             .where(AlertLog.timestamp >= cutoff)
             .values(resolved_at=now, resolution_reason="bgp_up_inferred")
         )
-        result = await session.execute(stmt)
+        result = cast("CursorResult[Any]", await session.execute(stmt))
         await session.commit()
-        return cast(int, result.rowcount)
+        return result.rowcount
 
 
 class MaintenanceWindowCreate(BaseModel):
@@ -724,9 +724,7 @@ async def get_incidents() -> list[dict[str, Any]]:
             .limit(50)
         )
         if _hardware_defects_as_noise:
-            stmt = stmt.where(
-                ~AlertLog.mnemonic.in_(sorted(_SILENT_FAULT_MNEMONICS))
-            )
+            stmt = stmt.where(~AlertLog.mnemonic.in_(sorted(_SILENT_FAULT_MNEMONICS)))
         result = await session.execute(stmt)
         rows = result.scalars().all()
 

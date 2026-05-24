@@ -76,7 +76,7 @@ async def generate_daily_digest(session: AsyncSession) -> str:
 
     # Top 5 most active devices today — use naive BDT bounds to match
     # how SQLite stores timestamps (naive BDT face values, no UTC offset).
-    start = datetime(today.year, today.month, today.day, 0, 0, 0)
+    start = datetime(today.year, today.month, today.day, 0, 0, 0)  # noqa: DTZ001
     end = start + timedelta(days=1)
     top_devices_stmt = (
         select(AlertLog.device_name, func.count(AlertLog.id).label("cnt"))

@@ -9,15 +9,14 @@ and expire after ``TTL_HOURS`` hours.  Callers should check
 from __future__ import annotations
 
 import logging
-
-_log = logging.getLogger(__name__)
-
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
 from src.database.models import ASCache
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -152,7 +151,7 @@ async def resolve_as_name(
             resp.raise_for_status()
             data = resp.json()
 
-        org_name = data.get("organisation", "") or data.get("name", "")
+        org_name: str = data.get("organisation", "") or data.get("name", "")
 
         if org_name:
             await cache_as_lookup(session, asn, org_name, "external", "bigdatacloud")

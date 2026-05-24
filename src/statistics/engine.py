@@ -38,7 +38,9 @@ async def get_daily_stats(
     """
     # SQLite stores timestamps as naive BDT face values (UTC+6), so we must
     # use naive midnight bounds matching the BDT date — not UTC midnight.
-    start = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0)
+    start = datetime(  # noqa: DTZ001
+        target_date.year, target_date.month, target_date.day, 0, 0, 0
+    )
     end = start + timedelta(days=1)
 
     stmt = (
