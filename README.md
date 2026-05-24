@@ -16,8 +16,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-453_passing-00ff88?style=flat-square" alt="Tests"/>
-  <img src="https://img.shields.io/badge/coverage-97%25-00ff88?style=flat-square" alt="Coverage"/>
+  <img src="https://img.shields.io/badge/tests-650_passing-00ff88?style=flat-square" alt="Tests"/>
+  <img src="https://img.shields.io/badge/coverage-96%25-00ff88?style=flat-square" alt="Coverage"/>
   <img src="https://img.shields.io/badge/ruff-clean-00f0ff?style=flat-square" alt="Ruff"/>
   <img src="https://img.shields.io/badge/mypy-strict-8b5cf6?style=flat-square" alt="Mypy"/>
   <img src="https://img.shields.io/badge/license-proprietary-555570?style=flat-square" alt="License"/>
@@ -106,7 +106,7 @@ The correlation engine uses the **network dependency tree** to automatically det
 | Classification rules | **26** (14 CRITICAL, 3 WARNING, 6 INFO, 3 LOGIN) |
 | Syslog formats parsed | **4** (IOS-XR +06, BDT, ADMIN, bare) |
 | Dedup windows | **5 min** standard, **2 min** BGP flap, **30 sec** bundle |
-| Test suite | **453 tests**, 97% coverage |
+| Test suite | **650 tests**, 96% coverage |
 
 ---
 
@@ -340,11 +340,26 @@ Dedup is enforced at every layer: DB storage, WebSocket broadcast, and in-memory
 
 ---
 
+## Reliability & Security Hardening
+
+Production-hardening applied across the stack:
+
+- **HTTP security headers** on every response — `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`. CORS origins are configurable via `CORS_ORIGINS`.
+- **SSRF guard** — `MONITOR_HOST` is validated at startup (rejects URI schemes and malformed IP addresses).
+- **Notification delivery** — Discord/Telegram sends retry with exponential backoff, honour HTTP 429 `Retry-After`, validate webhook/token format, and sanitise message fields; secrets are never written to logs.
+- **Syslog ingest resilience** — Loki HTTP poll uses exponential backoff with a lag warning and page-boundary cursor de-duplication (no silent data loss); `health_status()` surfaces receiver state.
+- **Input limits** — the parser caps line length (ReDoS/DoS guard); the API validates `severity`/`period` filters (HTTP 400) and bounds the in-memory maintenance store; the WebSocket manager caps connections and drops slow clients (backpressure).
+- **Database** — `incident_id` and silent-fault-resolution indexes, an idempotent index migration, and connection pre-ping.
+- **AS-cache** — tight timeout, bounded retry, timezone-correct TTL, and URL/key redaction in logs.
+- **Supply chain & image** — CI runs `pip-audit`; the Docker image is pinned and non-root with a `.dockerignore`, resource limits, and `no-new-privileges`.
+
+---
+
 ## API Reference
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Health check with uptime and alert count |
+| `/health` | GET | Health check — uptime, alert count, and live DB connectivity (`database_ok`; `status: degraded` when the DB check fails) |
 | `/api/alerts` | GET | Paginated alerts with severity/device/time filters |
 | `/api/alerts/count` | GET | Alert counts by classification for a period |
 | `/api/alerts/{id}` | GET | Single alert details |
@@ -432,10 +447,10 @@ bsccl-netwatch/
 │       └── static/
 │           ├── css/neon-theme.css  # Full neon design system
 │           └── js/                # WebSocket, charts, topology, sounds, shortcuts
-├── tests/                         # 453 tests (unit + integration + e2e)
-├── Dockerfile                     # Multi-stage, non-root, health check
-├── docker-compose.yml             # Production deployment
-└── .github/workflows/ci.yml       # CI: ruff + black + mypy + pytest + coverage
+├── tests/                         # 650 tests (unit + integration + e2e)
+├── Dockerfile                     # Multi-stage, non-root, pinned, healthcheck
+├── docker-compose.yml             # Production deployment (limits, no-new-privileges)
+└── .github/workflows/ci.yml       # CI: ruff + black + mypy + pytest + coverage + pip-audit
 ```
 
 ---
@@ -449,7 +464,7 @@ GitHub Actions runs on every push and PR across a **4-cell matrix**:
 | **Python 3.11** | ruff, black, mypy, pytest, coverage | ruff, black, mypy, pytest, coverage |
 | **Python 3.12** | ruff, black, mypy, pytest, coverage | ruff, black, mypy, pytest, coverage |
 
-**Security gates** (automated grep): no `shell=True`, no `os.system(`, no `eval(`, no `exec(`, no bare `except:`.
+**Security gates**: an automated grep over Python sources (no `shell=True`, `os.system(`, `eval(`, `exec(`, or bare `except:`) plus a **`pip-audit`** dependency-vulnerability scan. Runs cancel obsolete in-progress jobs on the same ref (`concurrency`) and cache pip via `setup-python`.
 
 ---
 
