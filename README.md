@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-650_passing-00ff88?style=flat-square" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-790_passing-00ff88?style=flat-square" alt="Tests"/>
   <img src="https://img.shields.io/badge/coverage-96%25-00ff88?style=flat-square" alt="Coverage"/>
   <img src="https://img.shields.io/badge/ruff-clean-00f0ff?style=flat-square" alt="Ruff"/>
   <img src="https://img.shields.io/badge/mypy-strict-8b5cf6?style=flat-square" alt="Mypy"/>
@@ -106,7 +106,7 @@ The correlation engine uses the **network dependency tree** to automatically det
 | Classification rules | **26** (14 CRITICAL, 3 WARNING, 6 INFO, 3 LOGIN) |
 | Syslog formats parsed | **4** (IOS-XR +06, BDT, ADMIN, bare) |
 | Dedup windows | **5 min** standard, **2 min** BGP flap, **30 sec** bundle |
-| Test suite | **650 tests**, 96% coverage |
+| Test suite | **790 tests**, 96% coverage |
 
 ---
 
@@ -193,6 +193,14 @@ BUNDLE_GROUP_WINDOW_SECONDS=30
 
 # ASN organization lookup (BigDataCloud — cached in SQLite)
 ASN_API_KEY=...
+
+# Optional API authentication — empty = disabled (default). When set, mutating
+# endpoints require a matching X-API-Key header.
+API_KEY=
+
+# Logging — "text" (default) or "json" for structured logs; standard level names
+LOG_FORMAT=text
+LOG_LEVEL=INFO
 ```
 
 ---
@@ -352,14 +360,21 @@ Production-hardening applied across the stack:
 - **Database** — `incident_id` and silent-fault-resolution indexes, an idempotent index migration, and connection pre-ping.
 - **AS-cache** — tight timeout, bounded retry, timezone-correct TTL, and URL/key redaction in logs.
 - **Supply chain & image** — CI runs `pip-audit`; the Docker image is pinned and non-root with a `.dockerignore`, resource limits, and `no-new-privileges`.
+- **Authentication (opt-in)** — set `API_KEY` to require an `X-API-Key` header (constant-time check, `WWW-Authenticate` challenge on 401) for mutating endpoints; empty = disabled, so existing deployments are unaffected.
+- **State survives restart** — maintenance windows, the Hardware-Defects-as-Noise toggle, and in-flight CRITICAL escalation tracking are persisted to SQLite and restored on startup; the incident-ID counter is seeded from the DB so IDs never collide across a restart.
+- **Observability** — optional structured JSON logs (`LOG_FORMAT=json`) with a per-request `X-Request-ID`, plus a Prometheus `/metrics` endpoint (alerts processed, dedup suppressed, notifications sent, live WebSocket connections).
+- **Dedup correctness** — the window uses `max(event-time, monotonic)` elapsed so replayed/historical logs and backward clock steps are handled without mis-suppressing real alerts.
 
 ---
 
 ## API Reference
 
+> Mutating endpoints (`POST`/`DELETE`) require an `X-API-Key` header **when `API_KEY` is set**; all `GET` endpoints, `/health`, `/metrics`, and the WebSocket stay open.
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check — uptime, alert count, and live DB connectivity (`database_ok`; `status: degraded` when the DB check fails) |
+| `/metrics` | GET | Prometheus metrics (alerts processed, dedup suppressed, notifications sent, WebSocket connections) |
 | `/api/alerts` | GET | Paginated alerts with severity/device/time filters |
 | `/api/alerts/count` | GET | Alert counts by classification for a period |
 | `/api/alerts/{id}` | GET | Single alert details |
@@ -447,7 +462,7 @@ bsccl-netwatch/
 │       └── static/
 │           ├── css/neon-theme.css  # Full neon design system
 │           └── js/                # WebSocket, charts, topology, sounds, shortcuts
-├── tests/                         # 650 tests (unit + integration + e2e)
+├── tests/                         # 790 tests (unit + integration + e2e)
 ├── Dockerfile                     # Multi-stage, non-root, pinned, healthcheck
 ├── docker-compose.yml             # Production deployment (limits, no-new-privileges)
 └── .github/workflows/ci.yml       # CI: ruff + black + mypy + pytest + coverage + pip-audit
