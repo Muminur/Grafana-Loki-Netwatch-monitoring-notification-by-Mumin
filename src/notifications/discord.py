@@ -98,10 +98,7 @@ async def send_discord_alert(enriched: EnrichedLog, settings: Settings) -> bool:
         return False
 
     if not _is_valid_discord_url(settings.discord_webhook_url):
-        _log.error(
-            "discord_webhook_url has invalid format: %r — skipping.",
-            settings.discord_webhook_url,
-        )
+        _log.error("discord_webhook_url has invalid format — skipping.")
         return False
 
     payload = format_discord_embed(enriched, settings)
@@ -115,20 +112,22 @@ async def send_discord_alert(enriched: EnrichedLog, settings: Settings) -> bool:
                     json=payload,
                 )
         except httpx.TimeoutException as exc:
-            last_error = f"timeout: {exc}"
+            # Log the exception type only — httpx error strings embed the
+            # request URL, which for a webhook is a secret.
+            last_error = f"timeout: {type(exc).__name__}"
             _log.warning(
                 "Discord request timed out (attempt %d/%d): %s",
                 attempt,
                 _MAX_ATTEMPTS,
-                exc,
+                type(exc).__name__,
             )
         except httpx.RequestError as exc:
-            last_error = f"request error: {exc}"
+            last_error = f"request error: {type(exc).__name__}"
             _log.warning(
                 "Discord HTTP request failed (attempt %d/%d): %s",
                 attempt,
                 _MAX_ATTEMPTS,
-                exc,
+                type(exc).__name__,
             )
         else:
             if response.status_code in (200, 204):

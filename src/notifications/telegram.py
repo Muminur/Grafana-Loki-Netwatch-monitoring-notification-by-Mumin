@@ -119,20 +119,22 @@ async def send_telegram_alert(enriched: EnrichedLog, settings: Settings) -> bool
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(url, json=payload)
         except httpx.TimeoutException as exc:
-            last_error = f"timeout: {exc}"
+            # Log the exception type only — httpx error strings embed the
+            # request URL, which contains the bot token.
+            last_error = f"timeout: {type(exc).__name__}"
             _log.warning(
                 "Telegram request timed out (attempt %d/%d): %s",
                 attempt,
                 _MAX_ATTEMPTS,
-                exc,
+                type(exc).__name__,
             )
         except httpx.RequestError as exc:
-            last_error = f"request error: {exc}"
+            last_error = f"request error: {type(exc).__name__}"
             _log.warning(
                 "Telegram HTTP request failed (attempt %d/%d): %s",
                 attempt,
                 _MAX_ATTEMPTS,
-                exc,
+                type(exc).__name__,
             )
         else:
             if response.status_code == 200:
