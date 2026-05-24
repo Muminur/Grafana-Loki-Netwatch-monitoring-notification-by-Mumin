@@ -2,15 +2,47 @@
 
 Produces Discord embed dicts and Telegram Markdown strings from EnrichedLog
 objects.  No I/O — pure data transformation.
+
+All string fields sourced from log content are passed through sanitisation
+helpers before being embedded in payload structures.  The payloads are always
+serialised to JSON (via ``httpx``'s ``json=`` parameter), so there is no
+risk of HTTP-body injection; however, we still scrub control characters and
+overly-long strings defensively to avoid payload truncation issues on the
+receiving end.
 """
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from src.config import Settings
     from src.core.enricher import EnrichedLog
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Injection / sanitisation helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_MAX_FIELD_LEN = 1024  # Discord embed field value limit
+_MAX_TEXT_LEN = 4096  # Telegram message limit
+
+
+def _sanitise(value: str, max_len: int = _MAX_FIELD_LEN) -> str:
+    """Strip ASCII control characters and truncate *value* to *max_len* chars.
+
+    This is a defence-in-depth measure.  Because all payloads are transmitted
+    as JSON (via ``httpx``'s ``json=`` parameter, which uses ``json.dumps``
+    internally), there is no string-concatenation path that could allow log
+    content to escape the payload structure.  Nevertheless, removing stray
+    control characters prevents display artefacts in Discord/Telegram clients.
+    """
+    cleaned = _CTRL_RE.sub("", value)
+    if len(cleaned) > max_len:
+        cleaned = cleaned[: max_len - 1] + "…"  # … ellipsis
+    return cleaned
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -78,25 +110,26 @@ def _build_discord_fields(enriched: EnrichedLog) -> list[dict[str, Any]]:
     fields: list[dict[str, Any]] = []
 
     def _add(name: str, value: str, inline: bool = True) -> None:
-        if value:
-            fields.append({"name": name, "value": value, "inline": inline})
+        safe_value = _sanitise(value)
+        if safe_value:
+            fields.append({"name": name, "value": safe_value, "inline": inline})
 
     _add("Device", enriched.device_name)
     _add("Location", enriched.device_location)
     _add("Event", enriched.event_type)
 
     if enriched.bgp_neighbor:
-        peer_label = enriched.bgp_neighbor
+        peer_label = _sanitise(enriched.bgp_neighbor)
         if enriched.as_name:
-            peer_label += f" (AS{enriched.as_number} {enriched.as_name})"
+            peer_label += f" (AS{enriched.as_number} {_sanitise(enriched.as_name)})"
         elif enriched.as_number:
             peer_label += f" (AS{enriched.as_number})"
         _add("BGP Peer", peer_label, inline=False)
 
     if enriched.interface_name:
-        iface_label = enriched.interface_name
+        iface_label = _sanitise(enriched.interface_name)
         if enriched.interface_description:
-            iface_label += f" — {enriched.interface_description}"
+            iface_label += f" — {_sanitise(enriched.interface_description)}"
         _add("Interface", iface_label, inline=False)
 
     if enriched.vrf:
@@ -133,10 +166,13 @@ def format_discord_embed(enriched: EnrichedLog, settings: Settings) -> dict[str,
     color = _COLORS.get(enriched.classification, 0x444466)
     grafana_url = _grafana_deep_link(enriched, settings)
 
-    title = f"{emoji} {enriched.classification} — {enriched.event_type}"
+    safe_event_type = _sanitise(enriched.event_type)
+    safe_mnemonic = _sanitise(enriched.parsed.mnemonic)
+    safe_device = _sanitise(enriched.device_name)
+
+    title = f"{emoji} {enriched.classification} — {safe_event_type}"
     description = (
-        f"[View in Grafana]({grafana_url})\n"
-        f"`{enriched.parsed.mnemonic}` on **{enriched.device_name}**"
+        f"[View in Grafana]({grafana_url})\n`{safe_mnemonic}` on **{safe_device}**"
     )
 
     fields = _build_discord_fields(enriched)
@@ -176,36 +212,38 @@ def format_telegram_message(enriched: EnrichedLog) -> str:
     emoji = severity_emoji(enriched.classification)
     lines: list[str] = []
 
-    # Bold severity header
-    lines.append(f"*{emoji} {enriched.classification} — {enriched.event_type}*")
+    # Bold severity header — sanitise user-sourced event_type
+    safe_event_type = _sanitise(enriched.event_type)
+    lines.append(f"*{emoji} {enriched.classification} — {safe_event_type}*")
     lines.append("")
 
-    lines.append(f"*Device:* {enriched.device_name}")
+    lines.append(f"*Device:* {_sanitise(enriched.device_name)}")
     if enriched.device_location:
-        lines.append(f"*Location:* {enriched.device_location}")
+        lines.append(f"*Location:* {_sanitise(enriched.device_location)}")
 
     if enriched.bgp_neighbor:
-        peer = enriched.bgp_neighbor
+        peer = _sanitise(enriched.bgp_neighbor)
         if enriched.as_name:
-            peer += f" (AS{enriched.as_number} {enriched.as_name})"
+            peer += f" (AS{enriched.as_number} {_sanitise(enriched.as_name)})"
         elif enriched.as_number:
             peer += f" (AS{enriched.as_number})"
         lines.append(f"*Peer:* `{peer}`")
 
     if enriched.interface_name:
-        iface = enriched.interface_name
+        iface = _sanitise(enriched.interface_name)
         if enriched.interface_description:
-            iface += f" — {enriched.interface_description}"
+            iface += f" — {_sanitise(enriched.interface_description)}"
         lines.append(f"*Interface:* `{iface}`")
 
     if enriched.vrf:
-        lines.append(f"*VRF:* {enriched.vrf}")
+        lines.append(f"*VRF:* {_sanitise(enriched.vrf)}")
 
     if enriched.client_name:
-        lines.append(f"*Client:* {enriched.client_name}")
+        lines.append(f"*Client:* {_sanitise(enriched.client_name)}")
 
     lines.append("")
     ts_str = enriched.parsed.timestamp.strftime("%Y-%m-%d %H:%M:%S %Z")
     lines.append(f"_{ts_str}_")
 
-    return "\n".join(lines)
+    raw_msg = "\n".join(lines)
+    return _sanitise(raw_msg, max_len=_MAX_TEXT_LEN)
