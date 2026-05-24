@@ -224,6 +224,67 @@ def get_maintenance_store() -> deque[dict[str, Any]]:
     return _maintenance_store
 
 
+async def load_persisted_state(engine: AsyncEngine) -> None:
+    """Seed the in-memory caches from DB on startup.
+
+    Restores:
+    - All maintenance windows from the ``maintenance_window`` table into
+      ``_maintenance_store`` (replacing any prior in-memory content).
+    - The ``hardware_defects_as_noise`` toggle from the ``app_setting`` table.
+
+    This function is idempotent and safe to call once per process startup.
+    Failures are logged but never propagate — the app starts with defaults.
+
+    Parameters
+    ----------
+    engine:
+        The async DB engine to read from.
+    """
+    import logging  # noqa: PLC0415
+
+    _load_log = logging.getLogger(__name__)
+
+    global _hardware_defects_as_noise  # noqa: PLW0603
+
+    try:
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession as _AsyncSession,  # noqa: PLC0415
+        )
+
+        from src.database.crud import (  # noqa: PLC0415
+            get_app_setting,
+            list_maintenance_windows,
+        )
+
+        async with _AsyncSession(engine) as session:
+            # ── Maintenance windows ────────────────────────────────────────
+            rows = await list_maintenance_windows(session)
+            _maintenance_store.clear()
+            for row in rows:
+                _maintenance_store.append(
+                    {
+                        "id": row.id,
+                        "device_name": row.device_name,
+                        "start_time": row.start_time.isoformat(),
+                        "end_time": row.end_time.isoformat(),
+                        "reason": row.reason,
+                        "created_by": row.created_by,
+                    }
+                )
+            _load_log.info("Loaded %d maintenance windows from DB", len(rows))
+
+            # ── Hardware-noise toggle ──────────────────────────────────────
+            value = await get_app_setting(session, "hardware_defects_as_noise")
+            if value is not None:
+                _hardware_defects_as_noise = value.lower() == "true"
+                _load_log.info(
+                    "Loaded hardware_defects_as_noise=%s from DB",
+                    _hardware_defects_as_noise,
+                )
+    except Exception as exc:  # noqa: BLE001
+        _load_log.warning("Could not load persisted state from DB: %s", exc)
+
+
 async def resolve_silent_faults_in_db(
     engine: AsyncEngine,
     device_name: str,
@@ -1070,9 +1131,30 @@ async def set_hardware_noise_setting(enabled: bool = True) -> dict[str, bool]:
     When enabled (default), RX_FAULT/SIGNAL/RFI events on backbone bundle
     member interfaces are reclassified as NOISE and excluded from active
     incidents.
+
+    The new value is persisted to the database (``app_setting`` table under
+    the key ``"hardware_defects_as_noise"``) and the in-memory flag is
+    updated atomically so the hot path always reads from memory.
     """
     global _hardware_defects_as_noise  # noqa: PLW0603
     _hardware_defects_as_noise = enabled
+    if _db_engine is not None:
+        try:
+            from sqlalchemy.ext.asyncio import (
+                AsyncSession as _AsyncSession,  # noqa: PLC0415
+            )
+
+            from src.database.crud import set_app_setting  # noqa: PLC0415
+
+            async with _AsyncSession(_db_engine) as session:
+                await set_app_setting(
+                    session,
+                    "hardware_defects_as_noise",
+                    "true" if enabled else "false",
+                )
+                await session.commit()
+        except Exception:  # noqa: BLE001, S110
+            pass  # In-memory value already updated; DB failure is non-fatal
     return {"hardware_defects_as_noise": _hardware_defects_as_noise}
 
 
@@ -1127,11 +1209,50 @@ async def create_maintenance_window(
     -------
     dict
         The created maintenance window record including its assigned ``id``.
+
+    Notes
+    -----
+    Write-through: the window is persisted to the DB (when available) and
+    the in-memory cache is updated atomically so the hot path reads from
+    memory.  The DB primary key becomes the canonical ``id``; when no DB is
+    available the legacy integer counter is used as a fallback.
     """
     global _maintenance_id_counter  # noqa: PLW0603
-    _maintenance_id_counter += 1
+
+    if _db_engine is not None:
+        try:
+            from sqlalchemy.ext.asyncio import (
+                AsyncSession as _AsyncSession,  # noqa: PLC0415
+            )
+
+            from src.database.crud import (  # noqa: PLC0415
+                create_maintenance_window as _db_create,
+            )
+
+            async with _AsyncSession(_db_engine) as session:
+                db_window = await _db_create(
+                    session,
+                    device_name=body.device_name,
+                    start_time=body.start_time,
+                    end_time=body.end_time,
+                    reason=body.reason,
+                    created_by=body.created_by,
+                )
+                # Capture id BEFORE commit() — commit() expires the ORM
+                # object, and accessing id after session closes would
+                # raise DetachedInstanceError.
+                window_id = db_window.id
+                await session.commit()
+        except Exception:  # noqa: BLE001
+            # DB unavailable — fall back to the legacy in-memory counter
+            _maintenance_id_counter += 1
+            window_id = _maintenance_id_counter
+    else:
+        _maintenance_id_counter += 1
+        window_id = _maintenance_id_counter
+
     window: dict[str, Any] = {
-        "id": _maintenance_id_counter,
+        "id": window_id,
         "device_name": body.device_name,
         "start_time": body.start_time.isoformat(),
         "end_time": body.end_time.isoformat(),
@@ -1154,20 +1275,49 @@ async def delete_maintenance_window(window_id: int) -> dict[str, Any]:
     Raises
     ------
     HTTPException
-        404 if the window is not found.
+        404 if the window is not found (in-memory cache is the authoritative
+        check when no DB is available; DB check applies when the engine is set).
 
     Returns
     -------
     dict
         ``{"status": "deleted", "id": window_id}``
+
+    Notes
+    -----
+    Write-through: the window is removed from the DB (when available) and
+    the in-memory cache is updated atomically.
     """
-    for window in _maintenance_store:
+    # Remove from in-memory cache first (always the fast check)
+    in_memory_found = False
+    for window in list(_maintenance_store):
         if window.get("id") == window_id:
             _maintenance_store.remove(window)
-            return {"status": "deleted", "id": window_id}
-    raise HTTPException(
-        status_code=404, detail=f"Maintenance window {window_id} not found"
-    )
+            in_memory_found = True
+            break
+
+    # Also delete from DB (best-effort; doesn't affect the 404 decision below)
+    if _db_engine is not None:
+        try:
+            from sqlalchemy.ext.asyncio import (
+                AsyncSession as _AsyncSession,  # noqa: PLC0415
+            )
+
+            from src.database.crud import (  # noqa: PLC0415
+                delete_maintenance_window as _db_delete,
+            )
+
+            async with _AsyncSession(_db_engine) as session:
+                await _db_delete(session, window_id)
+                await session.commit()
+        except Exception:  # noqa: BLE001, S110
+            pass  # DB failure is non-fatal; in-memory already updated
+
+    if not in_memory_found:
+        raise HTTPException(
+            status_code=404, detail=f"Maintenance window {window_id} not found"
+        )
+    return {"status": "deleted", "id": window_id}
 
 
 # ---------------------------------------------------------------------------

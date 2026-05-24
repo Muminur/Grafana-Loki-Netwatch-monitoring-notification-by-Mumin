@@ -7,11 +7,12 @@ caller manages the session explicitly.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
-from src.database.models import AlertLog
+from src.database.models import AlertLog, AppSetting, MaintenanceWindow
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -108,3 +109,129 @@ async def get_alerts_by_device(
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# MaintenanceWindow CRUD
+# ---------------------------------------------------------------------------
+
+
+async def list_maintenance_windows(
+    session: AsyncSession,
+) -> list[MaintenanceWindow]:
+    """Return all maintenance windows ordered by start_time ascending.
+
+    Args:
+        session: An active async session.
+
+    Returns:
+        A list of all ``MaintenanceWindow`` instances.
+    """
+    stmt = select(MaintenanceWindow).order_by(MaintenanceWindow.start_time)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def create_maintenance_window(
+    session: AsyncSession,
+    device_name: str,
+    start_time: datetime,
+    end_time: datetime,
+    reason: str = "",
+    created_by: str = "",
+) -> MaintenanceWindow:
+    """Persist a new maintenance window and return the flushed instance.
+
+    The session is flushed so ``window.id`` is populated when this function
+    returns.  The caller is responsible for committing the transaction.
+
+    Args:
+        session: An active async session.
+        device_name: Name of the device under maintenance.
+        start_time: Maintenance window start (UTC-aware or naive UTC).
+        end_time: Maintenance window end (UTC-aware or naive UTC).
+        reason: Optional human-readable reason string.
+        created_by: Optional operator/user identifier.
+
+    Returns:
+        The persisted ``MaintenanceWindow`` with ``id`` populated.
+    """
+    window = MaintenanceWindow(
+        device_name=device_name,
+        start_time=start_time,
+        end_time=end_time,
+        reason=reason,
+        created_by=created_by,
+        created_at=datetime.now(UTC),
+    )
+    session.add(window)
+    await session.flush()
+    await session.refresh(window)
+    return window
+
+
+async def delete_maintenance_window(session: AsyncSession, window_id: int) -> bool:
+    """Delete a maintenance window by primary key.
+
+    Args:
+        session: An active async session.
+        window_id: The integer primary key of the window to delete.
+
+    Returns:
+        ``True`` if a row was deleted, ``False`` if not found.
+    """
+    stmt = select(MaintenanceWindow).where(MaintenanceWindow.id == window_id)
+    result = await session.execute(stmt)
+    window = result.scalar_one_or_none()
+    if window is None:
+        return False
+    await session.delete(window)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# AppSetting CRUD
+# ---------------------------------------------------------------------------
+
+
+async def get_app_setting(session: AsyncSession, key: str) -> str | None:
+    """Return the value for *key*, or ``None`` if the key does not exist.
+
+    Args:
+        session: An active async session.
+        key: The setting key to look up.
+
+    Returns:
+        The stored value string, or ``None`` if not found.
+    """
+    stmt = select(AppSetting).where(AppSetting.key == key)
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    return row.value if row is not None else None
+
+
+async def set_app_setting(session: AsyncSession, key: str, value: str) -> AppSetting:
+    """Upsert an application setting (insert or update).
+
+    Creates the row if it does not exist; updates ``value`` and
+    ``updated_at`` if it does.  The caller is responsible for committing.
+
+    Args:
+        session: An active async session.
+        key: The setting key.
+        value: The string value to store.
+
+    Returns:
+        The ``AppSetting`` instance.
+    """
+    stmt = select(AppSetting).where(AppSetting.key == key)
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        row = AppSetting(key=key, value=value, updated_at=datetime.now(UTC))
+        session.add(row)
+    else:
+        row.value = value
+        row.updated_at = datetime.now(UTC)
+    await session.flush()
+    return row

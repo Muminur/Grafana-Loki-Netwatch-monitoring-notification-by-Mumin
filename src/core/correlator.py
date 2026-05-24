@@ -135,6 +135,46 @@ class CorrelationEngine:
     # Public API
     # ------------------------------------------------------------------
 
+    def seed_sequence(self, max_seq_for_today: int) -> None:
+        """Seed the incident-ID sequence to avoid restart collisions.
+
+        Call once at startup after querying the maximum incident sequence
+        number already stored in the database for the current UTC day.
+        This ensures that the first new incident ID generated after a
+        restart is always higher than any existing ID in the DB, closing
+        the same-day collision gap.
+
+        The method is a no-op when *max_seq_for_today* is 0 or negative,
+        and it never *decreases* the current sequence (safe to call even
+        when the in-memory counter is already ahead of the DB).
+
+        Parameters
+        ----------
+        max_seq_for_today:
+            The highest per-day sequence number (the NNN part of an
+            ``INC-YYYYMMDD-NNN`` id) already present in the DB for the
+            current UTC date.  Pass 0 when the DB is empty or has no
+            entries for today.
+
+        Examples
+        --------
+        >>> engine = CorrelationEngine()
+        >>> engine.seed_sequence(5)   # DB has INC-20260524-001..005
+        >>> engine._generate_incident_id()
+        'INC-20260524-006'
+        """
+        if max_seq_for_today <= 0:
+            return
+        today = datetime.now(tz=UTC).strftime("%Y%m%d")
+        # Initialise the day offset if we haven't generated any IDs yet
+        if today != self._seq_current_date:
+            self._seq_day_offset = self._incident_seq
+            self._seq_current_date = today
+        # Only advance — never go backward
+        desired_global = self._seq_day_offset + max_seq_for_today
+        if desired_global > self._incident_seq:
+            self._incident_seq = desired_global
+
     def correlate(self, enriched: EnrichedLog) -> CorrelatedEvent:
         """Correlate *enriched* against recent events.
 
