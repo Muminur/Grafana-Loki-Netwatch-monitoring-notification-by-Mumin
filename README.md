@@ -16,8 +16,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-355_passing-00ff88?style=flat-square" alt="Tests"/>
-  <img src="https://img.shields.io/badge/coverage-85%25-00ff88?style=flat-square" alt="Coverage"/>
+  <img src="https://img.shields.io/badge/tests-453_passing-00ff88?style=flat-square" alt="Tests"/>
+  <img src="https://img.shields.io/badge/coverage-97%25-00ff88?style=flat-square" alt="Coverage"/>
   <img src="https://img.shields.io/badge/ruff-clean-00f0ff?style=flat-square" alt="Ruff"/>
   <img src="https://img.shields.io/badge/mypy-strict-8b5cf6?style=flat-square" alt="Mypy"/>
   <img src="https://img.shields.io/badge/license-proprietary-555570?style=flat-square" alt="License"/>
@@ -106,7 +106,7 @@ The correlation engine uses the **network dependency tree** to automatically det
 | Classification rules | **26** (14 CRITICAL, 3 WARNING, 6 INFO, 3 LOGIN) |
 | Syslog formats parsed | **4** (IOS-XR +06, BDT, ADMIN, bare) |
 | Dedup windows | **5 min** standard, **2 min** BGP flap, **30 sec** bundle |
-| Test suite | **329 tests**, 85% coverage |
+| Test suite | **453 tests**, 97% coverage |
 
 ---
 
@@ -244,6 +244,14 @@ Futuristic "Mission Control" design with:
 - **Keyboard shortcuts** — `1-5` switch tabs, `A` acknowledge, `N` mute, `/` search
 - **SVG network topology** with live device status colors
 
+### Settings & Maintenance
+- **Hardware Defects as Noise** toggle (Settings page, default ON) — classifies persistent
+  hardware faults (`RX_FAULT` / `SIGNAL` / `RFI`) on backbone P2P bundle members as NOISE
+  instead of CRITICAL, so a flapping optic doesn't drown the CRITICAL tab. Toggle off to treat
+  them as CRITICAL again. Exposed via `GET`/`POST /api/settings/hardware-noise`.
+- **Maintenance windows** — schedule planned-work windows per device (`/api/maintenance`);
+  CRITICAL notifications for that device are suppressed for the window's duration.
+
 ### Charts (Chart.js)
 - Alert timeline (stacked area, configurable range)
 - Category donut (severity distribution)
@@ -338,12 +346,18 @@ Dedup is enforced at every layer: DB storage, WebSocket broadcast, and in-memory
 |----------|--------|-------------|
 | `/health` | GET | Health check with uptime and alert count |
 | `/api/alerts` | GET | Paginated alerts with severity/device/time filters |
+| `/api/alerts/count` | GET | Alert counts by classification for a period |
 | `/api/alerts/{id}` | GET | Single alert details |
 | `/api/incidents` | GET | Active incidents |
 | `/api/incidents/{id}` | GET | Incident details with symptom list |
 | `/api/incidents/{id}/acknowledge` | POST | Acknowledge an incident |
 | `/api/stats/daily` | GET | Today's alert statistics |
 | `/api/stats/weekly` | GET | 7-day statistics |
+| `/api/stats/monthly` | GET | 30-day statistics |
+| `/api/stats/yearly` | GET | 12-month statistics |
+| `/api/settings/hardware-noise` | GET / POST | Read or toggle "Hardware Defects as Noise" |
+| `/api/maintenance` | GET / POST | List or create maintenance windows |
+| `/api/maintenance/{id}` | DELETE | Delete a maintenance window |
 | `/api/devices` | GET | All 34 devices with status |
 | `/api/topology` | GET | Network topology (nodes + links) |
 | `/api/bgp/peers` | GET | BGP peer status |
@@ -411,14 +425,14 @@ bsccl-netwatch/
 │   │   ├── sla.py                 # Client SLA tracking
 │   │   └── predictions.py         # Prefix exhaustion forecast
 │   ├── api/
-│   │   ├── routes.py              # 13 REST endpoints
+│   │   ├── routes.py              # 19 REST endpoints
 │   │   └── websocket.py           # Live push to browsers
 │   └── web/
 │       ├── templates/             # Jinja2 (base, dashboard, stats, settings)
 │       └── static/
 │           ├── css/neon-theme.css  # Full neon design system
 │           └── js/                # WebSocket, charts, topology, sounds, shortcuts
-├── tests/                         # 329 tests (unit + integration + e2e)
+├── tests/                         # 453 tests (unit + integration + e2e)
 ├── Dockerfile                     # Multi-stage, non-root, health check
 ├── docker-compose.yml             # Production deployment
 └── .github/workflows/ci.yml       # CI: ruff + black + mypy + pytest + coverage
