@@ -1,0 +1,92 @@
+# ── Version control ───────────────────────────────────────────────
+.git
+.gitignore
+
+# ── Tests & coverage ──────────────────────────────────────────────
+tests/
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# ── Python caches ─────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg
+*.egg-info/
+.eggs/
+
+# ── Tooling caches ────────────────────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.cache/
+
+# ── Virtual environments ──────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ── Environment / secrets (NEVER in image) ───────────────────────
+.env
+.env.*
+!.env.example
+*.secret
+*.key
+*.pem
+*.token
+*.cookie
+secrets/
+tokens/
+
+# ── Databases / runtime data ──────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
+data/
+logs/
+*.log
+
+# ── Documentation (not needed in image) ──────────────────────────
+docs/
+*.md
+!README.md
+
+# ── Internal Claude/project planning files ───────────────────────
+CLAUDE.md
+PLANNING.md
+TASKS.md
+.claude/
+*.omc
+.serena/
+*.docx
+
+# ── IDE / editor ─────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── OS cruft ─────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Build artefacts ───────────────────────────────────────────────
+build/
+dist/
+wheels/
+*.manifest
+*.spec
+
+# ── Scripts (not needed at runtime) ──────────────────────────────
+scripts/
