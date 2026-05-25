@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-790_passing-00ff88?style=flat-square" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-794_passing-00ff88?style=flat-square" alt="Tests"/>
   <img src="https://img.shields.io/badge/coverage-96%25-00ff88?style=flat-square" alt="Coverage"/>
   <img src="https://img.shields.io/badge/ruff-clean-00f0ff?style=flat-square" alt="Ruff"/>
   <img src="https://img.shields.io/badge/mypy-strict-8b5cf6?style=flat-square" alt="Mypy"/>
@@ -106,7 +106,7 @@ The correlation engine uses the **network dependency tree** to automatically det
 | Classification rules | **26** (14 CRITICAL, 3 WARNING, 6 INFO, 3 LOGIN) |
 | Syslog formats parsed | **4** (IOS-XR +06, BDT, ADMIN, bare) |
 | Dedup windows | **5 min** standard, **2 min** BGP flap, **30 sec** bundle |
-| Test suite | **790 tests**, 96% coverage |
+| Test suite | **794 tests**, 96% coverage |
 
 ---
 
@@ -239,6 +239,7 @@ Futuristic "Mission Control" design with:
   - Bundle: `Bundle DOWN — KKT-Core-2, TGE0/0/1/7, BE201`
   - BGP: `ADJCHANGE — KKT-Core-3 DOWN - Orange S.A.`
   - Fault: `RXFault-KKT-Core-1 - TGE0/0/0/2 - Local Fault`
+- **Client/circuit info** — each incident card shows the client name or circuit ID when available (e.g. `DHK-KKT-BH-LINK-02-VIA-F@H-KKT-Te0/1/0/23-121492`)
 - **Auto-resolution** — DOWN incidents automatically clear when the interface/BGP recovers
 - **Device-specific matching** — same interface name on different routers (connecting to different far-end equipment) is correctly treated as separate incidents
 - **ASN organization names** — resolved via BigDataCloud API, cached in SQLite (never re-fetched)
@@ -257,6 +258,8 @@ Futuristic "Mission Control" design with:
   hardware faults (`RX_FAULT` / `SIGNAL` / `RFI`) on backbone P2P bundle members as NOISE
   instead of CRITICAL, so a flapping optic doesn't drown the CRITICAL tab. Toggle off to treat
   them as CRITICAL again. Exposed via `GET`/`POST /api/settings/hardware-noise`.
+  On startup, existing unresolved noise-eligible alerts are automatically reclassified to NOISE
+  and moved out of Active Incidents. Toggling the setting also purges stale incidents immediately.
 - **Maintenance windows** — schedule planned-work windows per device (`/api/maintenance`);
   CRITICAL notifications for that device are suppressed for the window's duration.
 
@@ -462,7 +465,7 @@ bsccl-netwatch/
 │       └── static/
 │           ├── css/neon-theme.css  # Full neon design system
 │           └── js/                # WebSocket, charts, topology, sounds, shortcuts
-├── tests/                         # 790 tests (unit + integration + e2e)
+├── tests/                         # 794 tests (unit + integration + e2e)
 ├── Dockerfile                     # Multi-stage, non-root, pinned, healthcheck
 ├── docker-compose.yml             # Production deployment (limits, no-new-privileges)
 └── .github/workflows/ci.yml       # CI: ruff + black + mypy + pytest + coverage + pip-audit
