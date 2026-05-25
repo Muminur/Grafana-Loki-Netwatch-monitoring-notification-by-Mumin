@@ -120,9 +120,9 @@ def _build_discord_fields(enriched: EnrichedLog) -> list[dict[str, Any]]:
 
     if enriched.bgp_neighbor:
         peer_label = _sanitise(enriched.bgp_neighbor)
-        if enriched.as_name:
+        if enriched.as_number is not None and enriched.as_name:
             peer_label += f" (AS{enriched.as_number} {_sanitise(enriched.as_name)})"
-        elif enriched.as_number:
+        elif enriched.as_number is not None:
             peer_label += f" (AS{enriched.as_number})"
         _add("BGP Peer", peer_label, inline=False)
 
@@ -223,9 +223,9 @@ def format_telegram_message(enriched: EnrichedLog) -> str:
 
     if enriched.bgp_neighbor:
         peer = _sanitise(enriched.bgp_neighbor)
-        if enriched.as_name:
+        if enriched.as_number is not None and enriched.as_name:
             peer += f" (AS{enriched.as_number} {_sanitise(enriched.as_name)})"
-        elif enriched.as_number:
+        elif enriched.as_number is not None:
             peer += f" (AS{enriched.as_number})"
         lines.append(f"*Peer:* `{peer}`")
 
@@ -370,9 +370,9 @@ def format_escalation_telegram_message(
 
     if enriched.bgp_neighbor:
         peer = _sanitise(enriched.bgp_neighbor)
-        if enriched.as_name:
+        if enriched.as_number is not None and enriched.as_name:
             peer += f" (AS{enriched.as_number} {_sanitise(enriched.as_name)})"
-        elif enriched.as_number:
+        elif enriched.as_number is not None:
             peer += f" (AS{enriched.as_number})"
         lines.append(f"*Peer:* `{peer}`")
 

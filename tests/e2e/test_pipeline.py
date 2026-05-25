@@ -108,7 +108,7 @@ async def test_end_to_end_pipeline(db_session: AsyncSession) -> None:
         interface_description=enriched.interface_description,
         client_name=enriched.client_name,
         bgp_neighbor=enriched.bgp_neighbor,
-        as_number=enriched.as_number,
+        as_number=enriched.as_number or 0,
         as_name=enriched.as_name,
         incident_id=correlated.incident_id,
         notification_sent=should_send,

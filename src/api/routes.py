@@ -429,7 +429,7 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
         "interface_description": enriched.interface_description,
         "client": enriched.client_name,
         "neighbor": enriched.bgp_neighbor,
-        "as_number": enriched.as_number,
+        "as_number": enriched.as_number or 0,
         "as_name": enriched.as_name,
         "vrf": enriched.vrf,
         "incident_id": correlated.incident_id or "",

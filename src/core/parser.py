@@ -96,7 +96,9 @@ def _parse_inner_timestamp(inner: str) -> datetime:
     month_str = m.group("month")
     month = _MONTH_MAP.get(month_str)
     if month is None:
-        raise ValueError(f"Unknown month abbreviation: {month_str!r}")
+        raise ValueError(
+            f"Unknown month abbreviation: {month_str!r} in timestamp: {inner!r}"
+        )
     day = int(m.group("day"))
     hour = int(m.group("hour"))
     minute = int(m.group("minute"))
