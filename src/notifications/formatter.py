@@ -287,16 +287,13 @@ def format_escalation_discord_embed(
     discriminator = safe_iface or safe_neighbor
 
     title = f"🚨 ESCALATION — {safe_device}"
-    description_parts = [
-        f"`{safe_mnemonic}`",
-    ]
-    if discriminator:
-        description_parts.append(f"on `{discriminator}`")
-    description_parts.append(
+    mnemonic_part = f"`{safe_mnemonic}`"
+    discriminator_part = f" on `{discriminator}`" if discriminator else ""
+    escalation_part = (
         f"\n**Unacknowledged for {elapsed_minutes} minutes**"
         " — CRITICAL alert requires attention"
     )
-    description = " ".join(description_parts[:2]) + description_parts[-1]
+    description = mnemonic_part + discriminator_part + escalation_part
 
     ts_str = enriched.parsed.timestamp.strftime("%Y-%m-%d %H:%M:%S %Z")
 

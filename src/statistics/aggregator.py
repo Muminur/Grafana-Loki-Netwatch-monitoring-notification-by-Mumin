@@ -7,7 +7,8 @@ rather than scanning the full alert log.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from collections import defaultdict
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -18,12 +19,16 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-async def aggregate_hourly(session: AsyncSession) -> None:
+async def aggregate_hourly(
+    session: AsyncSession,
+    *,
+    lookback_days: int = 7,
+) -> None:
     """Aggregate alert counts into hourly per-device buckets.
 
-    For each (device_name, hour) combination found in ``AlertLog``, this
-    function upserts a ``HourlyStats`` row containing counts per
-    classification.
+    For each (device_name, hour) combination found in ``AlertLog`` within the
+    lookback window, this function upserts a ``HourlyStats`` row containing
+    counts per classification.
 
     The hour bucket is computed by truncating the alert's ``timestamp`` to
     the hour boundary (minutes/seconds set to zero).
@@ -31,24 +36,37 @@ async def aggregate_hourly(session: AsyncSession) -> None:
     This function is idempotent: re-running it for the same time window will
     overwrite existing rows with the same counts.
 
+    Only alerts within the last ``lookback_days`` days are processed.  This
+    bounds the query to a recent window so the function stays fast even on
+    deployments with millions of historical rows.
+
     Parameters
     ----------
     session:
         An active async session.  The caller is responsible for committing
         the transaction after this function returns.
+    lookback_days:
+        Number of days to look back from now (default 7).  Older rows are
+        not re-aggregated; their ``HourlyStats`` rows remain unchanged.
     """
-    # Fetch all alert rows (timestamp, device_name, classification)
+    # Compute a time-bounded cutoff so we only scan recent rows.
+    # SQLite stores timestamps as naive face values (UTC+6 BDT), so the
+    # cutoff must use a naive datetime to compare correctly.
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+        days=lookback_days
+    )  # noqa: DTZ001
+
+    # Fetch only recent alert rows (timestamp, device_name, classification)
     stmt = select(
         AlertLog.timestamp,
         AlertLog.device_name,
         AlertLog.classification,
-    )
+    ).where(AlertLog.timestamp >= cutoff)
+
     result = await session.execute(stmt)
     rows = result.all()
 
     # Group counts by (device_name, hour_bucket, classification)
-    from collections import defaultdict
-
     # key: (device_name, hour_bucket) → {classification: count}
     buckets: dict[tuple[str, datetime], dict[str, int]] = defaultdict(
         lambda: defaultdict(int)

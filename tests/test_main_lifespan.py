@@ -643,12 +643,14 @@ async def test_digest_scheduler_swallows_errors() -> None:
 
 @pytest.mark.usefixtures("_reset_pipeline_globals")
 async def test_escalation_checker_logs_pending(sample_bgp_down_log: str) -> None:
-    """Pending escalations are iterated and logged (lines 268-275)."""
+    """Pending escalations iterated, notifications sent, mark_escalated called."""
     from unittest.mock import MagicMock
 
     enriched = enrich(parse_syslog(sample_bgp_down_log))  # type: ignore[arg-type]
     esc = MagicMock()
-    esc.get_pending_escalations.return_value = [enriched]
+    # get_pending_escalations now returns (EnrichedLog, int) tuples.
+    esc.get_pending_escalations.return_value = [(enriched, 20)]
+    esc.mark_escalated = MagicMock(return_value=True)
     main_mod._escalation = esc  # noqa: SLF001
 
     # The loop sleeps first, then runs its body; sleep must return once before
@@ -660,13 +662,33 @@ async def test_escalation_checker_logs_pending(sample_bgp_down_log: str) -> None
         if state["n"] >= 2:
             raise asyncio.CancelledError
 
+    discord_calls: list = []
+    telegram_calls: list = []
+
+    async def _stub_discord_escalation(
+        alert: object, elapsed: int, settings: object  # noqa: ARG001
+    ) -> bool:
+        discord_calls.append((alert, elapsed))
+        return True
+
+    async def _stub_telegram_escalation(
+        alert: object, elapsed: int, settings: object  # noqa: ARG001
+    ) -> bool:
+        telegram_calls.append((alert, elapsed))
+        return True
+
     with (
         patch("src.main.asyncio.sleep", _sleep_once),
+        patch("src.main.send_discord_escalation", _stub_discord_escalation),
+        patch("src.main.send_telegram_escalation", _stub_telegram_escalation),
         contextlib.suppress(asyncio.CancelledError),
     ):
         await main_mod._escalation_checker()  # noqa: SLF001
 
     esc.get_pending_escalations.assert_called()
+    esc.mark_escalated.assert_called_once_with(
+        enriched.device_name, enriched.parsed.mnemonic
+    )
 
 
 async def test_escalation_checker_swallows_errors() -> None:
@@ -842,7 +864,8 @@ async def test_hourly_aggregator_cancels_cleanly() -> None:
         raise asyncio.CancelledError
 
     # CancelledError must not propagate out of _hourly_aggregator.
-    await main_mod._hourly_aggregator(engine=object())  # noqa: SLF001
+    with patch("src.main.asyncio.sleep", _fake_sleep):
+        await main_mod._hourly_aggregator(engine=object())  # noqa: SLF001
     assert state["n"] == 1
 
 
@@ -857,15 +880,19 @@ async def test_lifespan_creates_hourly_aggregator_task(tmp_path: Path) -> None:
     settings = _make_settings(tmp_path)
     _StubReceiver.instances.clear()
 
+    # Capture the real asyncio.sleep BEFORE patching so our helper coroutines
+    # can yield control without recursing into the patched version.
+    _real_sleep = asyncio.sleep
+
     async def _fast_sleep(_seconds: float) -> None:
-        await asyncio.sleep(0)
+        await _real_sleep(0)
 
     hourly_called = {"n": 0}
 
     async def _stub_hourly_aggregator(_engine: object) -> None:
         hourly_called["n"] += 1
         # Yield control once then return so the task completes quickly.
-        await asyncio.sleep(0)
+        await _real_sleep(0)
 
     with (
         patch.object(main_mod, "get_settings", return_value=settings),
@@ -875,7 +902,7 @@ async def test_lifespan_creates_hourly_aggregator_task(tmp_path: Path) -> None:
     ):
         async with main_mod.lifespan(main_mod.app):
             # Give the event loop a chance to schedule the created task.
-            await asyncio.sleep(0)
+            await _real_sleep(0)
 
     assert (
         hourly_called["n"] >= 1
