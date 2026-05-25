@@ -40,7 +40,7 @@ import logging
 import re
 import socket
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
@@ -65,6 +65,15 @@ _HTTP_BACKOFF_CAP = 30.0  # seconds – maximum delay
 # Emit a WARNING when this many consecutive HTTP poll failures are observed.
 _HTTP_POLL_FAIL_THRESHOLD = 5
 
+# Default UDP rate limit: maximum packets accepted per second.
+_UDP_RATE_LIMIT_DEFAULT = 1000
+
+# Minimum interval between rate-limit warning log messages (seconds).
+_UDP_RATE_WARN_INTERVAL = 60.0
+
+# How often (in error count increments) to log per-transport error summaries.
+_ERROR_LOG_INTERVAL = 100
+
 # Regex that matches a Grafana API key in a URL so we can redact it.
 _API_KEY_RE = re.compile(r"(api[_-]?key=)[^&\s]+", re.IGNORECASE)
 
@@ -76,6 +85,25 @@ def _mask_url(url: str) -> str:
     in logs for debugging purposes.
     """
     return _API_KEY_RE.sub(r"\1***", url)
+
+
+@dataclass
+class TransportErrorCounters:
+    """Cumulative error counts per transport for observability.
+
+    Attributes
+    ----------
+    ws:
+        Total WebSocket errors since the receiver started.
+    http:
+        Total HTTP poll errors since the receiver started.
+    udp:
+        Total UDP listener errors since the receiver started.
+    """
+
+    ws: int = 0
+    http: int = 0
+    udp: int = 0
 
 
 @dataclass
@@ -95,12 +123,17 @@ class ReceiverHealth:
         no HTTP poll has completed yet.
     consecutive_http_failures:
         Number of consecutive HTTP poll errors since the last success.
+    error_counters:
+        Cumulative error counts per transport.
     """
 
     running: bool
     mode: str
     last_poll_ns: int
     consecutive_http_failures: int
+    error_counters: TransportErrorCounters = field(
+        default_factory=TransportErrorCounters
+    )
 
 
 class SyslogReceiver:
@@ -123,6 +156,7 @@ class SyslogReceiver:
         settings: Settings,
         callback: Callable[[str], Awaitable[None]],
         resume_from_ns: int = 0,
+        udp_rate_limit: int = _UDP_RATE_LIMIT_DEFAULT,
     ) -> None:
         self._settings = settings
         self._callback = callback
@@ -142,6 +176,17 @@ class SyslogReceiver:
         # Persistent HTTP client for the poll fallback — created on first
         # use and closed in stop().  Avoids creating a new client per cycle.
         self._http_client: httpx.AsyncClient | None = None
+
+        # --- Per-transport error counters (cumulative) ---
+        self._error_counters = TransportErrorCounters()
+        # Monotonic time of the last per-transport error summary log.
+        self._last_error_log_time: float = 0.0
+
+        # --- UDP token-bucket rate limiter ---
+        self._udp_rate_limit: int = max(1, udp_rate_limit)
+        self._udp_tokens: float = float(self._udp_rate_limit)
+        self._udp_last_refill: float = 0.0  # set on first packet
+        self._udp_last_rate_warn: float = 0.0
 
     # ------------------------------------------------------------------
     # Public API
@@ -242,7 +287,85 @@ class SyslogReceiver:
             mode=self._active_mode,
             last_poll_ns=self._last_poll_ns,
             consecutive_http_failures=self._http_fail_count,
+            error_counters=TransportErrorCounters(
+                ws=self._error_counters.ws,
+                http=self._error_counters.http,
+                udp=self._error_counters.udp,
+            ),
         )
+
+    # ------------------------------------------------------------------
+    # Error tracking helpers
+    # ------------------------------------------------------------------
+
+    def _record_error(self, transport: str) -> None:
+        """Increment the error counter for *transport* and log periodically.
+
+        A summary line is emitted at INFO level every ``_ERROR_LOG_INTERVAL``
+        errors *or* every 60 seconds (whichever comes first) so operators can
+        spot a degraded transport without being flooded with log output.
+        """
+        if transport == "ws":
+            self._error_counters.ws += 1
+            total = self._error_counters.ws
+        elif transport == "http":
+            self._error_counters.http += 1
+            total = self._error_counters.http
+        else:
+            self._error_counters.udp += 1
+            total = self._error_counters.udp
+
+        now = time.monotonic()
+        if (
+            total % _ERROR_LOG_INTERVAL == 0
+            or now - self._last_error_log_time >= 60.0
+        ):
+            self._last_error_log_time = now
+            _log.info(
+                "Transport error totals: ws=%d, http=%d, udp=%d",
+                self._error_counters.ws,
+                self._error_counters.http,
+                self._error_counters.udp,
+            )
+
+    # ------------------------------------------------------------------
+    # UDP rate limiting (token bucket)
+    # ------------------------------------------------------------------
+
+    def _udp_allow_packet(self) -> bool:
+        """Return ``True`` if the next UDP packet should be accepted.
+
+        Uses a token-bucket algorithm: tokens are refilled at
+        ``_udp_rate_limit`` tokens per second up to a maximum of
+        ``_udp_rate_limit``.  Each accepted packet costs one token.
+        When no tokens remain, the packet is dropped and a warning is
+        logged at most once per ``_UDP_RATE_WARN_INTERVAL`` seconds.
+        """
+        now = time.monotonic()
+        if self._udp_last_refill == 0.0:
+            # First call — initialise the bucket.
+            self._udp_last_refill = now
+            self._udp_tokens = float(self._udp_rate_limit)
+
+        elapsed = now - self._udp_last_refill
+        self._udp_last_refill = now
+        self._udp_tokens = min(
+            float(self._udp_rate_limit),
+            self._udp_tokens + elapsed * self._udp_rate_limit,
+        )
+
+        if self._udp_tokens >= 1.0:
+            self._udp_tokens -= 1.0
+            return True
+
+        # Rate limit exceeded — warn at most once per interval.
+        if now - self._udp_last_rate_warn >= _UDP_RATE_WARN_INTERVAL:
+            self._udp_last_rate_warn = now
+            _log.warning(
+                "UDP rate limit exceeded (%d pkt/s); dropping packets",
+                self._udp_rate_limit,
+            )
+        return False
 
     # ------------------------------------------------------------------
     # WebSocket tail
@@ -287,6 +410,7 @@ class SyslogReceiver:
                 OSError,
                 websockets.exceptions.WebSocketException,
             ) as exc:
+                self._record_error("ws")
                 _log.warning("WS disconnect (attempt %d): %s", attempt, exc)
                 if max_attempts is not None and attempt >= max_attempts:
                     break
@@ -342,6 +466,7 @@ class SyslogReceiver:
                     count = await self._http_poll_once()
             except Exception as exc:  # noqa: BLE001
                 self._http_fail_count += 1
+                self._record_error("http")
                 _log.warning(
                     "HTTP poll error (failure #%d): %s",
                     self._http_fail_count,
@@ -454,26 +579,39 @@ class SyslogReceiver:
     # ------------------------------------------------------------------
 
     async def _udp_listen(self) -> None:
-        """Listen on UDP for direct syslog input (emergency fallback)."""
+        """Listen on UDP for direct syslog input (emergency fallback).
+
+        The socket is created inside a ``try/finally`` block so it is
+        guaranteed to be closed even if an unexpected exception occurs
+        during setup or the receive loop.
+
+        Incoming packets are subject to a token-bucket rate limiter
+        (default 1 000 pkt/s, configurable via the ``udp_rate_limit``
+        constructor parameter).  Packets exceeding the limit are silently
+        dropped and a warning is logged at most once per minute.
+        """
         loop = asyncio.get_running_loop()
         port = self._settings.syslog_udp_port
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("0.0.0.0", port))
-
-        _log.info("UDP syslog listener started on port %d", port)
-
         try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("0.0.0.0", port))
+
+            _log.info("UDP syslog listener started on port %d", port)
+
             while self._running:
                 try:
                     data, _addr = await loop.run_in_executor(
                         None, lambda: sock.recvfrom(65535)
                     )
+                    if not self._udp_allow_packet():
+                        continue
                     line = data.decode(errors="replace").rstrip("\n\r")
                     if line:
                         await self._callback(line)
                 except OSError:
+                    self._record_error("udp")
                     if not self._running:
                         break
         finally:

@@ -25,8 +25,11 @@ from src.core.syslog_receiver import (
     _HTTP_BACKOFF_CAP,
     _HTTP_POLL_FAIL_THRESHOLD,
     _HTTP_POLL_INTERVAL,
+    _UDP_RATE_LIMIT_DEFAULT,
+    _UDP_RATE_WARN_INTERVAL,
     ReceiverHealth,
     SyslogReceiver,
+    TransportErrorCounters,
     _mask_url,
 )
 
@@ -693,3 +696,261 @@ async def test_http_poll_once_returns_raw_count_for_pagination() -> None:
         f"Second poll of same full page must return raw count={limit} (not 0), "
         f"got {count2}. Returning 0 would prematurely break the drain loop."
     )
+
+
+# ---------------------------------------------------------------------------
+# 8. UDP rate limiting (token bucket)
+# ---------------------------------------------------------------------------
+
+
+def test_udp_allow_packet_initial_burst() -> None:
+    """A fresh receiver accepts packets up to the configured rate limit."""
+    receiver = SyslogReceiver(_settings(), AsyncMock(), udp_rate_limit=5)
+    accepted = sum(1 for _ in range(10) if receiver._udp_allow_packet())  # noqa: SLF001
+    # The bucket starts full (5 tokens), so the first 5 are accepted.
+    assert accepted == 5
+
+
+def test_udp_allow_packet_refills_over_time() -> None:
+    """After draining the bucket, tokens refill when time advances."""
+    receiver = SyslogReceiver(_settings(), AsyncMock(), udp_rate_limit=10)
+    # Drain the bucket.
+    for _ in range(10):
+        receiver._udp_allow_packet()  # noqa: SLF001
+    assert not receiver._udp_allow_packet()  # noqa: SLF001
+
+    # Advance time by 0.5 seconds — should refill ~5 tokens (rate=10/s).
+    receiver._udp_last_refill -= 0.5  # noqa: SLF001
+    accepted = sum(1 for _ in range(10) if receiver._udp_allow_packet())  # noqa: SLF001
+    assert 4 <= accepted <= 6  # Allow small float rounding margin
+
+
+def test_udp_rate_limit_warning_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """Exceeding the rate limit logs a WARNING (at most once per interval)."""
+    receiver = SyslogReceiver(_settings(), AsyncMock(), udp_rate_limit=2)
+    # Drain the bucket completely.
+    for _ in range(3):
+        receiver._udp_allow_packet()  # noqa: SLF001
+
+    with caplog.at_level(logging.WARNING, logger="src.core.syslog_receiver"):
+        # This call should drop and emit a warning.
+        result = receiver._udp_allow_packet()  # noqa: SLF001
+
+    assert result is False
+    rate_warnings = [r for r in caplog.records if "rate limit" in r.message.lower()]
+    assert len(rate_warnings) == 1
+
+
+def test_udp_rate_limit_warning_suppressed_within_interval(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A second rate-limit warning within the interval is suppressed."""
+    receiver = SyslogReceiver(_settings(), AsyncMock(), udp_rate_limit=1)
+    # Drain and trigger first warning.
+    receiver._udp_allow_packet()  # noqa: SLF001
+
+    with caplog.at_level(logging.WARNING, logger="src.core.syslog_receiver"):
+        receiver._udp_allow_packet()  # noqa: SLF001  — first warning
+        receiver._udp_allow_packet()  # noqa: SLF001  — should be suppressed
+
+    rate_warnings = [r for r in caplog.records if "rate limit" in r.message.lower()]
+    assert len(rate_warnings) == 1, (
+        f"Expected exactly 1 rate-limit warning, got {len(rate_warnings)}"
+    )
+
+
+def test_udp_rate_limit_default_value() -> None:
+    """Default rate limit matches the module constant."""
+    receiver = SyslogReceiver(_settings(), AsyncMock())
+    assert receiver._udp_rate_limit == _UDP_RATE_LIMIT_DEFAULT  # noqa: SLF001
+
+
+def test_udp_rate_limit_minimum_is_one() -> None:
+    """Rate limit is clamped to a minimum of 1 even if 0 is passed."""
+    receiver = SyslogReceiver(_settings(), AsyncMock(), udp_rate_limit=0)
+    assert receiver._udp_rate_limit >= 1  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_udp_listen_drops_when_rate_exceeded() -> None:
+    """Packets exceeding the rate limit are dropped (callback not called)."""
+    settings = _settings(syslog_udp_port=15142)
+    received: list[str] = []
+
+    async def callback(line: str) -> None:
+        received.append(line)
+
+    # Rate limit of 2 packets/second
+    receiver = SyslogReceiver(settings, callback, udp_rate_limit=2)
+    receiver._running = True  # noqa: SLF001
+
+    mock_sock = MagicMock()
+    call_state = {"n": 0}
+
+    async def fake_run_in_executor(_executor, _func):  # type: ignore[no-untyped-def] # noqa: ANN001
+        call_state["n"] += 1
+        if call_state["n"] <= 5:
+            return (f"line {call_state['n']}".encode(), ("10.0.0.1", 514))
+        receiver._running = False  # noqa: SLF001
+        raise OSError("done")
+
+    loop_mock = MagicMock()
+    loop_mock.run_in_executor = fake_run_in_executor
+
+    with (
+        patch("src.core.syslog_receiver.socket.socket", return_value=mock_sock),
+        patch(
+            "src.core.syslog_receiver.asyncio.get_running_loop",
+            return_value=loop_mock,
+        ),
+    ):
+        await receiver._udp_listen()  # noqa: SLF001
+
+    # Only the first 2 packets should have been accepted (bucket size = 2).
+    assert len(received) == 2
+    mock_sock.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 9. Per-transport error counters
+# ---------------------------------------------------------------------------
+
+
+def test_error_counters_initial_zero() -> None:
+    """Error counters start at zero for all transports."""
+    receiver = SyslogReceiver(_settings(), AsyncMock())
+    h = receiver.health_status()
+    assert h.error_counters.ws == 0
+    assert h.error_counters.http == 0
+    assert h.error_counters.udp == 0
+
+
+def test_record_error_increments_ws() -> None:
+    """_record_error('ws') increments only the ws counter."""
+    receiver = SyslogReceiver(_settings(), AsyncMock())
+    receiver._record_error("ws")  # noqa: SLF001
+    receiver._record_error("ws")  # noqa: SLF001
+    h = receiver.health_status()
+    assert h.error_counters.ws == 2
+    assert h.error_counters.http == 0
+    assert h.error_counters.udp == 0
+
+
+def test_record_error_increments_http() -> None:
+    """_record_error('http') increments only the http counter."""
+    receiver = SyslogReceiver(_settings(), AsyncMock())
+    receiver._record_error("http")  # noqa: SLF001
+    h = receiver.health_status()
+    assert h.error_counters.http == 1
+
+
+def test_record_error_increments_udp() -> None:
+    """_record_error('udp') increments only the udp counter."""
+    receiver = SyslogReceiver(_settings(), AsyncMock())
+    receiver._record_error("udp")  # noqa: SLF001
+    h = receiver.health_status()
+    assert h.error_counters.udp == 1
+
+
+def test_error_counters_are_snapshot() -> None:
+    """health_status() returns a snapshot — not a live reference."""
+    receiver = SyslogReceiver(_settings(), AsyncMock())
+    h1 = receiver.health_status()
+    receiver._record_error("ws")  # noqa: SLF001
+    h2 = receiver.health_status()
+    assert h1.error_counters.ws == 0
+    assert h2.error_counters.ws == 1
+
+
+@pytest.mark.asyncio
+async def test_http_poll_records_error_counter() -> None:
+    """HTTP poll failures increment the http error counter."""
+    settings = _settings()
+    receiver = SyslogReceiver(settings, AsyncMock())
+    receiver._running = True  # noqa: SLF001
+
+    fail_count = {"n": 0}
+
+    async def always_fail() -> int:
+        fail_count["n"] += 1
+        raise RuntimeError("loki down")
+
+    async def stopper(_delay: float) -> None:
+        if fail_count["n"] >= 3:
+            receiver._running = False  # noqa: SLF001
+
+    with (
+        patch.object(receiver, "_http_poll_once", side_effect=always_fail),
+        patch("src.core.syslog_receiver.asyncio.sleep", new=stopper),
+    ):
+        await receiver._http_poll()  # noqa: SLF001
+
+    h = receiver.health_status()
+    assert h.error_counters.http == 3
+
+
+def test_record_error_logs_at_interval(caplog: pytest.LogCaptureFixture) -> None:
+    """An INFO-level summary is emitted every _ERROR_LOG_INTERVAL errors."""
+    receiver = SyslogReceiver(_settings(), AsyncMock())
+    with caplog.at_level(logging.INFO, logger="src.core.syslog_receiver"):
+        for _ in range(100):
+            receiver._record_error("ws")  # noqa: SLF001
+
+    info_summaries = [
+        r for r in caplog.records
+        if r.levelno == logging.INFO and "Transport error totals" in r.message
+    ]
+    assert len(info_summaries) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 10. Socket cleanup (try/finally)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_udp_socket_closed_on_bind_error() -> None:
+    """Socket is closed even if bind() raises an exception."""
+    settings = _settings(syslog_udp_port=15143)
+    receiver = SyslogReceiver(settings, AsyncMock())
+    receiver._running = True  # noqa: SLF001
+
+    mock_sock = MagicMock()
+    mock_sock.bind.side_effect = OSError("address in use")
+
+    with (
+        patch("src.core.syslog_receiver.socket.socket", return_value=mock_sock),
+        pytest.raises(OSError, match="address in use"),
+    ):
+        await receiver._udp_listen()  # noqa: SLF001
+
+    # The socket must be closed despite the bind failure.
+    mock_sock.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_udp_socket_closed_on_unexpected_exception() -> None:
+    """Socket is closed if an unexpected (non-OSError) exception occurs."""
+    settings = _settings(syslog_udp_port=15144)
+    receiver = SyslogReceiver(settings, AsyncMock())
+    receiver._running = True  # noqa: SLF001
+
+    mock_sock = MagicMock()
+
+    async def explode(_executor, _func):  # type: ignore[no-untyped-def] # noqa: ANN001
+        raise RuntimeError("unexpected")
+
+    loop_mock = MagicMock()
+    loop_mock.run_in_executor = explode
+
+    with (
+        patch("src.core.syslog_receiver.socket.socket", return_value=mock_sock),
+        patch(
+            "src.core.syslog_receiver.asyncio.get_running_loop",
+            return_value=loop_mock,
+        ),
+        pytest.raises(RuntimeError, match="unexpected"),
+    ):
+        await receiver._udp_listen()  # noqa: SLF001
+
+    mock_sock.close.assert_called_once()
