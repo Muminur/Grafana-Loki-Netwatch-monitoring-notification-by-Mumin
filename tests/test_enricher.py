@@ -224,3 +224,32 @@ def test_enrich_rule_id_and_event_type(sample_bgp_down_log: str) -> None:
     assert result.rule_id
     assert isinstance(result.event_type, str)
     assert result.event_type
+
+
+# ---------------------------------------------------------------------------
+# 16. Interface lookup attempted even when hostname is empty
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_interface_lookup_with_empty_hostname() -> None:
+    """When device_map hostname is empty, interface extraction still runs.
+
+    DHK-Core-1 (192.168.200.2) has hostname="" in the device map.
+    The enricher must still attempt to extract the interface name from
+    the message rather than skipping the entire interface lookup.
+    """
+    # DHK-Core-1 has hostname="" — build a log from its IP with an interface
+    raw = (
+        "May 22 15:23:04 192.168.200.2 12345: LC/0/0/CPU0:"
+        "May 22 15:23:29.243 +06: fia_driver[165]: "
+        "%PLATFORM-DPA-2-RX_FAULT : Interface TenGigE0/0/0/0, "
+        "Detected Remote Fault"
+    )
+    parsed = parse_syslog(raw)
+    assert parsed is not None
+
+    result = enrich(parsed)
+    # The interface name should still be extracted from the message
+    assert result.interface_name == "TenGigE0/0/0/0"
+    # Device must be resolved (not UNKNOWN)
+    assert result.device_name == "DHK-Core-1"

@@ -197,8 +197,12 @@ def enrich(parsed: ParsedLog) -> EnrichedLog:
     bundle_parent = ""
     client_name = ""
 
-    if iface_raw and hostname:
-        iface_info = lookup_interface(hostname, iface_raw)
+    if iface_raw:
+        # Prefer the config hostname from the device map; fall back to the
+        # enriched device_name so devices with hostname="" still attempt a
+        # lookup (the interface map may be keyed by either value).
+        lookup_key = hostname or device_name
+        iface_info = lookup_interface(lookup_key, iface_raw)
         if iface_info is not None:
             iface_description = iface_info.description
             bundle_parent = iface_info.bundle or ""
