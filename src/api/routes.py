@@ -305,6 +305,23 @@ async def load_persisted_state(engine: AsyncEngine) -> None:
                     _hardware_defects_as_noise,
                 )
 
+            # ── Notification settings ─────────────────────────────────────
+            from src.config import get_settings as _gs  # noqa: PLC0415
+
+            _s = _gs()
+            for _key, _attr in [
+                ("discord_enabled", "discord_enabled"),
+                ("telegram_enabled", "telegram_enabled"),
+                ("dedup_window_seconds", "dedup_window_seconds"),
+            ]:
+                _val = await get_app_setting(session, _key)
+                if _val is not None:
+                    if _attr.endswith("_seconds"):
+                        object.__setattr__(_s, _attr, int(_val))
+                    else:
+                        object.__setattr__(_s, _attr, _val.lower() == "true")
+                    _load_log.info("Loaded %s=%s from DB", _key, _val)
+
             # ── Resolve stale noise-eligible alerts ───────────────────────
             if _hardware_defects_as_noise:
                 resolved = await _resolve_noise_alerts_on_startup(engine)
@@ -1670,6 +1687,81 @@ async def set_hardware_noise_setting(enabled: bool = True) -> dict[str, bool]:
         except Exception:  # noqa: BLE001, S110
             pass  # In-memory value already updated; DB failure is non-fatal
     return {"hardware_defects_as_noise": _hardware_defects_as_noise}
+
+
+# ---------------------------------------------------------------------------
+# Notification settings
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/settings/notifications")
+async def get_notification_settings() -> dict[str, Any]:
+    """Return current notification preferences."""
+    from src.config import get_settings  # noqa: PLC0415
+
+    s = get_settings()
+    return {
+        "discord_enabled": s.discord_enabled,
+        "telegram_enabled": s.telegram_enabled,
+        "notify_severity": "CRITICAL",
+        "dedup_window": s.dedup_window_seconds,
+    }
+
+
+@router.post(
+    "/api/settings/notifications",
+    dependencies=[Depends(require_api_key)],
+)
+async def set_notification_settings(
+    discord_enabled: bool | None = None,
+    telegram_enabled: bool | None = None,
+    dedup_window: int | None = None,
+) -> dict[str, Any]:
+    """Update notification preferences at runtime.
+
+    Only updates fields that are provided. Persists to the DB app_setting
+    table so values survive restart.
+    """
+    from src.config import get_settings  # noqa: PLC0415
+
+    s = get_settings()
+    if discord_enabled is not None:
+        object.__setattr__(s, "discord_enabled", discord_enabled)
+    if telegram_enabled is not None:
+        object.__setattr__(s, "telegram_enabled", telegram_enabled)
+    if dedup_window is not None and 30 <= dedup_window <= 3600:
+        object.__setattr__(s, "dedup_window_seconds", dedup_window)
+
+    if _db_engine is not None:
+        try:
+            from sqlalchemy.ext.asyncio import (  # noqa: PLC0415
+                AsyncSession as _NotifSession,
+            )
+
+            from src.database.crud import set_app_setting  # noqa: PLC0415
+
+            async with _NotifSession(_db_engine) as session:
+                if discord_enabled is not None:
+                    await set_app_setting(
+                        session, "discord_enabled", str(s.discord_enabled).lower()
+                    )
+                if telegram_enabled is not None:
+                    await set_app_setting(
+                        session, "telegram_enabled", str(s.telegram_enabled).lower()
+                    )
+                if dedup_window is not None:
+                    await set_app_setting(
+                        session, "dedup_window_seconds", str(s.dedup_window_seconds)
+                    )
+                await session.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+    return {
+        "discord_enabled": s.discord_enabled,
+        "telegram_enabled": s.telegram_enabled,
+        "dedup_window": s.dedup_window_seconds,
+    }
 
 
 # ---------------------------------------------------------------------------

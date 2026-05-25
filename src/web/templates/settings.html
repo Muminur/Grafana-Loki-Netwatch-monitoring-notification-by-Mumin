@@ -247,44 +247,188 @@
 window.NETWATCH_CONFIG = window.NETWATCH_CONFIG || {};
 window.NETWATCH_CONFIG.apiBase = '/api';
 document.addEventListener('DOMContentLoaded', function() {
-    // Sync sound toggle state from header
-    var soundToggle = document.getElementById('soundEnabled');
-    var headerToggle = document.getElementById('soundToggle');
-    if (soundToggle && headerToggle) {
-        soundToggle.addEventListener('change', function() {
-            if (window.NetwatchSounds) {
-                window.NetwatchSounds.setEnabled(soundToggle.checked);
-            }
-        });
+    var api = window.NETWATCH_CONFIG.apiBase;
+
+    // ── Sound toggles (localStorage-backed, client-side only) ────────────
+    var soundEnabled = document.getElementById('soundEnabled');
+    var criticalSound = document.getElementById('criticalSoundEnabled');
+    var warningSound = document.getElementById('warningSoundEnabled');
+    var recoverySound = document.getElementById('recoverySoundEnabled');
+    var repeatAlarm = document.getElementById('repeatAlarmEnabled');
+
+    function loadSoundPrefs() {
+        var prefs = JSON.parse(localStorage.getItem('netwatch_sound_prefs') || '{}');
+        if (soundEnabled) soundEnabled.checked = prefs.enabled !== false;
+        if (criticalSound) criticalSound.checked = prefs.critical !== false;
+        if (warningSound) warningSound.checked = prefs.warning !== false;
+        if (recoverySound) recoverySound.checked = prefs.recovery !== false;
+        if (repeatAlarm) repeatAlarm.checked = localStorage.getItem('netwatch_repeat_alarm') !== 'false';
+        if (window.NetwatchSounds) {
+            window.NetwatchSounds.setEnabled(prefs.enabled !== false);
+            window.NetwatchSounds.setPrefs({
+                critical: prefs.critical !== false,
+                warning: prefs.warning !== false,
+                recovery: prefs.recovery !== false,
+            });
+        }
     }
 
-    // Repeat Incident Alarm toggle (localStorage-backed)
-    var repeatToggle = document.getElementById('repeatAlarmEnabled');
-    if (repeatToggle) {
-        repeatToggle.checked = localStorage.getItem('netwatch_repeat_alarm') !== 'false';
-        repeatToggle.addEventListener('change', function() {
-            var enabled = repeatToggle.checked;
-            localStorage.setItem('netwatch_repeat_alarm', enabled ? 'true' : 'false');
+    function saveSoundPrefs() {
+        var prefs = {
+            enabled: soundEnabled ? soundEnabled.checked : true,
+            critical: criticalSound ? criticalSound.checked : true,
+            warning: warningSound ? warningSound.checked : true,
+            recovery: recoverySound ? recoverySound.checked : true,
+        };
+        localStorage.setItem('netwatch_sound_prefs', JSON.stringify(prefs));
+        if (window.NetwatchSounds) {
+            window.NetwatchSounds.setEnabled(prefs.enabled);
+            window.NetwatchSounds.setPrefs({
+                critical: prefs.critical,
+                warning: prefs.warning,
+                recovery: prefs.recovery,
+            });
+        }
+    }
+
+    loadSoundPrefs();
+    [soundEnabled, criticalSound, warningSound, recoverySound].forEach(function(el) {
+        if (el) el.addEventListener('change', saveSoundPrefs);
+    });
+
+    if (repeatAlarm) {
+        repeatAlarm.addEventListener('change', function() {
+            localStorage.setItem('netwatch_repeat_alarm', repeatAlarm.checked ? 'true' : 'false');
             if (window.NetwatchDashboard) {
-                window.NetwatchDashboard.setRepeatAlarm(enabled);
+                window.NetwatchDashboard.setRepeatAlarm(repeatAlarm.checked);
             }
         });
     }
 
-    // Hardware Defects as Noise toggle
-    var hwToggle = document.getElementById('hwDefectsNoise');
-    if (hwToggle) {
-        fetch('/api/settings/hardware-noise')
+    // ── Notification settings (server-side, persisted in DB) ─────────────
+    var discordToggle = document.getElementById('discordEnabled');
+    var telegramToggle = document.getElementById('telegramEnabled');
+    var severitySelect = document.getElementById('notifySeverity');
+    var dedupInput = document.getElementById('dedupWindow');
+
+    fetch(api + '/settings/notifications')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (discordToggle) discordToggle.checked = data.discord_enabled;
+            if (telegramToggle) telegramToggle.checked = data.telegram_enabled;
+            if (dedupInput) dedupInput.value = data.dedup_window || 300;
+        })
+        .catch(function() {});
+
+    function saveNotifSetting(params) {
+        fetch(api + '/settings/notifications?' + params, { method: 'POST' })
             .then(function(r) { return r.json(); })
             .then(function(data) {
-                hwToggle.checked = data.hardware_defects_as_noise;
-            });
+                if (discordToggle) discordToggle.checked = data.discord_enabled;
+                if (telegramToggle) telegramToggle.checked = data.telegram_enabled;
+                if (dedupInput) dedupInput.value = data.dedup_window;
+            })
+            .catch(function() {});
+    }
+
+    if (discordToggle) {
+        discordToggle.addEventListener('change', function() {
+            saveNotifSetting('discord_enabled=' + discordToggle.checked);
+        });
+    }
+    if (telegramToggle) {
+        telegramToggle.addEventListener('change', function() {
+            saveNotifSetting('telegram_enabled=' + telegramToggle.checked);
+        });
+    }
+    if (dedupInput) {
+        var dedupTimer = null;
+        dedupInput.addEventListener('change', function() {
+            clearTimeout(dedupTimer);
+            dedupTimer = setTimeout(function() {
+                var val = parseInt(dedupInput.value) || 300;
+                if (val >= 30 && val <= 3600) {
+                    saveNotifSetting('dedup_window=' + val);
+                }
+            }, 500);
+        });
+    }
+
+    // ── Hardware Defects as Noise toggle ─────────────────────────────────
+    var hwToggle = document.getElementById('hwDefectsNoise');
+    if (hwToggle) {
+        fetch(api + '/settings/hardware-noise')
+            .then(function(r) { return r.json(); })
+            .then(function(data) { hwToggle.checked = data.hardware_defects_as_noise; })
+            .catch(function() {});
         hwToggle.addEventListener('change', function() {
-            fetch('/api/settings/hardware-noise?enabled=' + hwToggle.checked, {method: 'POST'})
+            fetch(api + '/settings/hardware-noise?enabled=' + hwToggle.checked, { method: 'POST' })
                 .then(function(r) { return r.json(); })
-                .then(function(data) {
-                    hwToggle.checked = data.hardware_defects_as_noise;
+                .then(function(data) { hwToggle.checked = data.hardware_defects_as_noise; })
+                .catch(function() {});
+        });
+    }
+
+    // ── Maintenance Windows form + list ──────────────────────────────────
+    var maintForm = document.getElementById('maintenanceForm');
+    var maintList = document.getElementById('maintenanceList');
+
+    function loadMaintenanceWindows() {
+        fetch(api + '/maintenance')
+            .then(function(r) { return r.json(); })
+            .then(function(windows) {
+                if (!maintList) return;
+                if (windows.length === 0) {
+                    maintList.innerHTML = '<div class="empty-state">No maintenance windows scheduled</div>';
+                    return;
+                }
+                maintList.innerHTML = windows.map(function(w) {
+                    return '<div class="maintenance-item">'
+                        + '<span class="maint-device">' + (w.device_name || 'All') + '</span>'
+                        + '<span class="maint-time">' + (w.start_time || '').replace('T', ' ').slice(0,16)
+                        + ' — ' + (w.end_time || '').replace('T', ' ').slice(0,16) + '</span>'
+                        + (w.reason ? '<span class="maint-reason">' + w.reason + '</span>' : '')
+                        + '<button class="btn-delete-maint" data-id="' + w.id + '" title="Delete">✕</button>'
+                        + '</div>';
+                }).join('');
+                maintList.querySelectorAll('.btn-delete-maint').forEach(function(btn) {
+                    btn.addEventListener('click', function() {
+                        fetch(api + '/maintenance/' + btn.dataset.id, { method: 'DELETE' })
+                            .then(function() { loadMaintenanceWindows(); })
+                            .catch(function() {});
+                    });
                 });
+            })
+            .catch(function() {});
+    }
+
+    loadMaintenanceWindows();
+
+    if (maintForm) {
+        maintForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            var device = document.getElementById('maintDevice').value;
+            var start = document.getElementById('maintStart').value;
+            var end = document.getElementById('maintEnd').value;
+            var note = document.getElementById('maintNote').value;
+            if (!device || !start || !end) return;
+            fetch(api + '/maintenance', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    device_name: device,
+                    start_time: start + ':00+06:00',
+                    end_time: end + ':00+06:00',
+                    reason: note,
+                    created_by: 'NOC Operator',
+                }),
+            })
+                .then(function(r) { return r.json(); })
+                .then(function() {
+                    maintForm.reset();
+                    loadMaintenanceWindows();
+                })
+                .catch(function(err) { console.error('[Settings] Maintenance create failed:', err); });
         });
     }
 });
