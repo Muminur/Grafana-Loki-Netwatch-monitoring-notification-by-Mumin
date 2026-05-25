@@ -8,6 +8,7 @@ Milestone 8: DB-backed /api/alerts with period filter; /api/alerts/count.
 
 from __future__ import annotations
 
+import itertools
 import re
 import time
 from collections import deque
@@ -40,9 +41,10 @@ _active_connections: int = 0
 
 # In-memory stores — capped to prevent unbounded memory growth
 _alerts_store: deque[dict[str, Any]] = deque(maxlen=10000)
-_incidents_store: list[dict[str, Any]] = []
+_incidents_store: deque[dict[str, Any]] = deque(maxlen=500)
 _maintenance_store: deque[dict[str, Any]] = deque(maxlen=500)
 _maintenance_id_counter: int = 0
+_alert_id_counter: itertools.count[int] = itertools.count(1)
 
 # DB engine — set during lifespan startup via set_db_engine()
 _db_engine: AsyncEngine | None = None
@@ -113,6 +115,8 @@ def _extract_iface_from_msg(message: str) -> str:
 
 
 _IFACE_SHORT = [
+    ("TwentyFiveGigE", "25GE"),
+    ("FiftyGigE", "50GE"),
     ("TenGigE", "TGE"),
     ("HundredGigE", "HGE"),
     ("FortyGigE", "FGE"),
@@ -411,7 +415,7 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
         A ``CorrelatedEvent`` instance from the correlator.
     """
     alert: dict[str, Any] = {
-        "id": len(_alerts_store) + 1,
+        "id": next(_alert_id_counter),
         "timestamp": enriched.parsed.timestamp.isoformat(),
         "source_ip": enriched.parsed.source_ip,
         "device": enriched.device_name,
@@ -461,7 +465,7 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
         )
         neighbor = enriched.bgp_neighbor
         as_num = enriched.as_number
-        resolved = []
+        resolve_ids: set[int] = set()
         for i, inc in enumerate(_incidents_store):
             if inc["device"] != dev:
                 continue
@@ -469,13 +473,17 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
                 inc.get("message", "")
             )
             if iface and inc_iface == iface:
-                resolved.append(i)
+                resolve_ids.add(i)
             elif neighbor and as_num and inc.get("mnemonic") == "ADJCHANGE":
                 inc_msg = inc.get("message", "")
                 if str(as_num) in inc_msg or neighbor in inc_msg:
-                    resolved.append(i)
-        for idx in reversed(resolved):
-            _incidents_store.pop(idx)
+                    resolve_ids.add(i)
+        if resolve_ids:
+            kept = [
+                inc for i, inc in enumerate(_incidents_store) if i not in resolve_ids
+            ]
+            _incidents_store.clear()
+            _incidents_store.extend(kept)
 
     # BGP-UP auto-resolution for silent hardware faults.
     # IOS-XR never sends clear messages for RX_FAULT/SIGNAL/RFI — but if a
@@ -494,7 +502,7 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
             if topo and bundle_name in topo.upstreams:
                 members = set(topo.upstreams[bundle_name].members)
                 dev = enriched.device_name
-                bgp_resolved = []
+                bgp_resolve_ids: set[int] = set()
                 for i, inc in enumerate(_incidents_store):
                     if inc["device"] != dev:
                         continue
@@ -504,10 +512,16 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
                         inc.get("message", "")
                     )
                     if inc_iface in members:
-                        bgp_resolved.append(i)
-                for idx in reversed(bgp_resolved):
-                    _incidents_store.pop(idx)
-                if bgp_resolved and _db_engine is not None:
+                        bgp_resolve_ids.add(i)
+                if bgp_resolve_ids:
+                    kept_incs = [
+                        inc
+                        for i, inc in enumerate(_incidents_store)
+                        if i not in bgp_resolve_ids
+                    ]
+                    _incidents_store.clear()
+                    _incidents_store.extend(kept_incs)
+                if bgp_resolve_ids and _db_engine is not None:
                     import asyncio  # noqa: PLC0415
                     import logging  # noqa: PLC0415
 
@@ -886,6 +900,48 @@ async def get_alert(alert_id: str) -> dict[str, Any]:
     for alert in _alerts_store:
         if str(alert.get("id")) == alert_id:
             return alert
+
+    # Fall through to DB lookup when the alert is not in the in-memory store
+    if _db_engine is not None:
+        try:
+            numeric_id = int(alert_id)
+        except (ValueError, TypeError):
+            numeric_id = None
+
+        if numeric_id is not None:
+            from sqlalchemy import select  # noqa: PLC0415
+            from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+            from src.database.models import AlertLog  # noqa: PLC0415
+
+            async with AsyncSession(_db_engine) as session:
+                row = (
+                    await session.execute(
+                        select(AlertLog).where(AlertLog.id == numeric_id)
+                    )
+                ).scalar_one_or_none()
+            if row is not None:
+                return {
+                    "id": str(row.id),
+                    "timestamp": row.timestamp.isoformat() if row.timestamp else "",
+                    "classification": row.classification,
+                    "device": row.device_name,
+                    "hostname": row.hostname,
+                    "mnemonic": row.mnemonic,
+                    "message": row.message,
+                    "facility": row.facility,
+                    "severity_level": row.severity_level,
+                    "interface_name": row.interface_name,
+                    "interface_description": row.interface_description,
+                    "client_name": row.client_name,
+                    "neighbor": row.bgp_neighbor,
+                    "as_number": row.as_number,
+                    "as_name": row.as_name,
+                    "incident_id": row.incident_id or "",
+                    "notification_sent": row.notification_sent,
+                    "source_ip": row.source_ip,
+                }
+
     raise HTTPException(status_code=404, detail=f"Alert '{alert_id}' not found")
 
 
@@ -947,8 +1003,7 @@ async def get_incidents() -> list[dict[str, Any]]:
         elif iface:
             resolved.add(f"{row.device_name}:{iface}")
 
-    incidents: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: dict[str, dict[str, Any]] = {}
     for row in rows:
         if _is_recovery_event(row.mnemonic, row.message or ""):
             continue
@@ -963,36 +1018,31 @@ async def get_incidents() -> list[dict[str, Any]]:
             discriminator = row.bgp_neighbor or iface or ""
         key = f"{row.device_name}:{row.mnemonic}:{discriminator}"
         if key in seen:
-            for inc in incidents:
-                if inc.get("_key") == key:
-                    inc["alert_count"] = inc.get("alert_count", 0) + 1
+            seen[key]["alert_count"] = seen[key].get("alert_count", 0) + 1
             continue
-        seen.add(key)
-        incidents.append(
-            {
-                "id": f"ALERT-{row.id}",
-                "title": build_incident_title(
-                    mnemonic=row.mnemonic,
-                    device_name=row.device_name,
-                    message=row.message or "",
-                    interface_name=row.interface_name or "",
-                    as_name=row.as_name or "",
-                ),
-                "severity": "CRITICAL",
-                "device": row.device_name,
-                "mnemonic": row.mnemonic,
-                "message": (row.message or "")[:200],
-                "status": "active",
-                "alert_count": 1,
-                "started_at": row.timestamp.isoformat() if row.timestamp else "",
-                "last_alert": row.timestamp.isoformat() if row.timestamp else "",
-                "interface": row.interface_name or "",
-                "client": row.client_name or "",
-                "as_name": row.as_name or "",
-                "_key": key,
-            }
-        )
-    return incidents
+        inc = {
+            "id": f"ALERT-{row.id}",
+            "title": build_incident_title(
+                mnemonic=row.mnemonic,
+                device_name=row.device_name,
+                message=row.message or "",
+                interface_name=row.interface_name or "",
+                as_name=row.as_name or "",
+            ),
+            "severity": "CRITICAL",
+            "device": row.device_name,
+            "mnemonic": row.mnemonic,
+            "message": (row.message or "")[:200],
+            "status": "active",
+            "alert_count": 1,
+            "started_at": row.timestamp.isoformat() if row.timestamp else "",
+            "last_alert": row.timestamp.isoformat() if row.timestamp else "",
+            "interface": row.interface_name or "",
+            "client": row.client_name or "",
+            "as_name": row.as_name or "",
+        }
+        seen[key] = inc
+    return list(seen.values())
 
 
 @router.get("/api/incidents/{incident_id}")
@@ -1047,23 +1097,89 @@ async def acknowledge_incident(incident_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+async def _stats_by_period(period_name: str, period_key: str) -> dict[str, Any]:
+    """Return alert counts grouped by classification for a given period.
+
+    When ``_db_engine`` is set, queries the DB with the appropriate time
+    bounds (same logic as ``get_alerts_count``).  Falls back to the
+    in-memory store with timestamp filtering when no DB is available.
+
+    Parameters
+    ----------
+    period_name:
+        Human label returned in the response (e.g. ``"daily"``).
+    period_key:
+        Key passed to ``_period_to_time_range`` (e.g. ``"today"``).
+    """
+    classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
+
+    if _db_engine is not None:
+        from sqlalchemy import func, select  # noqa: PLC0415
+        from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+        from src.database.models import AlertLog  # noqa: PLC0415
+
+        start, end = _period_to_time_range(period_key)
+        async with AsyncSession(_db_engine) as session:
+            stmt = select(
+                AlertLog.classification, func.count(AlertLog.id)
+            ).group_by(AlertLog.classification)
+            if start is not None:
+                stmt = stmt.where(AlertLog.timestamp >= start)
+            if end is not None:
+                stmt = stmt.where(AlertLog.timestamp < end)
+            result = await session.execute(stmt)
+            rows = result.all()
+
+        counts: dict[str, int] = dict.fromkeys(classifications, 0)
+        for cls, cnt in rows:
+            if cls in counts:
+                counts[cls] = cnt
+        return {
+            "period": period_name,
+            "counts": counts,
+            "total": sum(counts.values()),
+        }
+
+    # Fallback: in-memory store with timestamp filtering
+    start, end = _period_to_time_range(period_key)
+    counts = dict.fromkeys(classifications, 0)
+    for alert in _alerts_store:
+        if start is not None or end is not None:
+            raw_ts = alert.get("timestamp", "")
+            try:
+                ts = (
+                    datetime.fromisoformat(raw_ts)
+                    if isinstance(raw_ts, str)
+                    else raw_ts
+                )
+                # Strip tzinfo to match the naive bounds from _period_to_time_range
+                if ts.tzinfo is not None:
+                    ts = ts.replace(tzinfo=None)
+                if start is not None and ts < start:
+                    continue
+                if end is not None and ts >= end:
+                    continue
+            except (ValueError, AttributeError, TypeError):
+                continue
+        cls = alert.get("classification", "")
+        if cls in counts:
+            counts[cls] += 1
+    return {
+        "period": period_name,
+        "counts": counts,
+        "total": sum(counts.values()),
+    }
+
+
 @router.get("/api/stats/daily")
 async def get_stats_daily() -> dict[str, Any]:
     """Return daily aggregated statistics.
 
     Returns a dict with alert counts by classification for today.
+    When ``_db_engine`` is set, queries the DB with today's time bounds.
     """
-    classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
-    counts: dict[str, int] = dict.fromkeys(classifications, 0)
-    for alert in _alerts_store:
-        cls = alert.get("classification", "")
-        if cls in counts:
-            counts[cls] += 1
-    return {
-        "period": "daily",
-        "counts": counts,
-        "total": sum(counts.values()),
-    }
+    return await _stats_by_period("daily", "today")
 
 
 @router.get("/api/stats/weekly")
@@ -1071,18 +1187,9 @@ async def get_stats_weekly() -> dict[str, Any]:
     """Return weekly aggregated statistics.
 
     Returns a dict with alert counts by classification for the past 7 days.
+    When ``_db_engine`` is set, queries the DB with 7-day time bounds.
     """
-    classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
-    counts: dict[str, int] = dict.fromkeys(classifications, 0)
-    for alert in _alerts_store:
-        cls = alert.get("classification", "")
-        if cls in counts:
-            counts[cls] += 1
-    return {
-        "period": "weekly",
-        "counts": counts,
-        "total": sum(counts.values()),
-    }
+    return await _stats_by_period("weekly", "7d")
 
 
 @router.get("/api/stats/monthly")
@@ -1199,11 +1306,13 @@ async def set_hardware_noise_setting(enabled: bool = True) -> dict[str, bool]:
     global _hardware_defects_as_noise  # noqa: PLW0603
     _hardware_defects_as_noise = enabled
     if enabled:
-        _incidents_store[:] = [
+        kept = [
             inc
             for inc in _incidents_store
             if inc.get("mnemonic") not in _SILENT_FAULT_MNEMONICS
         ]
+        _incidents_store.clear()
+        _incidents_store.extend(kept)
     if _db_engine is not None:
         try:
             from sqlalchemy.ext.asyncio import (
@@ -1255,7 +1364,7 @@ async def get_maintenance_windows() -> list[dict[str, Any]]:
             if end_ts >= now:
                 active.append(window)
         except (ValueError, AttributeError, TypeError):
-            active.append(window)
+            continue
     return active
 
 

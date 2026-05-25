@@ -808,9 +808,11 @@ async def test_stats_daily_and_weekly_count(
     client: AsyncClient, clean_stores: None
 ) -> None:
     """daily + weekly stats count matching classifications (848-850, 867-869)."""
-    routes_mod._alerts_store.append({"classification": "CRITICAL"})  # noqa: SLF001
-    routes_mod._alerts_store.append({"classification": "INFO"})  # noqa: SLF001
-    routes_mod._alerts_store.append({"classification": "BOGUS"})  # noqa: SLF001
+    # Use a timestamp that is "now" so it falls within today and this week.
+    now_ts = datetime.now(routes_mod._BDT).replace(tzinfo=None).isoformat()  # noqa: SLF001
+    routes_mod._alerts_store.append({"classification": "CRITICAL", "timestamp": now_ts})  # noqa: SLF001
+    routes_mod._alerts_store.append({"classification": "INFO", "timestamp": now_ts})  # noqa: SLF001
+    routes_mod._alerts_store.append({"classification": "BOGUS", "timestamp": now_ts})  # noqa: SLF001
     async with client as c:
         daily = await c.get("/api/stats/daily")
         weekly = await c.get("/api/stats/weekly")
@@ -869,7 +871,7 @@ async def test_maintenance_window_naive_and_bad_endtime(
             "created_by": "ops",
         }
     )
-    # Unparseable end_time → exception path appends the window anyway.
+    # Unparseable end_time → exception path skips the window (corrupt data).
     routes_mod._maintenance_store.append(  # noqa: SLF001
         {
             "id": 2,
@@ -884,7 +886,8 @@ async def test_maintenance_window_naive_and_bad_endtime(
         resp = await c.get("/api/maintenance")
     assert resp.status_code == 200
     ids = {w["id"] for w in resp.json()}
-    assert ids == {1, 2}
+    # Only the valid future window should appear; corrupt window is skipped
+    assert ids == {1}
 
 
 # ---------------------------------------------------------------------------
