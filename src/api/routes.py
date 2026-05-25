@@ -282,6 +282,15 @@ async def load_persisted_state(engine: AsyncEngine) -> None:
                     "Loaded hardware_defects_as_noise=%s from DB",
                     _hardware_defects_as_noise,
                 )
+
+            # ── Resolve stale noise-eligible alerts ───────────────────────
+            if _hardware_defects_as_noise:
+                resolved = await _resolve_noise_alerts_on_startup(engine)
+                if resolved > 0:
+                    _load_log.info(
+                        "Resolved %d stale RX_FAULT/SIGNAL/RFI alerts in DB",
+                        resolved,
+                    )
     except Exception as exc:  # noqa: BLE001
         _load_log.warning("Could not load persisted state from DB: %s", exc)
 
@@ -312,6 +321,31 @@ async def resolve_silent_faults_in_db(
             .where(AlertLog.resolved_at.is_(None))
             .where(AlertLog.timestamp >= cutoff)
             .values(resolved_at=now, resolution_reason="bgp_up_inferred")
+        )
+        result = cast("CursorResult[Any]", await session.execute(stmt))
+        await session.commit()
+        return result.rowcount
+
+
+async def _resolve_noise_alerts_on_startup(engine: AsyncEngine) -> int:
+    """Mark unresolved RX_FAULT/SIGNAL/RFI alerts as noise-resolved on startup.
+
+    Called once during ``load_persisted_state`` when the hardware-defects-as-noise
+    toggle is enabled.  Resolves stale alerts so they don't reappear as active
+    incidents after a server restart.
+    """
+    from sqlalchemy import CursorResult, update  # noqa: PLC0415
+    from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+    from src.database.models import AlertLog  # noqa: PLC0415
+
+    now = datetime.now(UTC)
+    async with AsyncSession(engine) as session:
+        stmt = (
+            update(AlertLog)
+            .where(AlertLog.mnemonic.in_(sorted(_SILENT_FAULT_MNEMONICS)))
+            .where(AlertLog.resolved_at.is_(None))
+            .values(resolved_at=now, resolution_reason="noise_toggle_enabled")
         )
         result = cast("CursorResult[Any]", await session.execute(stmt))
         await session.commit()

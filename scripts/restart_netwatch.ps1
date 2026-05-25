@@ -53,18 +53,44 @@ Write-Host "`n[1/3] Stopping running NetWatch server ..." -ForegroundColor Yello
 $stopped = New-Object System.Collections.Generic.List[int]
 
 # (a) by command line — catches reload parent + workers on any port; only OUR app
-Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match 'uvicorn' -and $_.CommandLine -match 'src\.main:app' } |
+Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.CommandLine -and (
+            ($_.CommandLine -match 'uvicorn' -and $_.CommandLine -match 'src\.main:app') -or
+            ($_.CommandLine -match 'multiprocessing\.spawn')
+        )
+    } |
     ForEach-Object {
         try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; $stopped.Add([int]$_.ProcessId) } catch { }
     }
 
-# (b) by port — fallback for anything still holding the port
+# (b) by port — kill any process (or orphaned child) holding the port
 Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
     Select-Object -ExpandProperty OwningProcess -Unique |
     ForEach-Object {
-        try { Stop-Process -Id $_ -Force -ErrorAction Stop; $stopped.Add([int]$_) } catch { }
+        $portPid = $_
+        # Try killing the owner directly
+        try { Stop-Process -Id $portPid -Force -ErrorAction Stop; $stopped.Add([int]$portPid) } catch { }
+        # Also kill any child processes that inherited the socket
+        Get-CimInstance Win32_Process -Filter "ParentProcessId = $portPid" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; $stopped.Add([int]$_.ProcessId) } catch { }
+            }
     }
+
+# (c) netstat fallback — catches ghost PIDs that Get-NetTCPConnection maps to dead parents
+$netstatPids = netstat -ano 2>$null |
+    Select-String ":$Port\s.*LISTENING" |
+    ForEach-Object { if ($_ -match '\s(\d+)\s*$') { $Matches[1] } } |
+    Sort-Object -Unique
+foreach ($nPid in $netstatPids) {
+    try { Stop-Process -Id ([int]$nPid) -Force -ErrorAction Stop; $stopped.Add([int]$nPid) } catch { }
+    # Kill children of the netstat PID too
+    Get-CimInstance Win32_Process -Filter "ParentProcessId = $nPid" -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; $stopped.Add([int]$_.ProcessId) } catch { }
+        }
+}
 
 if ($stopped.Count -gt 0) {
     Write-Host ("  Stopped PID(s): " + (($stopped | Sort-Object -Unique) -join ', '))
