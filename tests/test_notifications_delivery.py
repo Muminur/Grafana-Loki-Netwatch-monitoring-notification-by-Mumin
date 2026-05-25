@@ -7,6 +7,10 @@ Covers:
 - Webhook/token format validation: invalid values skipped without HTTP call.
 - Message-format injection guard in formatter (control characters stripped,
   payloads length-capped).
+- Telegram ok=false response handling.
+- _parse_retry_after edge cases (integer, HTTP-date, garbage).
+- Formatter as_number-only edge case.
+- Empty telegram_chat_id early exit.
 
 All HTTP calls are mocked -- no real network traffic.
 ``asyncio.sleep`` is patched to keep tests fast.
@@ -14,6 +18,7 @@ All HTTP calls are mocked -- no real network traffic.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -974,3 +979,275 @@ class TestExplicitTimeout:
         first_call_kwargs = all_calls[0].kwargs if all_calls[0].kwargs else {}
         if "timeout" in first_call_kwargs:
             assert first_call_kwargs["timeout"] == 10.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Telegram — ok=false JSON body handling
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestTelegramOkFalseResponse:
+    """Telegram API returns HTTP 200 but JSON body has ok=false."""
+
+    @pytest.mark.asyncio
+    async def test_ok_false_returns_false(self) -> None:
+        """HTTP 200 with ok=false -> returns False immediately."""
+        from src.notifications.telegram import send_telegram_alert
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "ok": False,
+            "description": "Bad Request",
+        }
+        mock_client = _make_mock_client(mock_response)
+        settings = _make_settings(telegram_enabled=True)
+
+        with patch(_TELEGRAM_PATCH, return_value=mock_client):
+            result = await send_telegram_alert(_make_enriched(), settings)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_ok_false_logs_error(self, caplog: pytest.LogCaptureFixture) -> None:
+        """HTTP 200 with ok=false -> emits an ERROR log containing the body."""
+        from src.notifications.telegram import send_telegram_alert
+
+        body = {"ok": False, "description": "Bad Request: chat not found"}
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = body
+        mock_client = _make_mock_client(mock_response)
+        settings = _make_settings(telegram_enabled=True)
+
+        with (
+            patch(_TELEGRAM_PATCH, return_value=mock_client),
+            caplog.at_level(logging.ERROR),
+        ):
+            result = await send_telegram_alert(_make_enriched(), settings)
+
+        assert result is False
+        assert any(
+            "ok=false" in r.message.lower() or "ok=false" in str(r.message).lower()
+            for r in caplog.records
+            if r.levelno == logging.ERROR
+        )
+
+    @pytest.mark.asyncio
+    async def test_ok_false_no_retry(self) -> None:
+        """ok=false is a definitive rejection, not retried."""
+        from src.notifications.telegram import send_telegram_alert
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": False, "description": "Bad Request"}
+        mock_client = _make_mock_client(mock_response)
+        settings = _make_settings(telegram_enabled=True)
+
+        with (
+            patch(_TELEGRAM_PATCH, return_value=mock_client),
+            patch(_TELEGRAM_SLEEP, new_callable=AsyncMock) as mock_sleep,
+        ):
+            await send_telegram_alert(_make_enriched(), settings)
+
+        mock_sleep.assert_not_called()
+        assert mock_client.post.call_count == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _parse_retry_after edge cases — Discord and Telegram
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestDiscordParseRetryAfter:
+    """Tests for src.notifications.discord._parse_retry_after."""
+
+    @pytest.mark.parametrize(
+        ("input_val", "expected"),
+        [
+            ("5", 5.0),
+            ("0", 0.0),
+            ("10", 10.0),
+        ],
+    )
+    def test_integer_string(self, input_val: str, expected: float) -> None:
+        """Integer string '5' -> 5.0."""
+        from src.notifications.discord import _parse_retry_after
+
+        assert _parse_retry_after(input_val) == expected
+
+    def test_http_date_returns_positive_float(self) -> None:
+        """Valid HTTP-date returns a float (may be <= 0 if date is in the past,
+        but the function itself must not raise)."""
+        from src.notifications.discord import _parse_retry_after
+
+        result = _parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT")
+        assert isinstance(result, float)
+        # Past date -> max(0.0, negative) -> 0.0
+        assert result >= 0.0
+
+    def test_http_date_future_returns_positive(self) -> None:
+        """A future HTTP-date returns a float > 0."""
+        import datetime as dt
+
+        from src.notifications.discord import _parse_retry_after
+
+        future = dt.datetime.now(tz=dt.UTC) + dt.timedelta(seconds=60)
+        http_date = future.strftime("%a, %d %b %Y %H:%M:%S GMT")
+        result = _parse_retry_after(http_date)
+        assert result > 0.0
+
+    def test_garbage_string_returns_default(self) -> None:
+        """Unparseable string 'garbage' -> 1.0 (fallback default)."""
+        from src.notifications.discord import _parse_retry_after
+
+        assert _parse_retry_after("garbage") == 1.0
+
+    def test_empty_string_returns_default(self) -> None:
+        """Empty string -> 1.0 (fallback default)."""
+        from src.notifications.discord import _parse_retry_after
+
+        assert _parse_retry_after("") == 1.0
+
+
+class TestTelegramParseRetryAfter:
+    """Tests for src.notifications.telegram._parse_retry_after."""
+
+    @pytest.mark.parametrize(
+        ("input_val", "expected"),
+        [
+            ("5", 5.0),
+            ("0", 0.0),
+            ("10", 10.0),
+        ],
+    )
+    def test_integer_string(self, input_val: str, expected: float) -> None:
+        """Integer string '5' -> 5.0."""
+        from src.notifications.telegram import _parse_retry_after
+
+        assert _parse_retry_after(input_val) == expected
+
+    def test_http_date_returns_positive_float(self) -> None:
+        """Valid HTTP-date returns a float >= 0."""
+        from src.notifications.telegram import _parse_retry_after
+
+        result = _parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT")
+        assert isinstance(result, float)
+        assert result >= 0.0
+
+    def test_http_date_future_returns_positive(self) -> None:
+        """A future HTTP-date returns a float > 0."""
+        import datetime as dt
+
+        from src.notifications.telegram import _parse_retry_after
+
+        future = dt.datetime.now(tz=dt.UTC) + dt.timedelta(seconds=60)
+        http_date = future.strftime("%a, %d %b %Y %H:%M:%S GMT")
+        result = _parse_retry_after(http_date)
+        assert result > 0.0
+
+    def test_garbage_string_returns_default(self) -> None:
+        """Unparseable string 'garbage' -> 1.0 (fallback default)."""
+        from src.notifications.telegram import _parse_retry_after
+
+        assert _parse_retry_after("garbage") == 1.0
+
+    def test_empty_string_returns_default(self) -> None:
+        """Empty string -> 1.0 (fallback default)."""
+        from src.notifications.telegram import _parse_retry_after
+
+        assert _parse_retry_after("") == 1.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Formatter — as_number-only edge case (as_name is empty)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestFormatterAsNumberOnly:
+    """When as_name is empty but as_number is set, output must include AS number."""
+
+    def test_discord_embed_includes_as_number_when_name_empty(self) -> None:
+        """Discord embed includes AS number even when as_name is empty."""
+        from src.notifications.formatter import format_discord_embed
+
+        enriched = _make_enriched(
+            as_name="",
+            as_number=12345,
+            bgp_neighbor="1.2.3.4",
+        )
+        payload = format_discord_embed(enriched, _make_settings())
+        full_text = json.dumps(payload)
+        assert "12345" in full_text
+
+    def test_telegram_message_includes_as_number_when_name_empty(self) -> None:
+        """Telegram message includes AS number even when as_name is empty."""
+        from src.notifications.formatter import format_telegram_message
+
+        enriched = _make_enriched(
+            as_name="",
+            as_number=12345,
+            bgp_neighbor="1.2.3.4",
+        )
+        msg = format_telegram_message(enriched)
+        assert "12345" in msg
+
+    def test_discord_as_number_format_without_name(self) -> None:
+        """When as_name is empty, the AS number field shows (AS12345) without
+        a trailing name."""
+        from src.notifications.formatter import format_discord_embed
+
+        enriched = _make_enriched(
+            as_name="",
+            as_number=64512,
+            bgp_neighbor="10.0.0.1",
+        )
+        payload = format_discord_embed(enriched, _make_settings())
+        full_text = json.dumps(payload)
+        assert "AS64512" in full_text
+        # There should NOT be a spurious space or trailing empty name
+        assert "AS64512 )" not in full_text
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Telegram — empty chat_id early exit
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestTelegramEmptyChatId:
+    """Empty telegram_chat_id -> return False without HTTP call."""
+
+    @pytest.mark.asyncio
+    async def test_empty_chat_id_returns_false(self) -> None:
+        """send_telegram_alert returns False when chat_id is empty."""
+        from src.notifications.telegram import send_telegram_alert
+
+        settings = _make_settings(telegram_enabled=True, telegram_chat_id="")
+
+        with patch(_TELEGRAM_PATCH) as mock_cls:
+            result = await send_telegram_alert(_make_enriched(), settings)
+
+        assert result is False
+        mock_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_chat_id_logs_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """send_telegram_alert logs a warning when chat_id is empty."""
+        from src.notifications.telegram import send_telegram_alert
+
+        settings = _make_settings(telegram_enabled=True, telegram_chat_id="")
+
+        with (
+            patch(_TELEGRAM_PATCH) as mock_cls,
+            caplog.at_level(logging.WARNING),
+        ):
+            result = await send_telegram_alert(_make_enriched(), settings)
+
+        assert result is False
+        mock_cls.assert_not_called()
+        assert any(
+            "chat_id" in r.message.lower() or "chat_id" in r.message
+            for r in caplog.records
+        )
