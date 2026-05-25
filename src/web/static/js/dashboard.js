@@ -10,6 +10,7 @@
 
     // ── State ────────────────────────────────────────────────────────────────
     var _alerts = [];        // all received alerts, newest-first
+    var _ackedIds = {};      // persists ACK state across array replacements
     var _activeTab = 'CRITICAL'; // current tab filter
     var _searchQuery = '';  // current search text
     var _counters = {
@@ -64,7 +65,7 @@
     function _buildAlertCard(alert) {
         var card = document.createElement('div');
         card.className = 'alert-card sev-' + (alert.classification || 'INFO');
-        if (alert._acked) card.classList.add('acknowledged');
+        if (alert._acked || _ackedIds[alert.id]) card.classList.add('acknowledged');
         card.dataset.id = alert.id || '';
         card.dataset.classification = alert.classification || '';
 
@@ -139,6 +140,7 @@
             ackBtn.addEventListener('click', function (e) {
                 e.stopPropagation();
                 alert._acked = true;
+                _ackedIds[alert.id] = true;
                 card.classList.add('acknowledged');
                 card.classList.remove('expanded');
             });
@@ -261,6 +263,7 @@
         if (!btn) return;
         btn.addEventListener('click', function () {
             _alerts = [];
+            _ackedIds = {};
             _counters = { CRITICAL: 0, WARNING: 0, INFO: 0, NOISE: 0, USER_LOGIN: 0 };
             _updateCounters();
             _renderAlerts();
@@ -270,6 +273,16 @@
     // ── Client-side dedup (safety net) ──────────────────────────────────────
     var _recentKeys = {};
     var _DEDUP_WINDOW_MS = 300000; // 5 minutes
+
+    // Prune expired dedup entries every 60 s to prevent unbounded growth
+    setInterval(function () {
+        var now = Date.now();
+        Object.keys(_recentKeys).forEach(function (k) {
+            if (now - _recentKeys[k] > _DEDUP_WINDOW_MS) {
+                delete _recentKeys[k];
+            }
+        });
+    }, 60000);
 
     function _isDuplicate(alert) {
         var key = (alert.device || '') + ':' + (alert.mnemonic || '') + ':'
@@ -329,17 +342,17 @@
         fetch(apiBase + '/alerts?period=' + encodeURIComponent(period) + '&limit=500')
             .then(function (r) { return r.json(); })
             .then(function (data) {
-                // Replace in-memory store with DB results
-                _alerts = Array.isArray(data) ? data : [];
-
-                // Recount from the fetched data
-                _counters = { CRITICAL: 0, WARNING: 0, INFO: 0, NOISE: 0, USER_LOGIN: 0 };
-                _alerts.forEach(function (a) {
-                    var cls = a.classification;
-                    if (_counters.hasOwnProperty(cls)) { _counters[cls]++; }
+                // Merge DB results with any live WebSocket alerts received
+                // during the fetch.  Keep live alerts whose id is not already
+                // in the DB result set, then prepend them.
+                var dbAlerts = Array.isArray(data) ? data : [];
+                var dbIds = {};
+                dbAlerts.forEach(function (a) { if (a.id) dbIds[a.id] = true; });
+                var liveOnly = _alerts.filter(function (a) {
+                    return a.id && !dbIds[a.id];
                 });
+                _alerts = liveOnly.concat(dbAlerts);
 
-                _updateCounters();
                 _renderAlerts();
             })
             .catch(function () { /* non-fatal — keep current state */ });
@@ -430,6 +443,17 @@
             var sel = document.querySelector('.alert-card:not(.acknowledged)');
             if (sel) {
                 sel.classList.add('acknowledged');
+                var alertId = sel.dataset.id;
+                if (alertId) {
+                    _ackedIds[alertId] = true;
+                    // Also set _acked on the in-memory alert object
+                    for (var i = 0; i < _alerts.length; i++) {
+                        if (_alerts[i].id === alertId) {
+                            _alerts[i]._acked = true;
+                            break;
+                        }
+                    }
+                }
             }
         },
     };
