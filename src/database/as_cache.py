@@ -213,6 +213,7 @@ async def resolve_as_name(
                 await cache_as_lookup(
                     session, asn, org_name, "external", "bigdatacloud"
                 )
+                await session.commit()
                 _log.info("Cached AS%d → %s (BigDataCloud)", asn, org_name)
                 return org_name
 

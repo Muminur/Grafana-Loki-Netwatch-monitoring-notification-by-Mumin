@@ -32,6 +32,8 @@ from src.database.models import ASCache
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
 IN_MEMORY_URL = "sqlite+aiosqlite:///:memory:"
 _UNKNOWN_ASN = 65998  # not in static DB
 
@@ -42,14 +44,20 @@ _UNKNOWN_ASN = 65998  # not in static DB
 
 
 @pytest_asyncio.fixture
-async def session() -> AsyncIterator[AsyncSession]:
+async def engine() -> AsyncIterator[AsyncEngine]:
+    """Shared in-memory SQLite engine for tests that need cross-session checks."""
+    eng = await get_engine(IN_MEMORY_URL)
+    await create_tables(eng)
+    yield eng
+    await eng.dispose()
+
+
+@pytest_asyncio.fixture
+async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
     """Fresh in-memory SQLite session for each test."""
-    engine = await get_engine(IN_MEMORY_URL)
-    await create_tables(engine)
     factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as _session:
         yield _session
-    await engine.dispose()
 
 
 def _mock_http_client(response: MagicMock) -> AsyncMock:
@@ -500,3 +508,33 @@ async def test_http_client_receives_tight_timeout(session: AsyncSession) -> None
     assert (
         timeout_val == _HTTP_TIMEOUT
     ), f"AsyncClient timeout={timeout_val!r} != _HTTP_TIMEOUT={_HTTP_TIMEOUT}"
+
+
+# ---------------------------------------------------------------------------
+# 10. Cache commit: data persists across sessions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cache_persists_across_sessions(engine: AsyncEngine) -> None:
+    """resolve_as_name must commit the cache write so a new session can read it."""
+    factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    # Session 1: resolve and cache
+    async with factory() as session1:
+        resp = _ok_response(org="Persistent Org")
+        client = _mock_http_client(resp)
+
+        with (
+            patch("httpx.AsyncClient", return_value=client),
+            patch("src.database.as_cache.asyncio.sleep", new=AsyncMock()),
+        ):
+            name = await resolve_as_name(session1, asn=64800, api_key="K")
+
+        assert name == "Persistent Org"
+
+    # Session 2: read back — must find the cached entry without any HTTP call
+    async with factory() as session2:
+        cached = await get_cached_as(session2, asn=64800)
+        assert cached is not None, "Cache entry was not committed — lost across sessions"
+        assert cached.name == "Persistent Org"

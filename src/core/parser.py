@@ -136,13 +136,19 @@ def _parse_inner_timestamp(inner: str) -> datetime:
     #   device without misclassifying the year.  A device with an NTP drift
     #   of up to ~30 days is not back-dated to the previous year.
     #
+    # Case C — log from next calendar year (Dec→Jan forward rollover):
+    #   In late November or December (now.month >= 11) a January/February
+    #   log (parsed_ts.month <= 2) is from the upcoming year, not the
+    #   current one.  Without this forward case, a Jan log received in Dec
+    #   would stay in the current year instead of rolling forward.
+    #
     # Known limitation: the heuristic fails if a log is delayed by more
     # than one calendar month before reaching the collector, but that is
     # not a realistic scenario for live syslog streams.
-    #
-    # No change to behaviour — confirmed correct for BSCCL's use-case.
     if parsed_ts.month > now.month + 1:
         parsed_ts = parsed_ts.replace(year=year - 1)
+    elif now.month >= 11 and parsed_ts.month <= 2:
+        parsed_ts = parsed_ts.replace(year=year + 1)
 
     return parsed_ts
 

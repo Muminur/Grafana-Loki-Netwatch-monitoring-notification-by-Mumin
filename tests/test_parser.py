@@ -1,8 +1,9 @@
 """Tests for src.core.parser — all 4 IOS-XR syslog formats."""
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
-from src.core.parser import ParsedLog, parse_syslog
+from src.core.parser import ParsedLog, _UTC6, parse_syslog
 
 # ---------------------------------------------------------------------------
 # Format 1 — IOS-XR with +06 offset (EQ-RTR-01, DHK-Core-3)
@@ -332,3 +333,77 @@ def test_parsed_log_is_dataclass(sample_bgp_down_log: str) -> None:
     result = parse_syslog(sample_bgp_down_log)
     assert result is not None
     assert isinstance(result, ParsedLog)
+
+
+# ---------------------------------------------------------------------------
+# Year-rollover edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_year_rollover_dec_to_jan_forward() -> None:
+    """In December, a January log should roll forward to the next year."""
+    # Simulate "now" being December 15, 2026
+    fake_now = datetime(2026, 12, 15, 10, 0, 0, tzinfo=_UTC6)
+
+    # Build a syslog line with a January timestamp
+    raw = (
+        "Jan 3 10:00:00 192.168.203.1 99999: BSCCL-EQ-RTR-01 "
+        "RP/0/RP0/CPU0:Jan 3 10:00:00.000 +06: bgp[1097]: "
+        "%ROUTING-BGP-5-ADJCHANGE : neighbor 1.2.3.4 Down - test "
+        "(VRF: default) (AS: 12345)"
+    )
+
+    with patch("src.core.parser.datetime") as mock_dt:
+        mock_dt.now.return_value = fake_now
+        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+        result = parse_syslog(raw)
+
+    assert result is not None
+    # January log received in December → should be year 2027
+    assert result.timestamp.year == 2027
+    assert result.timestamp.month == 1
+
+
+def test_year_rollover_jan_receives_dec_log() -> None:
+    """In January, a December log should roll back to the previous year."""
+    # Simulate "now" being January 3, 2027
+    fake_now = datetime(2027, 1, 3, 10, 0, 0, tzinfo=_UTC6)
+
+    raw = (
+        "Dec 31 23:59:59 192.168.203.1 99999: BSCCL-EQ-RTR-01 "
+        "RP/0/RP0/CPU0:Dec 31 23:59:59.000 +06: bgp[1097]: "
+        "%ROUTING-BGP-5-ADJCHANGE : neighbor 1.2.3.4 Down - test "
+        "(VRF: default) (AS: 12345)"
+    )
+
+    with patch("src.core.parser.datetime") as mock_dt:
+        mock_dt.now.return_value = fake_now
+        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+        result = parse_syslog(raw)
+
+    assert result is not None
+    # December log received in January → should be year 2026
+    assert result.timestamp.year == 2026
+    assert result.timestamp.month == 12
+
+
+def test_year_rollover_nov_receives_jan_forward() -> None:
+    """In November, a January log should roll forward to the next year."""
+    fake_now = datetime(2026, 11, 28, 10, 0, 0, tzinfo=_UTC6)
+
+    raw = (
+        "Jan 2 08:00:00 192.168.203.1 99999: BSCCL-EQ-RTR-01 "
+        "RP/0/RP0/CPU0:Jan 2 08:00:00.000 +06: bgp[1097]: "
+        "%ROUTING-BGP-5-ADJCHANGE : neighbor 1.2.3.4 Down - test "
+        "(VRF: default) (AS: 12345)"
+    )
+
+    with patch("src.core.parser.datetime") as mock_dt:
+        mock_dt.now.return_value = fake_now
+        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+        result = parse_syslog(raw)
+
+    assert result is not None
+    # January log received in November → should be year 2027
+    assert result.timestamp.year == 2027
+    assert result.timestamp.month == 1
