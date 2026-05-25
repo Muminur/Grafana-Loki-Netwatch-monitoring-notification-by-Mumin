@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-868_passing-00ff88?style=flat-square" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-902_passing-00ff88?style=flat-square" alt="Tests"/>
   <img src="https://img.shields.io/badge/coverage-96%25-00ff88?style=flat-square" alt="Coverage"/>
   <img src="https://img.shields.io/badge/ruff-clean-00f0ff?style=flat-square" alt="Ruff"/>
   <img src="https://img.shields.io/badge/mypy-strict-8b5cf6?style=flat-square" alt="Mypy"/>
@@ -106,7 +106,7 @@ The correlation engine uses the **network dependency tree** to automatically det
 | Classification rules | **26** (14 CRITICAL, 3 WARNING, 6 INFO, 3 LOGIN) |
 | Syslog formats parsed | **4** (IOS-XR +06, BDT, ADMIN, bare) |
 | Dedup windows | **5 min** standard, **2 min** BGP flap, **30 sec** bundle |
-| Test suite | **868 tests**, 96% coverage |
+| Test suite | **902 tests**, 96% coverage |
 
 ---
 
@@ -336,18 +336,75 @@ Alert: BGP DOWN AS32934 Facebook
 
 ---
 
-## Notification Dedup
+## Notification Pipeline
 
-| Strategy | Window | Trigger |
-|----------|--------|---------|
-| **Standard dedup** | 5 minutes | Same device + mnemonic + interface/neighbor |
-| **BGP flap detection** | 2 minutes | Down → Up → Down pattern → single "FLAPPING" alert |
-| **Bundle grouping** | 30 seconds | Multiple member events → grouped by parent bundle |
-| **Incident auto-resolution** | Real-time | Recovery event (Up/Active/Clear) removes matching DOWN incident |
-| **BGP-UP silent fault clear** | Real-time | BGP UP on backbone P2P bundle auto-resolves RX_FAULT/SIGNAL/RFI (IOS-XR never sends clears for these) |
-| **Escalation** | 15 minutes | Unacknowledged CRITICAL → escalation channel |
+### Channels
 
-Dedup is enforced at every layer: DB storage, WebSocket broadcast, and in-memory store all skip suppressed duplicates. Client-side dedup provides an additional safety net in the browser.
+| Channel | Transport | Format | When |
+|---------|-----------|--------|------|
+| **Discord** | Webhook POST | Color-coded embed (red CRITICAL, yellow WARNING) | Every non-suppressed alert with `notify=true` |
+| **Telegram** | Bot API `sendMessage` | MarkdownV2 with bold device/mnemonic | Same trigger as Discord (parallel delivery) |
+| **Discord Escalation** | Webhook POST | Pure red embed (0xFF0000), distinct from regular alerts | CRITICAL unacknowledged > 15 minutes |
+| **Telegram Escalation** | Bot API `sendMessage` | Bold "ESCALATION" prefix with elapsed minutes | Same trigger as Discord escalation |
+
+### Delivery Reliability
+
+Both Discord and Telegram senders implement production-grade delivery:
+
+- **Exponential backoff** — up to 3 retries with doubling wait (1s → 2s → 4s)
+- **HTTP 429 Rate Limit** — honours `Retry-After` header (integer seconds or RFC 2822 date); waits the exact duration before retry
+- **Webhook/token validation** — format-checks the URL/token before attempting delivery; logs an error and returns early for invalid credentials
+- **Field sanitisation** — all user-facing fields (device name, message, interface, AS name) are sanitised before inclusion in payloads
+- **Secret redaction** — webhook URLs and bot tokens are never written to log files; only the first/last 4 characters appear in debug logs
+- **Timeout** — 10-second connection + read timeout per attempt to prevent blocking the pipeline
+
+### Notification Lifecycle
+
+```
+Alert arrives → Classify → Enrich → Correlate → Dedup check
+                                                      │
+                            ┌─────────────────────────┘
+                            │
+                     Should notify?
+                     ├── Suppressed by dedup window → skip
+                     ├── Suppressed by incident (is_symptom) → skip
+                     ├── Suppressed by maintenance window → skip
+                     └── Yes → send to Discord + Telegram
+                                      │
+                                      ▼
+                              Store in DB → Push to WebSocket
+                                      │
+                                      ▼ (15 min later, if unacked)
+                              Escalation checker fires
+                              └── Send escalation to Discord + Telegram
+                                  └── Mark as escalated (no re-send)
+```
+
+### Dedup Strategies
+
+| Strategy | Window | Key | Trigger |
+|----------|--------|-----|---------|
+| **Standard dedup** | 5 minutes | `device:mnemonic:interface_or_neighbor` | Same event within window → suppressed |
+| **BGP flap detection** | 2 minutes | `device:neighbor` | Down → Up → Down → single "FLAPPING" alert |
+| **Bundle member grouping** | 30 seconds | `device:bundle_parent` | Multiple member events → grouped by parent bundle |
+| **Incident auto-resolution** | Real-time | `device:interface` or `device:AS` | Recovery event (Up/Active/Clear) removes matching DOWN incident |
+| **BGP-UP silent fault clear** | Real-time | `device:bundle_members` | BGP UP on backbone P2P bundle auto-resolves RX_FAULT/SIGNAL/RFI (IOS-XR never sends explicit clears for optical faults) |
+
+Dedup is enforced at every layer: DB storage, WebSocket broadcast, in-memory store, and client-side browser. The dedup engine uses `max(event-time, monotonic-clock)` elapsed so replayed/historical logs and backward clock steps are handled without mis-suppressing real alerts. Stale dedup entries are automatically evicted every 100 calls to prevent unbounded memory growth.
+
+### Escalation Pipeline
+
+1. A background task (`_escalation_checker`) runs every 60 seconds
+2. It scans in-memory CRITICAL alerts that have been unacknowledged for > 15 minutes
+3. For each pending escalation:
+   - Formats a distinct **ESCALATION** notification (pure red Discord embed, bold Telegram prefix)
+   - Sends to both Discord and Telegram (if enabled)
+   - Marks the alert as escalated to prevent re-sending on subsequent cycles
+4. Escalation tracking is persisted to SQLite and restored on restart — no escalation is lost across server restarts
+
+### Statistics Aggregation
+
+A background task (`_hourly_aggregator`) runs every 5 minutes and pre-aggregates alert counts into the `HourlyStats` table by device and hour. This enables fast statistics queries for the Statistics page without scanning the full `AlertLog` table on every request.
 
 ---
 
@@ -465,7 +522,7 @@ bsccl-netwatch/
 │       └── static/
 │           ├── css/neon-theme.css  # Full neon design system
 │           └── js/                # WebSocket, charts, topology, sounds, shortcuts
-├── tests/                         # 868 tests (unit + integration + e2e)
+├── tests/                         # 902 tests (unit + integration + e2e)
 ├── Dockerfile                     # Multi-stage, non-root, pinned, healthcheck
 ├── docker-compose.yml             # Production deployment (limits, no-new-privileges)
 └── .github/workflows/ci.yml       # CI: ruff + black + mypy + pytest + coverage + pip-audit
