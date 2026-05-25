@@ -1096,6 +1096,14 @@ async def get_incidents() -> list[dict[str, Any]]:
             "as_name": row.as_name or "",
         }
         seen[key] = inc
+
+    # Cache synthesized incidents into the in-memory store so they are
+    # available for acknowledge/resolve operations without another DB hit.
+    if seen:
+        _incidents_store.clear()
+        for inc_item in seen.values():
+            _incidents_store.append(inc_item)
+
     return list(seen.values())
 
 

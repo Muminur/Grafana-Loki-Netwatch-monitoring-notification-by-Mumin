@@ -573,15 +573,40 @@
 
     function _doAcknowledge(incidentId, operatorName, comment) {
         var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
+
+        // Optimistic UI update: immediately mark as acknowledged locally
+        var card = document.querySelector('[data-incident-id="' + incidentId + '"]');
+        if (card) {
+            card.classList.remove('incident-unacked');
+            card.classList.add('incident-acked');
+            var ackBtn = card.querySelector('.btn-ack-incident');
+            if (ackBtn) ackBtn.remove();
+        }
+
+        // Check if all incidents are now acked → stop alarm
+        var remaining = document.querySelectorAll('.incident-card.incident-unacked');
+        if (remaining.length === 0) {
+            _stopIncidentAlarm();
+        }
+
         fetch(apiBase + '/incidents/' + encodeURIComponent(incidentId) + '/acknowledge', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ operator_name: operatorName, comment: comment }),
         })
-            .then(function (r) { return r.json(); })
-            .then(function () { _loadIncidents(); })
+            .then(function (r) {
+                if (!r.ok) {
+                    throw new Error('Server returned ' + r.status);
+                }
+                return r.json();
+            })
+            .then(function () {
+                _loadIncidents();
+            })
             .catch(function (err) {
                 console.error('[NetWatch] ACK failed:', err);
+                // Revert optimistic update on failure
+                _loadIncidents();
             });
     }
 
