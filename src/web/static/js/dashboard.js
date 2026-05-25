@@ -21,6 +21,13 @@
         USER_LOGIN: 0,
     };
 
+    // Race-condition guard: queue WebSocket alerts while a fetch is in-flight
+    var _isFetching = false;
+    var _alertQueue = [];
+
+    // Debounce timer for applyFilters
+    var _filterTimer = null;
+
     // ── Severity display map ──────────────────────────────────────────────────
     var SEV_LABEL = {
         CRITICAL:   'CRITICAL',
@@ -201,9 +208,9 @@
 
         var filtered = _filteredAlerts();
 
-        // Remove old cards (keep empty-state element)
-        var cards = container.querySelectorAll('.alert-card');
-        cards.forEach(function (c) { c.remove(); });
+        // Remove old cards AND transient loading/error indicators
+        var stale = container.querySelectorAll('.alert-card, .loading-state, .error-state');
+        stale.forEach(function (c) { c.remove(); });
 
         if (filtered.length === 0) {
             if (emptyEl) emptyEl.style.display = '';
@@ -302,8 +309,14 @@
 
         alert.id = alert.id || ('a-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
 
-        _alerts.unshift(alert);
-        if (_alerts.length > 2000) _alerts.length = 2000; // cap memory
+        // If a fetch is in-flight, queue the alert to avoid race conditions
+        // where the fetch response would overwrite this live alert.
+        if (_isFetching) {
+            _alertQueue.push(alert);
+        } else {
+            _alerts.unshift(alert);
+            if (_alerts.length > 2000) _alerts.length = 2000; // cap memory
+        }
 
         var cls = alert.classification;
         if (_counters.hasOwnProperty(cls)) {
@@ -311,7 +324,11 @@
         }
 
         _updateCounters();
-        _renderAlerts();
+
+        // Only re-render if we actually inserted into _alerts (not queued)
+        if (!_isFetching) {
+            _renderAlerts();
+        }
 
         // Notify charts module
         if (window.NetwatchCharts) {
@@ -327,16 +344,46 @@
     // ── Time filter / DB fetch ────────────────────────────────────────────────
 
     /**
-     * Fetch historical alerts from the DB for the selected period and render
-     * them.  Also refreshes severity counters via /api/alerts/count.
+     * Drain queued WebSocket alerts into the main _alerts array.
+     * Called after a fetch completes (success or failure) to ensure
+     * live alerts that arrived during the fetch are not lost.
+     */
+    function _drainAlertQueue() {
+        while (_alertQueue.length) {
+            _alerts.unshift(_alertQueue.shift());
+        }
+        if (_alerts.length > 2000) _alerts.length = 2000;
+    }
+
+    /**
+     * Internal implementation: fetch historical alerts from the DB for the
+     * selected period and render them.  Also refreshes severity counters
+     * via /api/alerts/count.
      *
      * Called on page load and whenever the period selector changes.
      * New real-time alerts from the WebSocket are prepended on top.
      */
-    function applyFilters() {
+    function _applyFiltersImpl() {
         var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
         var periodEl = document.getElementById('periodFilter');
         var period = periodEl ? periodEl.value : 'today';
+
+        var container = _el('alertsContainer');
+
+        // Show loading indicator (preserves #alertsEmpty element)
+        if (container) {
+            var _old = container.querySelectorAll('.alert-card, .loading-state, .error-state');
+            _old.forEach(function (c) { c.remove(); });
+            var _ld = document.createElement('div');
+            _ld.className = 'loading-state';
+            _ld.style.cssText = 'display:flex;align-items:center;justify-content:center;'
+                + 'padding:1.25rem 1rem;color:#b0b0c8;'
+                + 'font-family:var(--font-mono,monospace);font-size:0.78rem;';
+            _ld.textContent = 'Loading...';
+            container.insertBefore(_ld, container.firstChild);
+        }
+
+        _isFetching = true;
 
         // Fetch paginated alerts
         fetch(apiBase + '/alerts?period=' + encodeURIComponent(period) + '&limit=500')
@@ -353,9 +400,30 @@
                 });
                 _alerts = liveOnly.concat(dbAlerts);
 
+                // Drain any WebSocket alerts that arrived during the fetch
+                _drainAlertQueue();
+                _isFetching = false;
+
                 _renderAlerts();
             })
-            .catch(function () { /* non-fatal — keep current state */ });
+            .catch(function (err) {
+                console.error('[NetWatch] Failed to fetch alerts:', err);
+                _drainAlertQueue();
+                _isFetching = false;
+
+                _renderAlerts();
+
+                // Append error indicator after render (preserves #alertsEmpty)
+                if (container) {
+                    var _err = document.createElement('div');
+                    _err.className = 'error-state';
+                    _err.style.cssText = 'display:flex;align-items:center;justify-content:center;'
+                        + 'padding:1.25rem 1rem;color:#ff0040;'
+                        + 'font-family:var(--font-mono,monospace);font-size:0.78rem;';
+                    _err.textContent = 'Failed to load. Retrying...';
+                    container.appendChild(_err);
+                }
+            });
 
         // Also refresh counts badge via dedicated endpoint
         fetch(apiBase + '/alerts/count?period=' + encodeURIComponent(period))
@@ -370,7 +438,20 @@
                     _updateCounters();
                 }
             })
-            .catch(function () { /* non-fatal */ });
+            .catch(function (err) {
+                console.error('[NetWatch] Failed to fetch alert counts:', err);
+            });
+    }
+
+    /**
+     * Debounced public entry point for applyFilters.
+     * Prevents rapid clicks on period filter from flooding the server.
+     */
+    function applyFilters() {
+        clearTimeout(_filterTimer);
+        _filterTimer = setTimeout(function () {
+            _applyFiltersImpl();
+        }, 300);
     }
 
     // Expose for the inline onchange attribute on the <select>
@@ -379,12 +460,32 @@
     // ── Incidents ─────────────────────────────────────────────────────────────
     function _loadIncidents() {
         var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
+        var list = _el('incidentsList');
+
+        // Show loading indicator while fetching
+        if (list) {
+            list.innerHTML = '<div class="loading-state" style="'
+                + 'display:flex;align-items:center;justify-content:center;'
+                + 'padding:1.25rem 1rem;color:#b0b0c8;'
+                + 'font-family:var(--font-mono,monospace);font-size:0.78rem;'
+                + '">Loading...</div>';
+        }
+
         fetch(apiBase + '/incidents')
             .then(function (r) { return r.json(); })
             .then(function (incidents) {
                 _renderIncidents(incidents);
             })
-            .catch(function () { /* non-fatal */ });
+            .catch(function (err) {
+                console.error('[NetWatch] Failed to fetch incidents:', err);
+                if (list) {
+                    list.innerHTML = '<div class="error-state" style="'
+                        + 'display:flex;align-items:center;justify-content:center;'
+                        + 'padding:1.25rem 1rem;color:#ff0040;'
+                        + 'font-family:var(--font-mono,monospace);font-size:0.78rem;'
+                        + '">Failed to load. Retrying...</div>';
+                }
+            });
     }
 
     function _renderIncidents(incidents) {
