@@ -27,30 +27,38 @@
 
     var _isLargeDisplay = window.innerWidth >= 2000;
 
-    // Chart default options shared across all charts
-    var CHART_DEFAULTS = {
-        responsive: true,
-        maintainAspectRatio: true,
-        plugins: {
-            legend: {
-                labels: {
-                    color: COLORS.text,
-                    font: { family: 'JetBrains Mono', size: _isLargeDisplay ? 16 : 10 },
-                    boxWidth: _isLargeDisplay ? 14 : 10,
-                    padding: _isLargeDisplay ? 12 : 8,
+    function _evaluateDisplaySize() {
+        return window.innerWidth >= 2000;
+    }
+
+    function _buildChartDefaults() {
+        return {
+            responsive: true,
+            maintainAspectRatio: true,
+            plugins: {
+                legend: {
+                    labels: {
+                        color: COLORS.text,
+                        font: { family: 'JetBrains Mono', size: _isLargeDisplay ? 16 : 10 },
+                        boxWidth: _isLargeDisplay ? 14 : 10,
+                        padding: _isLargeDisplay ? 12 : 8,
+                    },
+                },
+                tooltip: {
+                    backgroundColor: '#0d0d1a',
+                    borderColor: 'rgba(0,240,255,0.3)',
+                    borderWidth: 1,
+                    titleColor: '#00f0ff',
+                    bodyColor: '#e8e8f0',
+                    titleFont: { family: 'Orbitron', size: _isLargeDisplay ? 16 : 10 },
+                    bodyFont: { family: 'JetBrains Mono', size: _isLargeDisplay ? 17 : 11 },
                 },
             },
-            tooltip: {
-                backgroundColor: '#0d0d1a',
-                borderColor: 'rgba(0,240,255,0.3)',
-                borderWidth: 1,
-                titleColor: '#00f0ff',
-                bodyColor: '#e8e8f0',
-                titleFont: { family: 'Orbitron', size: _isLargeDisplay ? 16 : 10 },
-                bodyFont: { family: 'JetBrains Mono', size: _isLargeDisplay ? 17 : 11 },
-            },
-        },
-    };
+        };
+    }
+
+    // Chart default options shared across all charts
+    var CHART_DEFAULTS = _buildChartDefaults();
 
     // ── Shared state ──────────────────────────────────────────────────────────
     var _charts = {};             // chart instance registry by canvas id
@@ -342,6 +350,8 @@
 
     // ── Init dashboard mini-charts ────────────────────────────────────────────
     function initDashboard() {
+        _isLargeDisplay = _evaluateDisplaySize();
+        CHART_DEFAULTS = _buildChartDefaults();
         _initHealthGauge('healthGaugeChart');
         _initTimelineChart('timelineChart');
         _initCategoryDonut('categoryDonutChart');
@@ -350,6 +360,8 @@
 
     // ── Init statistics page charts ───────────────────────────────────────────
     function initStats() {
+        _isLargeDisplay = _evaluateDisplaySize();
+        CHART_DEFAULTS = _buildChartDefaults();
         _initHealthGauge('statsHealthGauge', true);
         _initTimelineChart('statsTimelineChart');
         _initCategoryDonut('statsCategoryDonut');
@@ -357,6 +369,10 @@
 
         // Load initial stats from API
         var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
+
+        // Populate incident and device count cells
+        _fetchIncidentAndDeviceCounts(apiBase);
+
         fetch(apiBase + '/stats/daily')
             .then(function (r) { return r.json(); })
             .then(function (data) {
@@ -385,9 +401,16 @@
             .catch(function () { /* non-fatal */ });
     }
 
+    var PERIOD_ENDPOINTS = {
+        today: '/stats/daily',
+        week:  '/stats/weekly',
+        month: '/stats/monthly',
+        year:  '/stats/yearly',
+    };
+
     function loadPeriod(period) {
         var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
-        var endpoint = period === 'week' ? '/stats/weekly' : '/stats/daily';
+        var endpoint = PERIOD_ENDPOINTS[period] || '/stats/daily';
         fetch(apiBase + endpoint)
             .then(function (r) { return r.json(); })
             .then(function (data) {
@@ -396,6 +419,50 @@
                 }
             })
             .catch(function () { /* non-fatal */ });
+
+        // Populate incident and device count cells
+        _fetchIncidentAndDeviceCounts(apiBase);
+    }
+
+    function _fetchIncidentAndDeviceCounts(apiBase) {
+        fetch(apiBase + '/incidents')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                var el = document.getElementById('statsIncidentCount');
+                if (el) {
+                    el.textContent = Array.isArray(data) ? data.length : 0;
+                }
+            })
+            .catch(function () { /* non-fatal */ });
+
+        fetch(apiBase + '/devices')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                var el = document.getElementById('statsDeviceCount');
+                if (el) {
+                    el.textContent = Array.isArray(data) ? data.length : 0;
+                }
+            })
+            .catch(function () { /* non-fatal */ });
+    }
+
+    // ── Debounced resize handler for breakpoint changes ─────────────────────
+    var _resizeTimer = null;
+    function _onResize() {
+        clearTimeout(_resizeTimer);
+        _resizeTimer = setTimeout(function () {
+            var newLarge = _evaluateDisplaySize();
+            if (newLarge !== _isLargeDisplay) {
+                _isLargeDisplay = newLarge;
+                CHART_DEFAULTS = _buildChartDefaults();
+                if (document.getElementById('healthGaugeChart')) {
+                    initDashboard();
+                }
+                if (document.getElementById('statsHealthGauge')) {
+                    initStats();
+                }
+            }
+        }, 300);
     }
 
     // Auto-init on DOMContentLoaded
@@ -406,6 +473,7 @@
         if (document.getElementById('statsHealthGauge')) {
             initStats();
         }
+        window.addEventListener('resize', _onResize);
     });
 
     // Public API

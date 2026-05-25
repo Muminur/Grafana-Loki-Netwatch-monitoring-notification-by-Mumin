@@ -411,6 +411,19 @@
         }).join('');
     }
 
+    // ── Topology node click → populate search ──────────────────────────────
+    document.addEventListener('netwatch:filter-device', function (e) {
+        var device = e.detail && e.detail.device;
+        if (!device) return;
+        var searchInput = _el('alertSearch');
+        if (searchInput) {
+            searchInput.value = device;
+            _searchQuery = device;
+            _renderAlerts();
+            searchInput.focus();
+        }
+    });
+
     // ── Init ──────────────────────────────────────────────────────────────────
     document.addEventListener('DOMContentLoaded', function () {
         _initTabs();

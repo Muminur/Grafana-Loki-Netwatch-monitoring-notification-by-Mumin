@@ -40,7 +40,8 @@
             byLevel[lvl].push(n);
         });
 
-        var svgWidth = 900;
+        var svgEl = document.getElementById('topologySvg');
+        var svgWidth = svgEl ? (svgEl.viewBox.baseVal.width || 900) : 900;
         var positions = {};
 
         [0, 1, 2].forEach(function (lvl) {
@@ -211,6 +212,23 @@
             title.textContent = node.name + ' (' + (node.location || '') + ') — ' + (node.status || 'unknown');
             g.appendChild(title);
 
+            // Click handler — dispatch filter event or set hash
+            g.style.cursor = 'pointer';
+            g.addEventListener('click', (function (nodeName) {
+                return function () {
+                    var evt = null;
+                    try {
+                        evt = new CustomEvent('netwatch:filter-device', { detail: { device: nodeName } });
+                    } catch (e) {
+                        // IE fallback — not expected but safe
+                    }
+                    if (evt) {
+                        document.dispatchEvent(evt);
+                    }
+                    window.location.hash = '#device=' + encodeURIComponent(nodeName);
+                };
+            })(node.name));
+
             nodeGroup.appendChild(g);
         });
         svg.appendChild(nodeGroup);
@@ -227,12 +245,26 @@
             });
     }
 
+    // ── ResizeObserver (debounced) ───────────────────────────────────────────
+    var _resizeTimer = null;
+    function _onContainerResize() {
+        clearTimeout(_resizeTimer);
+        _resizeTimer = setTimeout(function () { load(); }, 300);
+    }
+
     // Auto-init
     document.addEventListener('DOMContentLoaded', function () {
-        if (document.getElementById('topologySvg')) {
+        var svgContainer = document.getElementById('topologySvg');
+        if (svgContainer) {
             load();
             // Refresh every 60 seconds
             setInterval(load, 60000);
+
+            // Re-render on container resize
+            if (typeof ResizeObserver !== 'undefined') {
+                var ro = new ResizeObserver(_onContainerResize);
+                ro.observe(svgContainer.parentElement || svgContainer);
+            }
         }
     });
 
