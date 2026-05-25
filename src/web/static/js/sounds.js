@@ -117,10 +117,19 @@
         }
     }
 
+    // ── Sync all sound-state DOM elements to match _enabled ──────────────────
+    function _syncDom() {
+        var icon = document.getElementById('soundIcon');
+        var btn  = document.getElementById('soundToggle');
+        var cb   = document.getElementById('soundEnabled');   // Settings page checkbox
+        if (icon) icon.textContent = _enabled ? '🔊' : '🔇';
+        if (btn)  btn.title = _enabled ? 'Mute sounds (N)' : 'Unmute sounds (N)';
+        if (cb && cb.checked !== _enabled) cb.checked = _enabled;
+    }
+
     // ── Sound toggle button in nav ─────────────────────────────────────────────
     function _initToggleButton() {
         var btn = document.getElementById('soundToggle');
-        var icon = document.getElementById('soundIcon');
         if (!btn) return;
 
         btn.addEventListener('click', function () {
@@ -130,8 +139,7 @@
                 _ctx.resume();
             }
             _enabled = !_enabled;
-            if (icon) icon.textContent = _enabled ? '🔊' : '🔇';
-            btn.title = _enabled ? 'Mute sounds (N)' : 'Unmute sounds (N)';
+            _syncDom();
         });
     }
 
@@ -142,13 +150,12 @@
         play: play,
         setEnabled: function (val) {
             _enabled = !!val;
-            var icon = document.getElementById('soundIcon');
-            if (icon) icon.textContent = _enabled ? '🔊' : '🔇';
+            _syncDom();
         },
         isEnabled: function () { return _enabled; },
-        testCritical:  function () { _enabled = true; _playCritical(); },
-        testWarning:   function () { _enabled = true; _playWarning(); },
-        testRecovery:  function () { _enabled = true; _playRecovery(); },
+        testCritical:  function () { _enabled = true; _syncDom(); _playCritical(); },
+        testWarning:   function () { _enabled = true; _syncDom(); _playWarning(); },
+        testRecovery:  function () { _enabled = true; _syncDom(); _playRecovery(); },
         setPrefs: function (prefs) {
             Object.assign(_prefs, prefs);
         },
