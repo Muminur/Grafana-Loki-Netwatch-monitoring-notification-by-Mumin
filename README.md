@@ -16,8 +16,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-902_passing-00ff88?style=flat-square" alt="Tests"/>
-  <img src="https://img.shields.io/badge/coverage-96%25-00ff88?style=flat-square" alt="Coverage"/>
+  <img src="https://img.shields.io/badge/tests-944_passing-00ff88?style=flat-square" alt="Tests"/>
+  <img src="https://img.shields.io/badge/coverage-94%25-00ff88?style=flat-square" alt="Coverage"/>
   <img src="https://img.shields.io/badge/ruff-clean-00f0ff?style=flat-square" alt="Ruff"/>
   <img src="https://img.shields.io/badge/mypy-strict-8b5cf6?style=flat-square" alt="Mypy"/>
   <img src="https://img.shields.io/badge/license-proprietary-555570?style=flat-square" alt="License"/>
@@ -240,9 +240,24 @@ Futuristic "Mission Control" design with:
   - BGP: `ADJCHANGE — KKT-Core-3 DOWN - Orange S.A.`
   - Fault: `RXFault-KKT-Core-1 - TGE0/0/0/2 - Local Fault`
 - **Client/circuit info** — each incident card shows the client name or circuit ID when available (e.g. `DHK-KKT-BH-LINK-02-VIA-F@H-KKT-Te0/1/0/23-121492`)
+- **Acknowledge with audit trail** — ACK button on each incident opens a modal requiring operator name and comment; full audit history stored in SQLite (`/api/incidents/{id}/acks`)
+- **Bulk acknowledge** — `Shift+A` acknowledges all active incidents with a single comment
+- **Visual/sound alarm** — unacknowledged incidents pulse with red glow border and trigger a repeating alarm every 30 seconds; acknowledged incidents dim to green border and silence the alarm
 - **Auto-resolution** — DOWN incidents automatically clear when the interface/BGP recovers
 - **Device-specific matching** — same interface name on different routers (connecting to different far-end equipment) is correctly treated as separate incidents
 - **ASN organization names** — resolved via BigDataCloud API, cached in SQLite (never re-fetched)
+
+### Shift Handoff System
+Three shifts aligned to BSCCL NOC operations (BDT timezone):
+| Shift | Hours |
+|-------|-------|
+| Morning | 08:00 — 15:00 |
+| Evening | 15:00 — 22:30 |
+| Night | 22:30 — 08:00 |
+
+- **Shift banner** at the top of the dashboard showing current shift name, start time, CRITICAL/WARNING counts since shift start, and open incident count
+- **Handoff notes** — outgoing operator clicks HANDOFF to submit a free-text note with shift context, persisted in SQLite and available to the incoming operator via `GET /api/shift/handoffs`
+- **Shift summary API** — `GET /api/shift/current` returns the current shift name, start time, and alert counts since shift start
 
 ### Live Features
 - **Auto-reconnecting WebSocket** with heartbeat — stale connections detected after 30s of silence; visible reconnection feedback ("Reconnecting...", "Connection lost — check server") after repeated failures
@@ -252,7 +267,7 @@ Futuristic "Mission Control" design with:
 - **Client-side dedup safety net** — 5-minute sliding-window check in the browser
 - **Web Audio API** sound alerts (critical alarm, warning chime, recovery arpeggio)
 - **Browser notifications** for CRITICAL events
-- **Keyboard shortcuts** — `1-5` switch tabs, `A` acknowledge, `N` mute, `/` search
+- **Keyboard shortcuts** — `1-5` switch tabs, `A` acknowledge alert, `Shift+A` bulk-acknowledge incidents, `N` mute, `/` search
 - **SVG network topology** with live device status colors and click debouncing
 - **Chart accessibility** — `aria-label` and `role=img` on all chart canvases; ResizeObserver properly cleaned up on page unload
 
@@ -446,7 +461,11 @@ Production-hardening applied across the stack:
 | `/api/alerts/{id}` | GET | Single alert details |
 | `/api/incidents` | GET | Active incidents |
 | `/api/incidents/{id}` | GET | Incident details with symptom list |
-| `/api/incidents/{id}/acknowledge` | POST | Acknowledge an incident |
+| `/api/incidents/{id}/acknowledge` | POST | Acknowledge an incident (requires operator name + comment) |
+| `/api/incidents/{id}/acks` | GET | Acknowledgement audit trail for an incident |
+| `/api/shift/current` | GET | Current shift info (name, start time, alert counts since shift start) |
+| `/api/shift/handoffs` | GET | Recent shift handoff notes |
+| `/api/shift/handoff` | POST | Create a shift handoff note |
 | `/api/stats/daily` | GET | Today's alert statistics |
 | `/api/stats/weekly` | GET | 7-day statistics |
 | `/api/stats/monthly` | GET | 30-day statistics |

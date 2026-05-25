@@ -171,3 +171,32 @@ class UserLogin(Base):
     vty: Mapped[str] = mapped_column(String(32), default="")
     action: Mapped[str] = mapped_column(String(16))  # login / logout
     cipher: Mapped[str] = mapped_column(String(128), default="")
+
+
+class ShiftHandoff(Base):
+    """Shift handoff notes left by outgoing operators."""
+
+    __tablename__ = "shift_handoff"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    shift_name: Mapped[str] = mapped_column(String(16))  # morning/evening/night
+    shift_date: Mapped[str] = mapped_column(String(10))  # YYYY-MM-DD
+    operator_name: Mapped[str] = mapped_column(String(64))
+    notes: Mapped[str] = mapped_column(Text, default="")
+    open_incidents: Mapped[int] = mapped_column(default=0)
+    critical_count: Mapped[int] = mapped_column(default=0)
+    warning_count: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
+class IncidentAck(Base):
+    """Acknowledgement audit trail for incidents."""
+
+    __tablename__ = "incident_ack"
+    __table_args__ = (Index("ix_incident_ack_incident_id", "incident_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    incident_id: Mapped[str] = mapped_column(String(32))
+    operator_name: Mapped[str] = mapped_column(String(64))
+    comment: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))

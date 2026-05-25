@@ -488,6 +488,145 @@
             });
     }
 
+    // ── Incident Alarm System (only for unacked active incidents) ─────────
+    var _incidentAlarmInterval = null;
+    var _incidentAlarmActive = false;
+
+    function _startIncidentAlarm() {
+        if (_incidentAlarmActive) return;
+        _incidentAlarmActive = true;
+        document.body.classList.add('has-active-incidents');
+        // Play alarm every 30 seconds for unacked incidents
+        _incidentAlarmInterval = setInterval(function () {
+            if (window.NetwatchSounds && window.NetwatchSounds.isEnabled()) {
+                window.NetwatchSounds.play('CRITICAL');
+            }
+        }, 30000);
+        // Play immediately on first detection
+        if (window.NetwatchSounds && window.NetwatchSounds.isEnabled()) {
+            window.NetwatchSounds.play('CRITICAL');
+        }
+    }
+
+    function _stopIncidentAlarm() {
+        if (!_incidentAlarmActive) return;
+        _incidentAlarmActive = false;
+        document.body.classList.remove('has-active-incidents');
+        if (_incidentAlarmInterval) {
+            clearInterval(_incidentAlarmInterval);
+            _incidentAlarmInterval = null;
+        }
+    }
+
+    // ── ACK Modal ────────────────────────────────────────────────────────
+    function _showAckModal(incidentId) {
+        // Remove existing modal if any
+        var old = document.getElementById('ackModal');
+        if (old) old.remove();
+
+        var modal = document.createElement('div');
+        modal.id = 'ackModal';
+        modal.className = 'modal-overlay';
+        modal.innerHTML = '<div class="modal-content">'
+            + '<div class="modal-header">Acknowledge Incident</div>'
+            + '<div class="modal-body">'
+            + '<label class="modal-label" for="ackOperator">Operator Name *</label>'
+            + '<input type="text" id="ackOperator" class="modal-input" placeholder="Your name" maxlength="64">'
+            + '<label class="modal-label" for="ackComment">Comment *</label>'
+            + '<textarea id="ackComment" class="modal-textarea" placeholder="investigating / vendor ticket #XYZ / false positive" maxlength="1000" rows="3"></textarea>'
+            + '</div>'
+            + '<div class="modal-footer">'
+            + '<button class="btn-cancel" id="ackCancel">Cancel</button>'
+            + '<button class="btn-confirm" id="ackConfirm">Acknowledge</button>'
+            + '</div>'
+            + '</div>';
+        document.body.appendChild(modal);
+
+        var operatorInput = document.getElementById('ackOperator');
+        var commentInput = document.getElementById('ackComment');
+        operatorInput.focus();
+
+        document.getElementById('ackCancel').addEventListener('click', function () {
+            modal.remove();
+        });
+        modal.addEventListener('click', function (e) {
+            if (e.target === modal) modal.remove();
+        });
+        document.getElementById('ackConfirm').addEventListener('click', function () {
+            var name = operatorInput.value.trim();
+            var comment = commentInput.value.trim();
+            if (!name || !comment) {
+                operatorInput.style.borderColor = name ? '' : 'var(--neon-red)';
+                commentInput.style.borderColor = comment ? '' : 'var(--neon-red)';
+                return;
+            }
+            _doAcknowledge(incidentId, name, comment);
+            modal.remove();
+        });
+        // Enter key submits
+        commentInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && e.ctrlKey) {
+                document.getElementById('ackConfirm').click();
+            }
+        });
+    }
+
+    function _doAcknowledge(incidentId, operatorName, comment) {
+        var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
+        fetch(apiBase + '/incidents/' + encodeURIComponent(incidentId) + '/acknowledge', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ operator_name: operatorName, comment: comment }),
+        })
+            .then(function (r) { return r.json(); })
+            .then(function () { _loadIncidents(); })
+            .catch(function (err) {
+                console.error('[NetWatch] ACK failed:', err);
+            });
+    }
+
+    function _showBulkAckModal(cards) {
+        var ids = [];
+        cards.forEach(function (c) { ids.push(c.dataset.incidentId); });
+
+        var old = document.getElementById('ackModal');
+        if (old) old.remove();
+
+        var modal = document.createElement('div');
+        modal.id = 'ackModal';
+        modal.className = 'modal-overlay';
+        modal.innerHTML = '<div class="modal-content">'
+            + '<div class="modal-header">Bulk Acknowledge (' + ids.length + ' incidents)</div>'
+            + '<div class="modal-body">'
+            + '<label class="modal-label" for="ackOperator">Operator Name *</label>'
+            + '<input type="text" id="ackOperator" class="modal-input" placeholder="Your name" maxlength="64">'
+            + '<label class="modal-label" for="ackComment">Comment *</label>'
+            + '<textarea id="ackComment" class="modal-textarea" placeholder="investigating / vendor ticket #XYZ / false positive" maxlength="1000" rows="3"></textarea>'
+            + '</div>'
+            + '<div class="modal-footer">'
+            + '<button class="btn-cancel" id="ackCancel">Cancel</button>'
+            + '<button class="btn-confirm" id="ackConfirm">Acknowledge All</button>'
+            + '</div>'
+            + '</div>';
+        document.body.appendChild(modal);
+
+        document.getElementById('ackOperator').focus();
+
+        document.getElementById('ackCancel').addEventListener('click', function () {
+            modal.remove();
+        });
+        modal.addEventListener('click', function (e) {
+            if (e.target === modal) modal.remove();
+        });
+        document.getElementById('ackConfirm').addEventListener('click', function () {
+            var name = document.getElementById('ackOperator').value.trim();
+            var comment = document.getElementById('ackComment').value.trim();
+            if (!name || !comment) return;
+            ids.forEach(function (id) { _doAcknowledge(id, name, comment); });
+            modal.remove();
+        });
+    }
+
     function _renderIncidents(incidents) {
         var list = _el('incidentsList');
         var count = _el('incidentCount');
@@ -497,19 +636,142 @@
 
         if (incidents.length === 0) {
             list.innerHTML = '<div class="empty-state">No active incidents</div>';
+            // Stop incident alarm when no active unacked incidents
+            _stopIncidentAlarm();
             return;
         }
 
+        var hasUnacked = false;
         list.innerHTML = incidents.map(function (inc) {
-            return '<div class="incident-card">'
+            var isAcked = inc.acknowledged;
+            if (!isAcked) hasUnacked = true;
+            var ackInfo = '';
+            if (isAcked) {
+                ackInfo = '<div class="incident-ack-info">'
+                    + '<span class="ack-badge">ACK</span> '
+                    + '<span class="ack-by">' + _esc(inc.acknowledged_by || '') + '</span>'
+                    + (inc.ack_comment ? ' — ' + _esc(inc.ack_comment) : '')
+                    + (inc.acknowledged_at ? '<br><span class="ack-time">' + _esc(_formatTimestamp(inc.acknowledged_at)) + '</span>' : '')
+                    + '</div>';
+            }
+            return '<div class="incident-card' + (isAcked ? ' incident-acked' : ' incident-unacked') + '" data-incident-id="' + _esc(inc.id || '') + '">'
+                + '<div class="incident-header">'
                 + '<div class="incident-title">' + _esc(inc.title || 'Incident ' + inc.id) + '</div>'
+                + (!isAcked ? '<button class="btn-ack-incident" data-incident-id="' + _esc(inc.id || '') + '" title="Acknowledge this incident">ACK</button>' : '')
+                + '</div>'
                 + '<div class="incident-meta">'
                 + (inc.device ? _esc(inc.device) + ' · ' : '')
-                + (inc.started_at ? _formatTimestamp(inc.started_at) : '')
+                + (inc.started_at ? _esc(_formatTimestamp(inc.started_at)) : '')
                 + '</div>'
                 + (inc.client ? '<div class="incident-client">' + _esc(inc.client) + '</div>' : '')
+                + ackInfo
                 + '</div>';
         }).join('');
+
+        // Handle incident alarm sound
+        if (hasUnacked) {
+            _startIncidentAlarm();
+        } else {
+            _stopIncidentAlarm();
+        }
+
+        // Bind ACK buttons
+        list.querySelectorAll('.btn-ack-incident').forEach(function (btn) {
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var incId = btn.dataset.incidentId;
+                _showAckModal(incId);
+            });
+        });
+    }
+
+    function _loadShiftInfo() {
+        var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
+        fetch(apiBase + '/shift/current')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                var nameEl = _el('shiftName');
+                var timeEl = _el('shiftTime');
+                var critEl = _el('shiftCritical');
+                var warnEl = _el('shiftWarning');
+                var incEl = _el('shiftIncidents');
+                if (nameEl) nameEl.textContent = (data.shift_name || '').toUpperCase() + ' SHIFT';
+                if (timeEl) timeEl.textContent = 'Since ' + _formatTimestamp(data.shift_start);
+                if (critEl) critEl.textContent = (data.critical_since_shift || 0) + ' CRITICAL';
+                if (warnEl) warnEl.textContent = (data.warning_since_shift || 0) + ' WARNING';
+                if (incEl) incEl.textContent = (data.open_incidents || 0) + ' OPEN';
+            })
+            .catch(function () {});
+    }
+
+    // ── Handoff Modal ──────────────────────────────────────────────────────
+    function _showHandoffModal() {
+        var old = document.getElementById('ackModal');
+        if (old) old.remove();
+
+        var today = new Date();
+        var bdtMs = today.getTime() + 6 * 3600 * 1000;
+        var bdt = new Date(bdtMs);
+        var dateStr = bdt.getUTCFullYear() + '-'
+            + String(bdt.getUTCMonth() + 1).padStart(2, '0') + '-'
+            + String(bdt.getUTCDate()).padStart(2, '0');
+
+        var shiftName = (_el('shiftName') || {}).textContent || '';
+        shiftName = shiftName.replace(' SHIFT', '').toLowerCase() || 'morning';
+
+        var modal = document.createElement('div');
+        modal.id = 'ackModal';
+        modal.className = 'modal-overlay';
+        modal.innerHTML = '<div class="modal-content">'
+            + '<div class="modal-header">Shift Handoff Note</div>'
+            + '<div class="modal-body">'
+            + '<label class="modal-label" for="handoffOperator">Operator Name *</label>'
+            + '<input type="text" id="handoffOperator" class="modal-input" placeholder="Your name" maxlength="64">'
+            + '<label class="modal-label" for="handoffNotes">Notes for next shift</label>'
+            + '<textarea id="handoffNotes" class="modal-textarea" placeholder="Ongoing issues, pending actions..." maxlength="2000" rows="5"></textarea>'
+            + '</div>'
+            + '<div class="modal-footer">'
+            + '<button class="btn-cancel" id="handoffCancel">Cancel</button>'
+            + '<button class="btn-confirm" id="handoffConfirm">Submit Handoff</button>'
+            + '</div>'
+            + '</div>';
+        document.body.appendChild(modal);
+
+        document.getElementById('handoffOperator').focus();
+
+        document.getElementById('handoffCancel').addEventListener('click', function () {
+            modal.remove();
+        });
+        modal.addEventListener('click', function (e) {
+            if (e.target === modal) modal.remove();
+        });
+        document.getElementById('handoffConfirm').addEventListener('click', function () {
+            var name = document.getElementById('handoffOperator').value.trim();
+            if (!name) {
+                document.getElementById('handoffOperator').style.borderColor = 'var(--neon-red)';
+                return;
+            }
+            var notes = document.getElementById('handoffNotes').value.trim();
+            var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
+            fetch(apiBase + '/shift/handoff', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    shift_name: shiftName,
+                    shift_date: dateStr,
+                    operator_name: name,
+                    notes: notes,
+                    open_incidents: parseInt((_el('shiftIncidents') || {}).textContent) || 0,
+                    critical_count: parseInt((_el('shiftCritical') || {}).textContent) || 0,
+                    warning_count: parseInt((_el('shiftWarning') || {}).textContent) || 0,
+                }),
+            })
+                .then(function (r) { return r.json(); })
+                .then(function () { modal.remove(); })
+                .catch(function (err) {
+                    console.error('[NetWatch] Handoff failed:', err);
+                });
+        });
     }
 
     // ── Topology node click → populate search ──────────────────────────────
@@ -539,6 +801,16 @@
 
         // Refresh incidents every 30 s
         setInterval(_loadIncidents, 30000);
+
+        _loadShiftInfo();
+        setInterval(_loadShiftInfo, 60000);
+
+        var handoffBtn = _el('btnHandoff');
+        if (handoffBtn) {
+            handoffBtn.addEventListener('click', function () {
+                _showHandoffModal();
+            });
+        }
     });
 
     // Public API for testing and shortcuts
@@ -569,6 +841,13 @@
                     }
                 }
             }
+        },
+        bulkAcknowledgeIncidents: function () {
+            var unacked = document.querySelectorAll('.incident-card.incident-unacked');
+            if (unacked.length === 0) return;
+            var count = unacked.length;
+            if (!confirm('Acknowledge all ' + count + ' active incidents?')) return;
+            _showBulkAckModal(unacked);
         },
     };
 })();

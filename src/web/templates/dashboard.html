@@ -5,6 +5,22 @@
 {% block content %}
 
 <!-- ══════════════════════════════════════════════
+     SHIFT BANNER
+══════════════════════════════════════════════ -->
+<section class="shift-banner" id="shiftBanner">
+    <div class="shift-info">
+        <span class="shift-name" id="shiftName">—</span>
+        <span class="shift-time" id="shiftTime">—</span>
+    </div>
+    <div class="shift-stats">
+        <span class="shift-stat critical" id="shiftCritical">0 CRITICAL</span>
+        <span class="shift-stat warning" id="shiftWarning">0 WARNING</span>
+        <span class="shift-stat incidents" id="shiftIncidents">0 OPEN</span>
+    </div>
+    <button class="btn-handoff" id="btnHandoff" title="Write shift handoff note">HANDOFF</button>
+</section>
+
+<!-- ══════════════════════════════════════════════
      SEVERITY COUNTER CARDS
 ══════════════════════════════════════════════ -->
 <section class="severity-bar">

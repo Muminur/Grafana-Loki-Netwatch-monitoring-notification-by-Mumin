@@ -50,10 +50,17 @@
 
         switch (e.key.toLowerCase()) {
             case 'a':
-                // Acknowledge top non-acknowledged alert
                 e.preventDefault();
-                if (window.NetwatchDashboard) {
-                    window.NetwatchDashboard.acknowledgeSelected();
+                if (e.shiftKey) {
+                    // Shift+A: Bulk acknowledge all active incidents
+                    if (window.NetwatchDashboard) {
+                        window.NetwatchDashboard.bulkAcknowledgeIncidents();
+                    }
+                } else {
+                    // a: Acknowledge top non-acknowledged alert
+                    if (window.NetwatchDashboard) {
+                        window.NetwatchDashboard.acknowledgeSelected();
+                    }
                 }
                 break;
 

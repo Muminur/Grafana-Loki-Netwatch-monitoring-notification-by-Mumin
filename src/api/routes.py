@@ -396,6 +396,37 @@ class MaintenanceWindowCreate(BaseModel):
         return self
 
 
+class IncidentAckRequest(BaseModel):
+    """Request body for acknowledging an incident."""
+
+    operator_name: str = Field(default="", max_length=64)
+    comment: str = Field(default="", max_length=1000)
+
+
+class ShiftHandoffCreate(BaseModel):
+    """Request body for creating a shift handoff note."""
+
+    shift_name: str = Field(..., pattern=r"^(morning|evening|night)$")
+    shift_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    operator_name: str = Field(..., min_length=1, max_length=64)
+    notes: str = Field(default="", max_length=2000)
+    open_incidents: int = Field(default=0, ge=0)
+    critical_count: int = Field(default=0, ge=0)
+    warning_count: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_shift_date(self) -> ShiftHandoffCreate:
+        """Validate that shift_date is a real calendar date."""
+        from datetime import date as _date  # noqa: PLC0415
+
+        try:
+            _date.fromisoformat(self.shift_date)
+        except ValueError as exc:
+            msg = "shift_date must be a valid calendar date"
+            raise ValueError(msg) from exc
+        return self
+
+
 def increment_alerts_processed() -> None:
     """Increment the global alert counter (called by the ingestion pipeline)."""
     global _alerts_processed  # noqa: PLW0603
@@ -1092,15 +1123,21 @@ async def get_incident(incident_id: str) -> dict[str, Any]:
     "/api/incidents/{incident_id}/acknowledge",
     dependencies=[Depends(require_api_key)],
 )
-async def acknowledge_incident(incident_id: str) -> dict[str, Any]:
-    """Acknowledge an active incident.
+async def acknowledge_incident(
+    incident_id: str,
+    body: IncidentAckRequest | None = None,
+) -> dict[str, Any]:
+    """Acknowledge an active incident with operator name and comment.
 
-    Protected when ``API_KEY`` is configured; open when ``API_KEY`` is unset.
+    Records the acknowledgement in the audit trail (incident_ack table)
+    and updates the in-memory incident state.
 
     Parameters
     ----------
     incident_id:
         Unique incident identifier.
+    body:
+        Optional ``operator_name`` and ``comment``.
 
     Raises
     ------
@@ -1108,11 +1145,282 @@ async def acknowledge_incident(incident_id: str) -> dict[str, Any]:
         401 if API-key auth is enabled and the header is missing/wrong.
         404 if the incident is not found.
     """
+    now = datetime.now(UTC)
+    ack_body = body or IncidentAckRequest()
     for incident in _incidents_store:
         if str(incident.get("id")) == incident_id:
             incident["acknowledged"] = True
-            return {"status": "acknowledged", "incident_id": incident_id}
+            incident["acknowledged_at"] = now.isoformat()
+            incident["acknowledged_by"] = ack_body.operator_name
+            incident["ack_comment"] = ack_body.comment
+            if _db_engine:
+                from sqlalchemy.ext.asyncio import (  # noqa: PLC0415
+                    AsyncSession as _AckSession,
+                )
+
+                from src.database.models import (  # noqa: PLC0415
+                    IncidentAck as _IncidentAck,
+                )
+
+                try:
+                    async with _AckSession(_db_engine) as session:
+                        ack = _IncidentAck(
+                            incident_id=incident_id,
+                            operator_name=ack_body.operator_name,
+                            comment=ack_body.comment,
+                            created_at=now,
+                        )
+                        session.add(ack)
+                        await session.commit()
+                except Exception:  # noqa: BLE001
+                    import logging  # noqa: PLC0415
+
+                    logging.getLogger(__name__).warning(
+                        "Failed to persist ack for %s", incident_id
+                    )
+            return {
+                "status": "acknowledged",
+                "incident_id": incident_id,
+                "acknowledged_at": now.isoformat(),
+                "acknowledged_by": ack_body.operator_name,
+                "comment": ack_body.comment,
+            }
     raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found")
+
+
+@router.get(
+    "/api/incidents/{incident_id}/acks",
+    dependencies=[Depends(require_api_key)],
+)
+async def get_incident_acks(incident_id: str) -> list[dict[str, Any]]:
+    """Get the acknowledgement audit trail for an incident.
+
+    Returns
+    -------
+    list[dict]
+        Ack records for the incident, ordered newest-first.
+    """
+    if not _db_engine:
+        return []
+    from sqlalchemy import select  # noqa: PLC0415
+    from sqlalchemy.ext.asyncio import AsyncSession as _AckListSession  # noqa: PLC0415
+
+    from src.database.models import IncidentAck as _IncidentAckModel  # noqa: PLC0415
+
+    try:
+        async with _AckListSession(_db_engine) as session:
+            stmt = (
+                select(_IncidentAckModel)
+                .where(_IncidentAckModel.incident_id == incident_id)
+                .order_by(_IncidentAckModel.created_at.desc())
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+            return [
+                {
+                    "id": row.id,
+                    "incident_id": row.incident_id,
+                    "operator_name": row.operator_name,
+                    "comment": row.comment,
+                    "created_at": row.created_at.isoformat(),
+                }
+                for row in rows
+            ]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Shift handoff
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/shift/current")
+async def get_current_shift() -> dict[str, Any]:
+    """Get current shift info and summary since shift start.
+
+    Returns
+    -------
+    dict
+        ``shift_name``, ``shift_start``, ``shift_end_hour``, ``shift_end_min``,
+        ``critical_since_shift``, ``warning_since_shift``, ``info_since_shift``,
+        ``open_incidents``, ``current_time_bdt``.
+    """
+    now = datetime.now(timezone(timedelta(hours=6)))  # BDT
+    hour = now.hour
+    minute = now.minute
+    current_time_minutes = hour * 60 + minute
+
+    if 480 <= current_time_minutes < 900:  # 08:00 - 15:00
+        shift_name = "morning"
+        shift_start_hour, shift_start_min = 8, 0
+        shift_end_hour, shift_end_min = 15, 0
+    elif 900 <= current_time_minutes < 1350:  # 15:00 - 22:30
+        shift_name = "evening"
+        shift_start_hour, shift_start_min = 15, 0
+        shift_end_hour, shift_end_min = 22, 30
+    else:  # 22:30 - 08:00
+        shift_name = "night"
+        shift_start_hour, shift_start_min = 22, 30
+        shift_end_hour, shift_end_min = 8, 0
+
+    shift_start_today = now.replace(
+        hour=shift_start_hour, minute=shift_start_min, second=0, microsecond=0
+    )
+    if shift_name == "night" and current_time_minutes < 480:
+        shift_start_today = shift_start_today - timedelta(days=1)
+
+    shift_start_utc = shift_start_today.astimezone(UTC)
+    shift_start_iso = shift_start_today.isoformat()
+    shift_start_utc_iso = shift_start_utc.isoformat()
+    critical_since_shift = 0
+    warning_since_shift = 0
+    info_since_shift = 0
+    for alert in _alerts_store:
+        ts = alert.get("timestamp", "")
+        if ts >= shift_start_utc_iso or ts >= shift_start_iso:
+            cls = alert.get("classification", "")
+            if cls == "CRITICAL":
+                critical_since_shift += 1
+            elif cls == "WARNING":
+                warning_since_shift += 1
+            elif cls == "INFO":
+                info_since_shift += 1
+
+    open_incidents = sum(1 for inc in _incidents_store if not inc.get("acknowledged"))
+
+    return {
+        "shift_name": shift_name,
+        "shift_start": shift_start_iso,
+        "shift_end_hour": shift_end_hour,
+        "shift_end_min": shift_end_min,
+        "critical_since_shift": critical_since_shift,
+        "warning_since_shift": warning_since_shift,
+        "info_since_shift": info_since_shift,
+        "open_incidents": open_incidents,
+        "current_time_bdt": now.isoformat(),
+    }
+
+
+@router.get(
+    "/api/shift/handoffs",
+    dependencies=[Depends(require_api_key)],
+)
+async def get_shift_handoffs(
+    limit: int = Query(default=10, ge=1, le=50),
+) -> list[dict[str, Any]]:
+    """Get recent shift handoff notes.
+
+    Parameters
+    ----------
+    limit:
+        Maximum number of records to return (1-50, default 10).
+
+    Returns
+    -------
+    list[dict]
+        Handoff records, ordered newest-first.
+    """
+    if not _db_engine:
+        return []
+    from sqlalchemy import select  # noqa: PLC0415
+    from sqlalchemy.ext.asyncio import (  # noqa: PLC0415
+        AsyncSession as _HandoffSession,
+    )
+
+    from src.database.models import ShiftHandoff as _ShiftHandoff  # noqa: PLC0415
+
+    try:
+        async with _HandoffSession(_db_engine) as session:
+            stmt = (
+                select(_ShiftHandoff)
+                .order_by(_ShiftHandoff.created_at.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+            return [
+                {
+                    "id": row.id,
+                    "shift_name": row.shift_name,
+                    "shift_date": row.shift_date,
+                    "operator_name": row.operator_name,
+                    "notes": row.notes,
+                    "open_incidents": row.open_incidents,
+                    "critical_count": row.critical_count,
+                    "warning_count": row.warning_count,
+                    "created_at": row.created_at.isoformat(),
+                }
+                for row in rows
+            ]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+@router.post(
+    "/api/shift/handoff",
+    dependencies=[Depends(require_api_key)],
+)
+async def create_shift_handoff(body: ShiftHandoffCreate) -> dict[str, Any]:
+    """Create a shift handoff note.
+
+    Protected when ``API_KEY`` is configured; open when ``API_KEY`` is unset.
+
+    Parameters
+    ----------
+    body:
+        ``shift_name``, ``shift_date``, ``operator_name`` (required);
+        ``notes``, ``open_incidents``, ``critical_count``, ``warning_count``
+        (optional).
+
+    Returns
+    -------
+    dict
+        ``status``, ``id``, ``shift_name``, ``operator_name``.
+
+    Raises
+    ------
+    HTTPException
+        500 if the DB write fails.
+    """
+    now = datetime.now(UTC)
+    if not _db_engine:
+        return {"status": "error", "detail": "Database not available"}
+    from sqlalchemy.ext.asyncio import (  # noqa: PLC0415
+        AsyncSession as _HandoffCreateSession,
+    )
+
+    from src.database.models import (  # noqa: PLC0415
+        ShiftHandoff as _ShiftHandoffModel,
+    )
+
+    try:
+        async with _HandoffCreateSession(_db_engine) as session:
+            handoff = _ShiftHandoffModel(
+                shift_name=body.shift_name,
+                shift_date=body.shift_date,
+                operator_name=body.operator_name,
+                notes=body.notes,
+                open_incidents=body.open_incidents,
+                critical_count=body.critical_count,
+                warning_count=body.warning_count,
+                created_at=now,
+            )
+            session.add(handoff)
+            await session.commit()
+            return {
+                "status": "created",
+                "id": handoff.id,
+                "shift_name": body.shift_name,
+                "operator_name": body.operator_name,
+            }
+    except Exception as exc:
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).exception("shift handoff DB write failed")
+        raise HTTPException(
+            status_code=500, detail="Failed to save handoff note"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

@@ -1489,3 +1489,246 @@ kbd {
         transition-duration: 0.01ms !important;
     }
 }
+
+/* ── Shift Banner ─────────────────────────────────────────────────────── */
+.shift-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 1.2rem;
+    background: rgba(0, 240, 255, 0.03);
+    border: 1px solid var(--border-accent);
+    border-radius: var(--radius-md);
+    margin-bottom: 0.75rem;
+    font-family: var(--font-mono);
+}
+
+.shift-info {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+}
+
+.shift-name {
+    font-family: var(--font-display);
+    font-size: var(--text-sm);
+    letter-spacing: 0.1em;
+    color: var(--neon-cyan);
+}
+
+.shift-time {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+}
+
+.shift-stats {
+    display: flex;
+    gap: 1rem;
+    font-size: var(--text-xs);
+}
+
+.shift-stat.critical { color: var(--neon-red); }
+.shift-stat.warning  { color: var(--neon-yellow); }
+.shift-stat.incidents { color: var(--neon-orange); }
+
+.btn-handoff {
+    font-family: var(--font-display);
+    font-size: var(--text-2xs);
+    letter-spacing: 0.1em;
+    padding: 0.3rem 0.7rem;
+    background: transparent;
+    border: 1px solid var(--neon-cyan-dim);
+    color: var(--neon-cyan);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-handoff:hover {
+    background: rgba(0, 240, 255, 0.1);
+    border-color: var(--neon-cyan);
+}
+
+/* ── Incident Card Enhancements ───────────────────────────────────────── */
+.incident-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+}
+
+.incident-unacked {
+    animation: pulse-incident-border 2s ease-in-out infinite;
+    border-color: var(--neon-red);
+    box-shadow: 0 0 8px var(--neon-red-glow), inset 0 0 4px rgba(255, 0, 64, 0.05);
+}
+
+.incident-acked {
+    border-color: var(--neon-green-dim);
+    opacity: 0.75;
+    animation: none;
+}
+
+@keyframes pulse-incident-border {
+    0%, 100% { box-shadow: 0 0 4px var(--neon-red-glow); }
+    50% { box-shadow: 0 0 16px var(--neon-red-glow), 0 0 30px rgba(255, 0, 64, 0.15); }
+}
+
+.btn-ack-incident {
+    font-family: var(--font-display);
+    font-size: var(--text-2xs);
+    letter-spacing: 0.12em;
+    padding: 0.25rem 0.6rem;
+    background: rgba(255, 0, 64, 0.1);
+    border: 1px solid var(--neon-red-dim);
+    color: var(--neon-red);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.btn-ack-incident:hover {
+    background: rgba(255, 0, 64, 0.2);
+    border-color: var(--neon-red);
+    box-shadow: 0 0 6px var(--neon-red-glow);
+}
+
+.incident-ack-info {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--neon-green);
+    margin-top: 0.3rem;
+    padding-top: 0.3rem;
+    border-top: 1px solid rgba(0, 255, 136, 0.15);
+}
+
+.ack-badge {
+    background: rgba(0, 255, 136, 0.15);
+    color: var(--neon-green);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-size: 0.55rem;
+    letter-spacing: 0.1em;
+    font-weight: 700;
+}
+
+.ack-by { color: var(--text-secondary); }
+.ack-time { color: var(--text-muted); font-size: 0.55rem; }
+
+/* ── Active Incident Visual Alert (body-level) ───────────────────────── */
+body.has-active-incidents .panel-incidents {
+    box-shadow: 0 0 20px var(--neon-red-glow), 0 0 40px rgba(255, 0, 64, 0.1);
+    border-color: var(--neon-red);
+}
+
+body.has-active-incidents .panel-incidents .panel-header {
+    background: rgba(255, 0, 64, 0.05);
+}
+
+/* ── ACK Modal ───────────────────────────────────────────────────────── */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--bg-overlay);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    backdrop-filter: blur(4px);
+}
+
+.modal-content {
+    background: var(--bg-panel);
+    border: 1px solid var(--border-accent);
+    border-radius: var(--radius-lg);
+    padding: 1.5rem;
+    width: 90%;
+    max-width: 420px;
+    box-shadow: 0 0 30px rgba(0, 240, 255, 0.1);
+}
+
+.modal-header {
+    font-family: var(--font-display);
+    font-size: var(--text-lg);
+    color: var(--neon-cyan);
+    letter-spacing: 0.08em;
+    margin-bottom: 1rem;
+}
+
+.modal-label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    margin-bottom: 0.3rem;
+    margin-top: 0.8rem;
+}
+
+.modal-input,
+.modal-textarea {
+    width: 100%;
+    background: var(--bg-input);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    padding: 0.5rem 0.7rem;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.modal-input:focus,
+.modal-textarea:focus {
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 4px var(--neon-cyan-glow);
+}
+
+.modal-textarea {
+    resize: vertical;
+    min-height: 60px;
+}
+
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.7rem;
+    margin-top: 1.2rem;
+}
+
+.btn-cancel {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    padding: 0.4rem 0.9rem;
+    background: transparent;
+    border: 1px solid var(--border-default);
+    color: var(--text-muted);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+
+.btn-cancel:hover {
+    border-color: var(--text-secondary);
+    color: var(--text-secondary);
+}
+
+.btn-confirm {
+    font-family: var(--font-display);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    padding: 0.4rem 1rem;
+    background: rgba(0, 240, 255, 0.1);
+    border: 1px solid var(--neon-cyan);
+    color: var(--neon-cyan);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-confirm:hover {
+    background: rgba(0, 240, 255, 0.2);
+    box-shadow: 0 0 8px var(--neon-cyan-glow);
+}
