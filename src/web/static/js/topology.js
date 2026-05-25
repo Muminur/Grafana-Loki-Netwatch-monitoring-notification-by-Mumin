@@ -40,7 +40,7 @@
             byLevel[lvl].push(n);
         });
 
-        var svgWidth = 600;
+        var svgWidth = 900;
         var positions = {};
 
         [0, 1, 2].forEach(function (lvl) {
