@@ -6,7 +6,7 @@
 
 <div class="page-header">
     <h1 class="page-title">
-        <span class="page-icon">⚙</span> SETTINGS
+        <span class="page-icon" role="img" aria-label="Settings">⚙</span> SETTINGS
     </h1>
     <p class="page-subtitle">Configure alert preferences, notifications, and maintenance windows</p>
 </div>
@@ -17,7 +17,7 @@
     <section class="panel settings-panel">
         <div class="panel-header">
             <span class="panel-title">
-                <span class="panel-icon">◈</span> NOTIFICATION PREFERENCES
+                <span class="panel-icon" role="img" aria-hidden="true">◈</span> NOTIFICATION PREFERENCES
             </span>
         </div>
         <form class="settings-form" id="notificationForm" action="#" method="post">
@@ -52,8 +52,9 @@
             <div class="form-group">
                 <label class="form-label" for="dedupWindow">Deduplication Window (seconds)</label>
                 <input type="number" class="form-input" id="dedupWindow" name="dedup_window"
-                       value="{{ dedup_window | default(300) }}" min="30" max="3600">
-                <span class="form-hint">Same device+event suppressed for this many seconds</span>
+                       value="{{ dedup_window | default(300) }}" min="30" max="3600"
+                       aria-describedby="dedupWindow-hint">
+                <span class="form-hint" id="dedupWindow-hint">Same device+event suppressed for this many seconds</span>
             </div>
         </form>
     </section>
@@ -62,7 +63,7 @@
     <section class="panel settings-panel">
         <div class="panel-header">
             <span class="panel-title">
-                <span class="panel-icon">◈</span> ALERT CLASSIFICATION
+                <span class="panel-icon" role="img" aria-hidden="true">◈</span> ALERT CLASSIFICATION
             </span>
         </div>
         <form class="settings-form" id="classificationForm">
@@ -70,12 +71,13 @@
                 <label class="form-label" for="hwDefectsNoise">Hardware Defects as Noise</label>
                 <div class="toggle-row">
                     <label class="toggle-switch">
-                        <input type="checkbox" id="hwDefectsNoise" name="hw_defects_noise" checked>
+                        <input type="checkbox" id="hwDefectsNoise" name="hw_defects_noise" checked
+                               aria-describedby="hwDefectsNoise-hint">
                         <span class="toggle-slider"></span>
                     </label>
                     <span class="toggle-desc">Treat RX_FAULT / SIGNAL / RFI on backbone bundle members as NOISE (not active incidents)</span>
                 </div>
-                <span class="form-hint">When enabled, hardware optical faults on point-to-point backbone links are moved to the Noise tab instead of creating active incidents. These faults rarely have explicit clear messages from IOS-XR.</span>
+                <span class="form-hint" id="hwDefectsNoise-hint">When enabled, hardware optical faults on point-to-point backbone links are moved to the Noise tab instead of creating active incidents. These faults rarely have explicit clear messages from IOS-XR.</span>
             </div>
         </form>
     </section>
@@ -84,7 +86,7 @@
     <section class="panel settings-panel">
         <div class="panel-header">
             <span class="panel-title">
-                <span class="panel-icon">🔊</span> SOUND SETTINGS
+                <span class="panel-icon" role="img" aria-label="Sound">🔊</span> SOUND SETTINGS
             </span>
         </div>
         <form class="settings-form" id="soundForm" action="#" method="post">
@@ -151,7 +153,7 @@
     <section class="panel settings-panel">
         <div class="panel-header">
             <span class="panel-title">
-                <span class="panel-icon">⚠</span> MAINTENANCE WINDOWS
+                <span class="panel-icon" role="img" aria-label="Warning">⚠</span> MAINTENANCE WINDOWS
             </span>
             <button type="button" class="btn btn-add" id="addMaintenanceBtn">+ Add Window</button>
         </div>
@@ -201,7 +203,7 @@
     <section class="panel settings-panel">
         <div class="panel-header">
             <span class="panel-title">
-                <span class="panel-icon">⌨</span> KEYBOARD SHORTCUTS
+                <span class="panel-icon" role="img" aria-label="Keyboard">⌨</span> KEYBOARD SHORTCUTS
             </span>
         </div>
         <div class="shortcuts-table">

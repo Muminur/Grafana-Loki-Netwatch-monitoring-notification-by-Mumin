@@ -7,11 +7,11 @@
     <meta name="robots" content="noindex, nofollow">
 
     <!-- Self-hosted fonts (offline-first); CDN fallback if local file missing -->
-    <link rel="stylesheet" href="/static/css/fonts.css"
+    <link rel="stylesheet" href="/static/css/fonts.css?v={{ app_version | default('1.0') }}"
           onerror="this.onerror=null;this.href='https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=JetBrains+Mono:wght@300;400;500;700&family=Inter:wght@300;400;500;600&display=swap';">
 
     <!-- Chart.js self-hosted; CDN fallback (sync load to avoid race with charts.js) -->
-    <script src="/static/vendor/chart.umd.min.js"></script>
+    <script src="/static/vendor/chart.umd.min.js?v={{ app_version | default('1.0') }}"></script>
     <script>
     if (typeof Chart === 'undefined') {
         var s = document.createElement('script');
@@ -22,7 +22,20 @@
     </script>
 
     <!-- Neon Theme CSS -->
-    <link rel="stylesheet" href="/static/css/neon-theme.css">
+    <link rel="stylesheet" href="/static/css/neon-theme.css?v={{ app_version | default('1.0') }}">
+
+    <!-- Focus-visible indicators for keyboard navigation -->
+    <style>
+    .nav-link:focus-visible,
+    .tab:focus-visible,
+    .subtab:focus-visible,
+    .btn-icon:focus-visible,
+    .btn:focus-visible,
+    .sound-toggle:focus-visible {
+        outline: 2px solid var(--neon-cyan, #00e5ff);
+        outline-offset: 2px;
+    }
+    </style>
 
     {% block head_extra %}{% endblock %}
 </head>
@@ -67,7 +80,7 @@
 
             <!-- Sound toggle -->
             <button class="sound-toggle" id="soundToggle" title="Toggle alert sounds (N)" aria-label="Toggle sound">
-                <span class="sound-icon" id="soundIcon">🔊</span>
+                <span class="sound-icon" id="soundIcon" role="img" aria-label="Sound enabled">🔊</span>
             </button>
         </div>
     </header>
@@ -82,12 +95,12 @@
     <!-- ══════════════════════════════════════════════
          JAVASCRIPT
     ══════════════════════════════════════════════ -->
-    <script src="/static/js/sounds.js"></script>
-    <script src="/static/js/websocket.js"></script>
-    <script src="/static/js/charts.js"></script>
-    <script src="/static/js/topology.js"></script>
-    <script src="/static/js/shortcuts.js"></script>
-    <script src="/static/js/dashboard.js"></script>
+    <script src="/static/js/sounds.js?v={{ app_version | default('1.0') }}"></script>
+    <script src="/static/js/websocket.js?v={{ app_version | default('1.0') }}"></script>
+    <script src="/static/js/charts.js?v={{ app_version | default('1.0') }}"></script>
+    <script src="/static/js/topology.js?v={{ app_version | default('1.0') }}"></script>
+    <script src="/static/js/shortcuts.js?v={{ app_version | default('1.0') }}"></script>
+    <script src="/static/js/dashboard.js?v={{ app_version | default('1.0') }}"></script>
 
     {% block scripts %}{% endblock %}
 
