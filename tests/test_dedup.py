@@ -491,7 +491,7 @@ class TestEscalationEngine:
 
         pending = engine.get_pending_escalations()
         assert len(pending) >= 1
-        assert any(e.device_name == "Equinix-RTR-1" for e in pending)
+        assert any(alert.device_name == "Equinix-RTR-1" for alert, _elapsed in pending)
 
     def test_acked_within_delay_cancels(self) -> None:
         """Acknowledging within escalation_delay → NOT in pending."""
@@ -515,7 +515,7 @@ class TestEscalationEngine:
             )
 
         pending = engine.get_pending_escalations()
-        assert all(e.device_name != "Equinix-RTR-1" for e in pending)
+        assert all(alert.device_name != "Equinix-RTR-1" for alert, _elapsed in pending)
 
     def test_track_non_critical_ignored(self) -> None:
         """Non-CRITICAL alerts are not tracked for escalation."""
@@ -561,6 +561,6 @@ class TestEscalationEngine:
             )
 
         pending = engine.get_pending_escalations()
-        device_names = [e.device_name for e in pending]
+        device_names = [alert.device_name for alert, _elapsed in pending]
         assert "Device-A" not in device_names
         assert "Device-B" in device_names
