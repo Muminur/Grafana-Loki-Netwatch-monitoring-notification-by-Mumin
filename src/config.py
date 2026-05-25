@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import functools
 import ipaddress
+import logging
 import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+_log = logging.getLogger(__name__)
 
 _env_path = Path(__file__).resolve().parent.parent / ".env"
 
@@ -111,6 +115,32 @@ def _validate_log_level(value: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Safe numeric conversion
+# ---------------------------------------------------------------------------
+
+
+def _safe_int(env_var: str, default: str) -> int:
+    """Parse an integer from the environment with a descriptive error.
+
+    Returns the parsed value on success.  On failure, logs a warning and
+    returns the parsed *default* so the application starts with a safe
+    fallback rather than crashing with a bare ``ValueError``.
+    """
+    raw = os.environ.get(env_var, default)
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        fallback = int(default)
+        _log.warning(
+            "Invalid integer for %s=%r, falling back to %d",
+            env_var,
+            raw,
+            fallback,
+        )
+        return fallback
+
+
+# ---------------------------------------------------------------------------
 # Settings dataclass
 # ---------------------------------------------------------------------------
 
@@ -128,7 +158,7 @@ class Settings:
         default_factory=lambda: os.environ.get("SYSLOG_MODE", "loki_ws")
     )
     syslog_udp_port: int = field(
-        default_factory=lambda: int(os.environ.get("SYSLOG_UDP_PORT", "1514"))
+        default_factory=lambda: _safe_int("SYSLOG_UDP_PORT", "1514")
     )
     database_url: str = field(
         default_factory=lambda: os.environ.get(
@@ -137,7 +167,7 @@ class Settings:
     )
     web_host: str = field(default_factory=lambda: os.environ.get("WEB_HOST", "0.0.0.0"))
     web_port: int = field(
-        default_factory=lambda: int(os.environ.get("WEB_PORT", "8080"))
+        default_factory=lambda: _safe_int("WEB_PORT", "8080")
     )
     discord_webhook_url: str = field(
         default_factory=lambda: os.environ.get("DISCORD_WEBHOOK_URL", ""),
@@ -166,13 +196,13 @@ class Settings:
         default_factory=lambda: os.environ.get("GRAFANA_DASHBOARD_UID", "8sWAY1LMz")
     )
     dedup_window_seconds: int = field(
-        default_factory=lambda: int(os.environ.get("DEDUP_WINDOW_SECONDS", "300"))
+        default_factory=lambda: _safe_int("DEDUP_WINDOW_SECONDS", "300")
     )
     bgp_flap_window_seconds: int = field(
-        default_factory=lambda: int(os.environ.get("BGP_FLAP_WINDOW_SECONDS", "120"))
+        default_factory=lambda: _safe_int("BGP_FLAP_WINDOW_SECONDS", "120")
     )
     bundle_group_window_seconds: int = field(
-        default_factory=lambda: int(os.environ.get("BUNDLE_GROUP_WINDOW_SECONDS", "30"))
+        default_factory=lambda: _safe_int("BUNDLE_GROUP_WINDOW_SECONDS", "30")
     )
     asn_api_key: str = field(
         default_factory=lambda: os.environ.get("ASN_API_KEY", ""),
@@ -234,7 +264,13 @@ class Settings:
         return f"http://{self.monitor_host}:3000"
 
 
+@functools.lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Create settings instance from current environment."""
+    """Return the cached application settings singleton.
+
+    The ``.env`` file is loaded once on the first call.  Subsequent calls
+    return the same ``Settings`` instance without re-reading the filesystem
+    or re-parsing environment variables — safe for hot-path usage.
+    """
     load_dotenv(_env_path, override=False)
     return Settings()

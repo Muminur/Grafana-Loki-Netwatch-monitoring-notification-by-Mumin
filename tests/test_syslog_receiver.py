@@ -468,6 +468,72 @@ async def test_ws_tail_with_fallback_websocket_exception_triggers_fallback() -> 
 
 
 # ---------------------------------------------------------------------------
+# 12. test_http_client_reused_across_polls
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_http_client_reused_across_polls() -> None:
+    """The same httpx.AsyncClient is reused across multiple _http_poll_once calls."""
+    from src.core.syslog_receiver import SyslogReceiver  # noqa: PLC0415
+
+    settings = Settings(monitor_host="127.0.0.1")
+    receiver = SyslogReceiver(settings, AsyncMock())
+
+    loki_response = _make_loki_http_response(_SAMPLE_LOG)
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = loki_response
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+
+    constructor_calls = {"n": 0}
+    original_return = mock_client
+
+    def counting_constructor(**kwargs):  # noqa: ARG001
+        constructor_calls["n"] += 1
+        return original_return
+
+    with patch(
+        "src.core.syslog_receiver.httpx.AsyncClient",
+        side_effect=counting_constructor,
+    ):
+        await receiver._http_poll_once()  # noqa: SLF001
+        await receiver._http_poll_once()  # noqa: SLF001
+        await receiver._http_poll_once()  # noqa: SLF001
+
+    # The constructor should only be called once (lazy creation).
+    assert constructor_calls["n"] == 1, (
+        f"httpx.AsyncClient constructor called {constructor_calls['n']} times, "
+        "expected 1 (client should be reused)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 13. test_stop_closes_http_client
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stop_closes_http_client() -> None:
+    """stop() closes the persistent HTTP client if it was created."""
+    from src.core.syslog_receiver import SyslogReceiver  # noqa: PLC0415
+
+    settings = Settings(monitor_host="127.0.0.1")
+    receiver = SyslogReceiver(settings, AsyncMock())
+
+    mock_client = AsyncMock()
+    mock_client.aclose = AsyncMock()
+    receiver._http_client = mock_client  # noqa: SLF001
+
+    await receiver.stop()
+
+    mock_client.aclose.assert_awaited_once()
+    assert receiver._http_client is None  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
 # Utility: async iterator from list (needed for mock __aiter__)
 # ---------------------------------------------------------------------------
 

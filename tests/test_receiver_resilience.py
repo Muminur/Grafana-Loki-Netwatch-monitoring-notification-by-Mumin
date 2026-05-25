@@ -684,6 +684,8 @@ async def test_http_poll_once_returns_raw_count_for_pagination() -> None:
     resp2 = _ok_response(payload_full)
     client2 = _mock_http_client(resp2)
 
+    # Reset the cached HTTP client so the new mock is picked up.
+    receiver._http_client = None  # noqa: SLF001
     with patch("src.core.syslog_receiver.httpx.AsyncClient", return_value=client2):
         count2 = await receiver._http_poll_once()  # noqa: SLF001
 
