@@ -1457,9 +1457,73 @@ async def get_topology() -> dict[str, Any]:
         ``nodes`` — list of device nodes with id, name, location, level.
         ``links`` — list of {source, target, bundle, description} dicts.
     """
-    # Compute live device status from recent alerts
+    # Build name alias map: topology_name ↔ device_map_name for the same IP
+    _name_aliases: dict[str, str] = {}
+    for _topo_ip, _topo_entry in NETWORK_TOPOLOGY.items():
+        _dm = DEVICE_MAP.get(_topo_ip)
+        if _dm and _dm.name != _topo_entry.name:
+            _name_aliases[_dm.name] = _topo_entry.name
+            _name_aliases[_topo_entry.name] = _dm.name
+
+    # Compute live device status from DB (authoritative) + in-memory overlay
     _dev_severity: dict[str, str] = {}
     _dev_crit_ifaces: dict[str, set[str]] = {}
+
+    if _db_engine is not None:
+        try:
+            from sqlalchemy import case, func, select  # noqa: PLC0415
+            from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+            from src.database.models import AlertLog  # noqa: PLC0415
+
+            now_bdt = datetime.now(_BDT).replace(tzinfo=None)
+            cutoff = now_bdt - timedelta(hours=24)
+            async with AsyncSession(_db_engine) as session:
+                # Worst severity per device in last 24h
+                sev_col = case(
+                    (AlertLog.classification == "CRITICAL", 2),
+                    (AlertLog.classification == "WARNING", 1),
+                    else_=0,
+                )
+                stmt = (
+                    select(
+                        AlertLog.device_name,
+                        func.max(sev_col).label("worst"),
+                    )
+                    .where(AlertLog.timestamp >= cutoff)
+                    .group_by(AlertLog.device_name)
+                )
+                rows = (await session.execute(stmt)).all()
+                for dev_name, worst in rows:
+                    if worst == 2:
+                        _dev_severity[dev_name] = "critical"
+                    elif worst == 1:
+                        _dev_severity[dev_name] = "warning"
+                    else:
+                        _dev_severity[dev_name] = "ok"
+
+                # Critical interfaces for link status
+                crit_stmt = (
+                    select(AlertLog.device_name, AlertLog.interface_name)
+                    .where(AlertLog.classification == "CRITICAL")
+                    .where(AlertLog.resolved_at.is_(None))
+                    .where(AlertLog.timestamp >= cutoff)
+                    .where(AlertLog.interface_name != "")
+                )
+                crit_rows = (await session.execute(crit_stmt)).all()
+                for dev_name, iface in crit_rows:
+                    _dev_crit_ifaces.setdefault(dev_name, set()).add(iface)
+        except Exception:  # noqa: BLE001, S110
+            pass  # fall through to in-memory scan
+
+    # Propagate status to aliased names (DB name ↔ topology name)
+    for src_name, tgt_name in list(_name_aliases.items()):
+        if src_name in _dev_severity and tgt_name not in _dev_severity:
+            _dev_severity[tgt_name] = _dev_severity[src_name]
+        if src_name in _dev_crit_ifaces and tgt_name not in _dev_crit_ifaces:
+            _dev_crit_ifaces[tgt_name] = _dev_crit_ifaces[src_name]
+
+    # Overlay with in-memory alerts (captures events not yet committed to DB)
     for alert in _alerts_store:
         dev = alert.get("device", "")
         cls = alert.get("classification", "")
@@ -1473,7 +1537,7 @@ async def get_topology() -> dict[str, Any]:
             )
         elif cls == "WARNING" and cur not in ("critical",):
             _dev_severity[dev] = "warning"
-        elif cur == "ok":
+        elif cur not in ("critical", "warning"):
             _dev_severity[dev] = "ok"
 
     # Build node list from topology data (devices that have topology records)
