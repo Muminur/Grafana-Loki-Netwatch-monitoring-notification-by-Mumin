@@ -864,7 +864,8 @@ async def test_hourly_aggregator_cancels_cleanly() -> None:
         raise asyncio.CancelledError
 
     # CancelledError must not propagate out of _hourly_aggregator.
-    await main_mod._hourly_aggregator(engine=object())  # noqa: SLF001
+    with patch("src.main.asyncio.sleep", _fake_sleep):
+        await main_mod._hourly_aggregator(engine=object())  # noqa: SLF001
     assert state["n"] == 1
 
 
@@ -879,15 +880,19 @@ async def test_lifespan_creates_hourly_aggregator_task(tmp_path: Path) -> None:
     settings = _make_settings(tmp_path)
     _StubReceiver.instances.clear()
 
+    # Capture the real asyncio.sleep BEFORE patching so our helper coroutines
+    # can yield control without recursing into the patched version.
+    _real_sleep = asyncio.sleep
+
     async def _fast_sleep(_seconds: float) -> None:
-        await asyncio.sleep(0)
+        await _real_sleep(0)
 
     hourly_called = {"n": 0}
 
     async def _stub_hourly_aggregator(_engine: object) -> None:
         hourly_called["n"] += 1
         # Yield control once then return so the task completes quickly.
-        await asyncio.sleep(0)
+        await _real_sleep(0)
 
     with (
         patch.object(main_mod, "get_settings", return_value=settings),
@@ -897,7 +902,7 @@ async def test_lifespan_creates_hourly_aggregator_task(tmp_path: Path) -> None:
     ):
         async with main_mod.lifespan(main_mod.app):
             # Give the event loop a chance to schedule the created task.
-            await asyncio.sleep(0)
+            await _real_sleep(0)
 
     assert (
         hourly_called["n"] >= 1
