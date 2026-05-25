@@ -523,6 +523,11 @@ button { cursor: pointer; }
     box-shadow: 0 0 0 2px rgba(0, 240, 255, 0.1);
 }
 
+.search-input:focus-visible {
+    outline: 2px solid var(--neon-cyan);
+    outline-offset: 1px;
+}
+
 .search-input::placeholder { color: var(--text-muted); }
 
 .btn-icon {
@@ -1076,6 +1081,12 @@ button { cursor: pointer; }
     box-shadow: 0 0 0 2px rgba(0, 240, 255, 0.1);
 }
 
+.form-input:focus-visible,
+.form-select:focus-visible {
+    outline: 2px solid var(--neon-cyan);
+    outline-offset: 1px;
+}
+
 .form-hint {
     font-size: 0.7rem;
     color: var(--text-muted);
@@ -1336,6 +1347,11 @@ kbd {
     box-shadow: 0 0 8px rgba(0, 240, 255, 0.2);
 }
 
+.neon-select:focus-visible {
+    outline: 2px solid var(--neon-cyan);
+    outline-offset: 1px;
+}
+
 .neon-select option {
     background: #0d0d1a;
     color: #e8e8f0;
@@ -1445,3 +1461,12 @@ kbd {
 ::-webkit-scrollbar-track { background: var(--bg-primary); }
 ::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ── Reduced Motion ───────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
