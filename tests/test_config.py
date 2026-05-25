@@ -1,8 +1,10 @@
 """Tests for src.config — settings from environment variables."""
 
+import logging
+
 import pytest
 
-from src.config import Settings, get_settings
+from src.config import Settings, _safe_int, get_settings
 
 
 def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,9 +86,18 @@ def test_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_get_settings_returns_instance() -> None:
-    """get_settings() returns a Settings instance."""
+    """get_settings() returns a Settings instance (cached singleton)."""
+    get_settings.cache_clear()
     settings = get_settings()
     assert isinstance(settings, Settings)
+
+
+def test_get_settings_returns_same_instance() -> None:
+    """get_settings() returns the same cached instance on repeated calls."""
+    get_settings.cache_clear()
+    a = get_settings()
+    b = get_settings()
+    assert a is b
 
 
 def test_settings_is_frozen() -> None:
@@ -94,3 +105,41 @@ def test_settings_is_frozen() -> None:
     settings = Settings()
     with pytest.raises(AttributeError):
         settings.monitor_host = "changed"  # type: ignore[misc]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _safe_int tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_safe_int_valid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_safe_int returns the parsed integer for valid input."""
+    monkeypatch.setenv("TEST_PORT", "9090")
+    assert _safe_int("TEST_PORT", "1514") == 9090
+
+
+def test_safe_int_missing_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_safe_int returns the parsed default when the env var is absent."""
+    monkeypatch.delenv("TEST_PORT_MISSING", raising=False)
+    assert _safe_int("TEST_PORT_MISSING", "1514") == 1514
+
+
+def test_safe_int_invalid_falls_back(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """_safe_int falls back to default and logs a warning for non-numeric input."""
+    monkeypatch.setenv("TEST_BAD_PORT", "not_a_number")
+    with caplog.at_level(logging.WARNING):
+        result = _safe_int("TEST_BAD_PORT", "8080")
+    assert result == 8080
+    assert "Invalid integer" in caplog.text
+    assert "TEST_BAD_PORT" in caplog.text
+
+
+def test_safe_int_empty_string_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_safe_int falls back to default for empty-string env var."""
+    monkeypatch.setenv("TEST_EMPTY", "")
+    result = _safe_int("TEST_EMPTY", "300")
+    assert result == 300

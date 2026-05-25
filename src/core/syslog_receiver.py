@@ -139,6 +139,9 @@ class SyslogReceiver:
         # Deduplication set for entries that share the last-page timestamp.
         # Stores (ts_ns, line) tuples observed on the previous full-page poll.
         self._seen_at_cursor: set[tuple[int, str]] = set()
+        # Persistent HTTP client for the poll fallback — created on first
+        # use and closed in stop().  Avoids creating a new client per cycle.
+        self._http_client: httpx.AsyncClient | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -206,12 +209,21 @@ class SyslogReceiver:
                 await self._udp_listen()
 
     async def stop(self) -> None:
-        """Gracefully cancel all running receiver tasks."""
+        """Gracefully cancel all running receiver tasks and close resources."""
         self._running = False
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        if self._http_client is not None:
+            await self._http_client.aclose()
+            self._http_client = None
+
+    def _get_http_client(self) -> httpx.AsyncClient:
+        """Return the persistent HTTP client, creating it on first use."""
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(timeout=10.0)
+        return self._http_client
 
     def health_status(self) -> ReceiverHealth:
         """Return a lightweight snapshot of the receiver's current state.
@@ -378,66 +390,66 @@ class SyslogReceiver:
             "end": str(now_ns),
         }
         safe_url = _mask_url(self._settings.loki_http_url)
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                self._settings.loki_http_url,
-                params=params,
-                timeout=10.0,
+        client = self._get_http_client()
+        resp = await client.get(
+            self._settings.loki_http_url,
+            params=params,
+            timeout=10.0,
+        )
+        if resp.status_code != 200:
+            _log.warning(
+                "Loki HTTP poll returned %d (url=%s)",
+                resp.status_code,
+                safe_url,
             )
-            if resp.status_code != 200:
-                _log.warning(
-                    "Loki HTTP poll returned %d (url=%s)",
-                    resp.status_code,
-                    safe_url,
-                )
-                return 0
+            return 0
 
-            data = resp.json()
-            entries = self._extract_entries_from_http(data)
+        data = resp.json()
+        entries = self._extract_entries_from_http(data)
 
-            # Suppress entries already delivered on the previous full-page poll.
-            new_entries = [
-                (ts, line)
-                for ts, line in entries
-                if (ts, line) not in self._seen_at_cursor
-            ]
-            for _ts_ns, line in new_entries:
-                await self._callback(line)
+        # Suppress entries already delivered on the previous full-page poll.
+        new_entries = [
+            (ts, line)
+            for ts, line in entries
+            if (ts, line) not in self._seen_at_cursor
+        ]
+        for _ts_ns, line in new_entries:
+            await self._callback(line)
 
-            count = len(entries)
+        count = len(entries)
 
-            if count >= self._POLL_LIMIT and entries:
-                last_ts = entries[-1][0]
-                # Check whether multiple entries share the last timestamp.
-                entries_at_last_ts = [(ts, ln) for ts, ln in entries if ts == last_ts]
-                if 1 < len(entries_at_last_ts) < count and new_entries:
-                    # Ambiguous boundary with real progress: stay at last_ts so
-                    # the next poll re-fetches this nanosecond; deduplicate by
-                    # remembering what was already delivered.
-                    self._last_poll_ns = last_ts
-                    self._seen_at_cursor = set(entries_at_last_ts)
-                else:
-                    # Distinct boundary, an entire page sharing one timestamp,
-                    # or nothing new delivered — advance past last_ts to avoid
-                    # an infinite re-fetch loop on a pathological/hostile feed.
-                    self._last_poll_ns = last_ts + 1
-                    self._seen_at_cursor = set()
+        if count >= self._POLL_LIMIT and entries:
+            last_ts = entries[-1][0]
+            # Check whether multiple entries share the last timestamp.
+            entries_at_last_ts = [(ts, ln) for ts, ln in entries if ts == last_ts]
+            if 1 < len(entries_at_last_ts) < count and new_entries:
+                # Ambiguous boundary with real progress: stay at last_ts so
+                # the next poll re-fetches this nanosecond; deduplicate by
+                # remembering what was already delivered.
+                self._last_poll_ns = last_ts
+                self._seen_at_cursor = set(entries_at_last_ts)
             else:
-                self._last_poll_ns = now_ns
+                # Distinct boundary, an entire page sharing one timestamp,
+                # or nothing new delivered — advance past last_ts to avoid
+                # an infinite re-fetch loop on a pathological/hostile feed.
+                self._last_poll_ns = last_ts + 1
                 self._seen_at_cursor = set()
+        else:
+            self._last_poll_ns = now_ns
+            self._seen_at_cursor = set()
 
-            if count > 0:
-                _log.debug(
-                    "HTTP poll: %d lines (%d new, start=%s)",
-                    count,
-                    len(new_entries),
-                    start_ns,
-                )
-            # Return the raw Loki entry count so the caller (_http_poll) can
-            # correctly decide whether a full page was returned and more backlog
-            # may remain.  Returning len(new_entries) would break the drain loop
-            # when all entries on a page are already-seen deduplications.
-            return count
+        if count > 0:
+            _log.debug(
+                "HTTP poll: %d lines (%d new, start=%s)",
+                count,
+                len(new_entries),
+                start_ns,
+            )
+        # Return the raw Loki entry count so the caller (_http_poll) can
+        # correctly decide whether a full page was returned and more backlog
+        # may remain.  Returning len(new_entries) would break the drain loop
+        # when all entries on a page are already-seen deduplications.
+        return count
 
     # ------------------------------------------------------------------
     # UDP fallback

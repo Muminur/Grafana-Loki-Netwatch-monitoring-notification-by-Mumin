@@ -341,6 +341,124 @@ class TestDedupEngine:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DedupEngine eviction tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestDedupEviction:
+    """Tests for periodic eviction of stale dedup dict entries."""
+
+    def test_eviction_runs_after_interval(self) -> None:
+        """Stale entries are pruned after _EVICT_INTERVAL calls."""
+        from unittest.mock import patch as mock_patch
+
+        from src.core.dedup import DedupEngine
+
+        # Use a 10-second window so entries expire fast.
+        engine = DedupEngine(window_seconds=10)
+
+        ts_old = datetime(2026, 5, 22, 10, 0, 0, tzinfo=_UTC6)
+        ts_new = datetime(2026, 5, 22, 11, 0, 0, tzinfo=_UTC6)  # 1 hour later
+
+        # Seed the engine with an old event.
+        old_parsed = _make_parsed_log(
+            mnemonic="UPDOWN",
+            message="Interface TenGigE0/0/0/0, changed state to Down",
+            facility="PKT_INFRA",
+            subfacility="LINK",
+            timestamp=ts_old,
+        )
+        old_enriched = _make_enriched(
+            bgp_neighbor="",
+            interface_name="TenGigE0/0/0/0",
+            parsed=old_parsed,
+        )
+        engine.should_notify(old_enriched)
+        assert len(engine._seen) == 1  # noqa: SLF001
+
+        # Set call count just below the eviction interval.
+        engine._call_count = engine._EVICT_INTERVAL - 1  # noqa: SLF001
+
+        # Next call triggers eviction; use a new event timestamp far in the
+        # future so the old entry is stale (> 2 * window).
+        new_parsed = _make_parsed_log(
+            mnemonic="UPDOWN",
+            message="Interface TenGigE0/0/0/1, changed state to Down",
+            facility="PKT_INFRA",
+            subfacility="LINK",
+            timestamp=ts_new,
+        )
+        new_enriched = _make_enriched(
+            bgp_neighbor="",
+            interface_name="TenGigE0/0/0/1",
+            parsed=new_parsed,
+        )
+
+        # Mock monotonic to ensure the monotonic cutoff is also exceeded.
+        import time
+
+        mono_now = time.monotonic()
+        with mock_patch("src.core.dedup.time") as mock_time:
+            mock_time.monotonic.return_value = mono_now + 1000.0
+            engine.should_notify(new_enriched)
+
+        # The old entry should have been evicted.
+        old_key = engine._dedup_key(old_enriched)  # noqa: SLF001
+        assert old_key not in engine._seen  # noqa: SLF001
+        assert old_key not in engine._seen_mono  # noqa: SLF001
+
+    def test_eviction_preserves_recent_entries(self) -> None:
+        """Entries within the 2x window are not evicted."""
+        from unittest.mock import patch as mock_patch
+
+        from src.core.dedup import DedupEngine
+
+        engine = DedupEngine(window_seconds=300)
+
+        ts = datetime(2026, 5, 22, 21, 0, 0, tzinfo=_UTC6)
+        parsed = _make_parsed_log(
+            mnemonic="UPDOWN",
+            message="Interface TenGigE0/0/0/0, changed state to Down",
+            facility="PKT_INFRA",
+            subfacility="LINK",
+            timestamp=ts,
+        )
+        enriched = _make_enriched(
+            bgp_neighbor="",
+            interface_name="TenGigE0/0/0/0",
+            parsed=parsed,
+        )
+        engine.should_notify(enriched)
+
+        # Force eviction with a timestamp only 100s later (within 2*300s).
+        engine._call_count = engine._EVICT_INTERVAL - 1  # noqa: SLF001
+        ts_soon = ts + timedelta(seconds=100)
+        parsed2 = _make_parsed_log(
+            mnemonic="UPDOWN",
+            message="Interface TenGigE0/0/0/1, changed state to Down",
+            facility="PKT_INFRA",
+            subfacility="LINK",
+            timestamp=ts_soon,
+        )
+        enriched2 = _make_enriched(
+            bgp_neighbor="",
+            interface_name="TenGigE0/0/0/1",
+            parsed=parsed2,
+        )
+
+        import time
+
+        mono_now = time.monotonic()
+        with mock_patch("src.core.dedup.time") as mock_time:
+            mock_time.monotonic.return_value = mono_now + 100.0
+            engine.should_notify(enriched2)
+
+        # The original entry should still be present.
+        key = engine._dedup_key(enriched)  # noqa: SLF001
+        assert key in engine._seen  # noqa: SLF001
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # EscalationEngine tests
 # ─────────────────────────────────────────────────────────────────────────────
 

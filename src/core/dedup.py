@@ -102,6 +102,9 @@ class DedupEngine:
         the same parent are grouped.
     """
 
+    # Run a full eviction sweep every _EVICT_INTERVAL calls to should_notify().
+    _EVICT_INTERVAL: int = 100
+
     def __init__(
         self,
         window_seconds: int = 300,
@@ -126,6 +129,9 @@ class DedupEngine:
         # Bundle grouping: bundle_key → first_seen event timestamp
         self._bundle_seen: dict[str, datetime] = {}
 
+        # Counter for periodic eviction of stale entries.
+        self._call_count: int = 0
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def should_notify(self, enriched: EnrichedLog) -> tuple[bool, str]:
@@ -142,6 +148,12 @@ class DedupEngine:
             - ``"bundle_grouped"`` — bundle-member event within group window
         """
         event_ts = enriched.parsed.timestamp
+
+        # Periodic eviction: prune stale entries every _EVICT_INTERVAL calls.
+        self._call_count += 1
+        if self._call_count >= self._EVICT_INTERVAL:
+            self._evict_stale(event_ts)
+            self._call_count = 0
 
         # 1. Bundle grouping check (before general dedup)
         # Uses event timestamps exclusively — deterministic for log replays.
@@ -207,6 +219,49 @@ class DedupEngine:
         return f"{enriched.device_name}:{enriched.parsed.mnemonic}:{discriminator}"
 
     # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _evict_stale(self, now_event_ts: datetime) -> None:
+        """Remove entries older than ``2 * window`` from all tracking dicts.
+
+        Called periodically (every ``_EVICT_INTERVAL`` calls) to prevent
+        unbounded memory growth in long-running processes.
+        """
+        # Standard dedup: prune _seen / _seen_mono
+        dedup_cutoff = now_event_ts - timedelta(seconds=2 * self._window_s)
+        mono_now = time.monotonic()
+        mono_cutoff = 2 * self._window_s
+
+        stale_keys = [
+            k
+            for k, ts in self._seen.items()
+            if ts < dedup_cutoff
+            and (mono_now - self._seen_mono.get(k, 0.0)) > mono_cutoff
+        ]
+        for k in stale_keys:
+            del self._seen[k]
+            self._seen_mono.pop(k, None)
+
+        # Bundle grouping: prune _bundle_seen
+        bundle_cutoff = now_event_ts - (2 * self._bundle_window)
+        stale_bundles = [
+            k for k, ts in self._bundle_seen.items() if ts < bundle_cutoff
+        ]
+        for k in stale_bundles:
+            del self._bundle_seen[k]
+
+        # BGP flap state: prune _bgp_states (remove empty histories)
+        flap_cutoff = now_event_ts - (2 * self._flap_window)
+        stale_bgp = []
+        for k, history in self._bgp_states.items():
+            history[:] = [(s, t) for s, t in history if t >= flap_cutoff]
+            if not history:
+                stale_bgp.append(k)
+        for k in stale_bgp:
+            del self._bgp_states[k]
+
+        evicted = len(stale_keys) + len(stale_bundles) + len(stale_bgp)
+        if evicted > 0:
+            _log.debug("Evicted %d stale entries from dedup dicts", evicted)
 
     def _bundle_key(self, enriched: EnrichedLog) -> str:
         """Key for bundle-grouping: ``device:bundle_parent``."""
