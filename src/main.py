@@ -203,22 +203,10 @@ async def _on_syslog_line(raw_line: str) -> None:
     else:
         should_send = True
 
-    # ── Noise reclassification (before DB write) ─────────────────────────
-    from src.api.routes import _SILENT_FAULT_MNEMONICS  # noqa: PLC0415
-
-    db_classification = enriched.classification
-    if enriched.parsed.mnemonic in _SILENT_FAULT_MNEMONICS:
-        from src.api.routes import _hardware_defects_as_noise  # noqa: PLC0415
-        from src.data.topology import is_backhaul_member  # noqa: PLC0415
-
-        if _hardware_defects_as_noise:
-            _is_member, _ = is_backhaul_member(
-                enriched.parsed.source_ip, enriched.interface_name
-            )
-            if _is_member:
-                db_classification = "NOISE"
-
     # ── Store to DB ────────────────────────────────────────────────────────
+    # NOTE: Noise reclassification (hardware defects on backhaul members) is
+    # handled exclusively in add_alert_to_store() (routes.py) to avoid the
+    # logic being duplicated in two places with potential divergence.
     suppress = correlated.suppress_notification if correlated is not None else False
     will_notify = should_send and enriched.notify and not suppress
     incident_id = (correlated.incident_id or "") if correlated is not None else ""
@@ -236,7 +224,7 @@ async def _on_syslog_line(raw_line: str) -> None:
                 mnemonic=enriched.parsed.mnemonic,
                 message=enriched.parsed.message,
                 raw=enriched.parsed.raw,
-                classification=db_classification,
+                classification=enriched.classification,
                 interface_name=enriched.interface_name,
                 interface_description=enriched.interface_description,
                 client_name=enriched.client_name,
@@ -442,10 +430,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     # Load persisted maintenance windows + hardware-noise toggle into cache
     await load_persisted_state(engine)
 
-    # Re-classify existing alerts whose rules may have changed since they
+    # Re-classify recent alerts whose rules may have changed since they
     # were ingested (classification is stored at ingestion time).
+    # Bounded to the last 7 days and 10 000 rows to avoid a full table scan.
     # Skip alerts already reclassified as NOISE by the hardware-noise toggle.
     try:
+        from datetime import datetime as _reclass_dt  # noqa: PLC0415
+        from datetime import timedelta as _reclass_td  # noqa: PLC0415
+        from datetime import timezone as _reclass_tz  # noqa: PLC0415
+
         from src.api.routes import (  # noqa: PLC0415
             _SILENT_FAULT_MNEMONICS as _NOISE_MNEMONICS,
         )
@@ -454,8 +447,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         )
         from src.core.classifier import classify  # noqa: PLC0415
 
+        # SQLite stores timestamps as naive BDT (UTC+6) face values, so
+        # the cutoff must use BDT to compare correctly.
+        _bdt = _reclass_tz(_reclass_td(hours=6))
+        _reclass_cutoff = _reclass_dt.now(_bdt) - _reclass_td(days=7)
         async with AsyncSession(engine) as session:
-            reclass_result = await session.execute(select(AlertLog))
+            reclass_result = await session.execute(
+                select(AlertLog)
+                .where(AlertLog.timestamp >= _reclass_cutoff)
+                .order_by(AlertLog.timestamp.desc())
+                .limit(10_000)
+            )
             rows = reclass_result.scalars().all()
             fixed = 0
             for row in rows:

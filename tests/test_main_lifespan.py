@@ -102,11 +102,16 @@ def _reset_pipeline_globals() -> Iterator[None]:
 
 
 def _alert_from_raw(raw: str) -> AlertLog:
-    """Build an AlertLog from a real raw line, mislabelled as INFO."""
+    """Build an AlertLog from a real raw line, mislabelled as INFO.
+
+    Uses ``datetime.now(UTC)`` for the timestamp so the alert falls within
+    the 7-day reclassification window regardless of the date embedded in
+    the raw syslog line.
+    """
     parsed = parse_syslog(raw)
     assert parsed is not None
     return AlertLog(
-        timestamp=parsed.timestamp,
+        timestamp=datetime.now(UTC),
         source_ip=parsed.source_ip,
         device_name="seed-device",
         hostname=parsed.hostname,
