@@ -144,6 +144,82 @@ class TestTopologyDataStructure:
 # ---------------------------------------------------------------------------
 
 
+class TestBackhaulLinkEquality:
+    """Tests for BackhaulLink __eq__ and __hash__."""
+
+    def test_equal_backhaul_links(self) -> None:
+        """Two BackhaulLink instances with identical fields compare as equal."""
+        a = BackhaulLink(
+            description="A → B",
+            remote_device_ip="10.0.0.1",
+            members=["TenGigE0/0/0/0", "TenGigE0/0/0/1"],
+        )
+        b = BackhaulLink(
+            description="A → B",
+            remote_device_ip="10.0.0.1",
+            members=["TenGigE0/0/0/0", "TenGigE0/0/0/1"],
+        )
+        assert a == b
+        assert hash(a) == hash(b)
+
+    def test_different_backhaul_links(self) -> None:
+        """BackhaulLink instances with different fields are not equal."""
+        a = BackhaulLink(
+            description="A → B",
+            remote_device_ip="10.0.0.1",
+            members=["TenGigE0/0/0/0"],
+        )
+        b = BackhaulLink(
+            description="A → C",
+            remote_device_ip="10.0.0.2",
+            members=["TenGigE0/0/0/1"],
+        )
+        assert a != b
+
+    def test_backhaul_link_eq_with_non_backhaul(self) -> None:
+        """BackhaulLink.__eq__ with a non-BackhaulLink object returns NotImplemented."""
+        link = BackhaulLink(description="test", remote_device_ip="10.0.0.1", members=[])
+        result = link.__eq__("not a BackhaulLink")
+        assert result is NotImplemented
+
+    def test_backhaul_link_usable_in_set(self) -> None:
+        """Equal BackhaulLink instances collapse to one entry in a set."""
+        a = BackhaulLink(description="X", remote_device_ip="1.2.3.4", members=["a"])
+        b = BackhaulLink(description="X", remote_device_ip="1.2.3.4", members=["a"])
+        assert len({a, b}) == 1
+
+
+class TestDeviceTopologyEquality:
+    """Tests for DeviceTopology __eq__ and __hash__."""
+
+    def test_equal_device_topologies(self) -> None:
+        """Two DeviceTopology instances with identical fields compare as equal."""
+        link = BackhaulLink(description="link1", remote_device_ip="10.0.0.1")
+        a = DeviceTopology(name="Dev-1", upstreams={"BE100": link})
+        b = DeviceTopology(name="Dev-1", upstreams={"BE100": link})
+        assert a == b
+        assert hash(a) == hash(b)
+
+    def test_different_device_topologies(self) -> None:
+        """DeviceTopology instances with different names are not equal."""
+        link = BackhaulLink(description="link1", remote_device_ip="10.0.0.1")
+        a = DeviceTopology(name="Dev-1", upstreams={"BE100": link})
+        b = DeviceTopology(name="Dev-2", upstreams={"BE100": link})
+        assert a != b
+
+    def test_device_topology_eq_with_non_device_topology(self) -> None:
+        """DeviceTopology.__eq__ with a non-DeviceTopology returns NotImplemented."""
+        topo = DeviceTopology(name="Dev-1")
+        result = topo.__eq__("not a topology")
+        assert result is NotImplemented
+
+    def test_device_topology_usable_in_set(self) -> None:
+        """Equal DeviceTopology instances collapse to one entry in a set."""
+        a = DeviceTopology(name="Dev-1")
+        b = DeviceTopology(name="Dev-1")
+        assert len({a, b}) == 1
+
+
 class TestGetDownstreamDevices:
     """Tests for get_downstream_devices()."""
 
@@ -561,6 +637,61 @@ class TestIncidentAffectedClients:
         # The last incident result should reference multiple related events
         last_incident = incident_results[-1]
         assert isinstance(last_incident.related_events, list)
+
+
+class TestPurgeStaleIncidentsEdgeCases:
+    """Edge-case tests for _purge_stale_incidents."""
+
+    def test_purge_incident_with_zero_events(self) -> None:
+        """An incident with an empty event list is always considered stale."""
+        engine = CorrelationEngine()
+
+        # Manually inject an incident with zero events
+        inc_id = engine._generate_incident_id()  # noqa: SLF001
+        engine._incidents[inc_id] = []  # noqa: SLF001
+        engine._device_incident["192.168.203.1"] = inc_id  # noqa: SLF001
+
+        # Purge — the empty incident should be removed regardless of timestamp
+        now = datetime.now(_UTC6)
+        engine._purge_stale_incidents(now)  # noqa: SLF001
+
+        assert inc_id not in engine._incidents  # noqa: SLF001
+        assert "192.168.203.1" not in engine._device_incident  # noqa: SLF001
+
+
+class TestFlapKeyFallback:
+    """Tests for _flap_key when neither bgp_neighbor nor interface_name is set."""
+
+    def test_flap_key_falls_back_to_mnemonic(self) -> None:
+        """_flap_key uses mnemonic when neighbor and interface are empty."""
+        engine = CorrelationEngine()
+        enriched = _make_enriched(
+            bgp_neighbor="",
+            interface_name="",
+            mnemonic="UPDOWN",
+        )
+        key = engine._flap_key(enriched)  # noqa: SLF001
+        assert key == (enriched.parsed.source_ip, "UPDOWN")
+
+    def test_flap_key_prefers_bgp_neighbor(self) -> None:
+        """_flap_key uses bgp_neighbor when both neighbor and interface are set."""
+        engine = CorrelationEngine()
+        enriched = _make_enriched(
+            bgp_neighbor="10.0.0.1",
+            interface_name="TenGigE0/0/0/0",
+        )
+        key = engine._flap_key(enriched)  # noqa: SLF001
+        assert key == (enriched.parsed.source_ip, "10.0.0.1")
+
+    def test_flap_key_uses_interface_when_no_neighbor(self) -> None:
+        """_flap_key uses interface_name when bgp_neighbor is empty."""
+        engine = CorrelationEngine()
+        enriched = _make_enriched(
+            bgp_neighbor="",
+            interface_name="TenGigE0/0/0/5",
+        )
+        key = engine._flap_key(enriched)  # noqa: SLF001
+        assert key == (enriched.parsed.source_ip, "TenGigE0/0/0/5")
 
 
 class TestCorrelationWindowBoundary:

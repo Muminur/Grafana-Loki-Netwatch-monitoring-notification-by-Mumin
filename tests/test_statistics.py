@@ -531,6 +531,62 @@ async def test_hourly_aggregation_multiple_devices(session: AsyncSession):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 18b. test_hourly_aggregation_upsert_idempotent
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_hourly_aggregation_upsert_idempotent(session: AsyncSession):
+    """Running aggregate_hourly twice with the same data must NOT double counts.
+
+    This exercises the UPDATE branch of the upsert: the first call INSERTs a
+    new HourlyStats row; the second call finds the existing row and UPDATEs
+    it with the same counts.
+    """
+    from src.statistics.aggregator import aggregate_hourly
+
+    hour_ts = datetime(2026, 5, 22, 16, 0, 0, tzinfo=UTC)
+    alerts = [
+        _make_alert(
+            classification="CRITICAL",
+            device_name="BSCCL-EQ-RTR-01",
+            timestamp=hour_ts + timedelta(minutes=i),
+        )
+        for i in range(2)
+    ] + [
+        _make_alert(
+            classification="WARNING",
+            device_name="BSCCL-EQ-RTR-01",
+            timestamp=hour_ts + timedelta(minutes=i + 5),
+        )
+        for i in range(3)
+    ]
+    for alert in alerts:
+        session.add(alert)
+    await session.flush()
+
+    # First aggregation — INSERT path
+    await aggregate_hourly(session)
+
+    # Second aggregation — UPDATE path (same data, must not double counts)
+    await aggregate_hourly(session)
+
+    from sqlalchemy import select
+
+    stmt = select(HourlyStats).where(
+        HourlyStats.device_name == "BSCCL-EQ-RTR-01",
+        HourlyStats.hour == hour_ts,
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+
+    assert row is not None, "HourlyStats row must exist after aggregation"
+    assert row.critical_count == 2, "critical_count should be 2, not doubled"
+    assert row.warning_count == 3, "warning_count should be 3, not doubled"
+    assert row.info_count == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 19. test_health_score_flapping_deduction
 # ─────────────────────────────────────────────────────────────────────────────
 
