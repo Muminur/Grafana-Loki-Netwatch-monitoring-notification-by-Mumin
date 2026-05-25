@@ -1777,3 +1777,79 @@ body.has-active-incidents .panel-incidents .panel-header {
     background: rgba(0, 240, 255, 0.2);
     box-shadow: 0 0 8px var(--neon-cyan-glow);
 }
+
+/* ── Handoff Display Panel ────────────────────────────────────────────── */
+.panel-handoff .panel-icon { background: var(--neon-cyan); box-shadow: 0 0 4px var(--neon-cyan-glow); }
+
+.handoff-display {
+    padding: 0.5rem 0.8rem;
+}
+
+.handoff-note {
+    padding: 0.5rem 0.7rem;
+    margin-bottom: 0.4rem;
+    background: rgba(0, 240, 255, 0.03);
+    border: 1px solid rgba(0, 240, 255, 0.15);
+    border-radius: var(--radius-sm);
+}
+
+.handoff-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    margin-bottom: 0.3rem;
+}
+
+.handoff-operator {
+    color: var(--neon-cyan);
+    font-weight: 600;
+}
+
+.handoff-shift {
+    color: var(--text-muted);
+    background: rgba(0, 240, 255, 0.08);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+}
+
+.handoff-date { color: var(--text-muted); }
+.handoff-stat.critical { color: var(--neon-red); }
+.handoff-stat.incidents { color: var(--neon-orange); }
+
+.handoff-text {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    line-height: var(--lh-normal);
+}
+
+/* ── Toast Notification ───────────────────────────────────────────────── */
+.netwatch-toast {
+    position: fixed;
+    bottom: 1.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 255, 136, 0.12);
+    border: 1px solid var(--neon-green-dim);
+    color: var(--neon-green);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    padding: 0.5rem 1.2rem;
+    border-radius: var(--radius-md);
+    z-index: 10000;
+    animation: toast-in 0.3s ease;
+}
+
+.netwatch-toast.toast-error {
+    background: rgba(255, 0, 64, 0.12);
+    border-color: var(--neon-red-dim);
+    color: var(--neon-red);
+}
+
+@keyframes toast-in {
+    from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}

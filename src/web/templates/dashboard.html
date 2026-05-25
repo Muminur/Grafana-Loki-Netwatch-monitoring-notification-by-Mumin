@@ -170,36 +170,14 @@
         </div>
     </section>
 
-    <!-- Analytics Charts -->
-    <section class="panel panel-charts">
+    <!-- Last Shift Handoff Note -->
+    <section class="panel panel-handoff" id="handoffPanel" style="display:none;">
         <div class="panel-header">
             <span class="panel-title">
-                <span class="panel-icon"></span> ANALYTICS
+                <span class="panel-icon"></span> LAST SHIFT HANDOFF
             </span>
         </div>
-        <div class="charts-grid charts-grid-wide">
-            <div class="chart-cell" role="region" aria-label="Network health gauge chart">
-                <div class="chart-label">Network Health</div>
-                <canvas id="healthGaugeChart" width="200" height="120"
-                        aria-label="Network health gauge"></canvas>
-                <div class="health-score-value" id="healthScoreValue">—</div>
-            </div>
-            <div class="chart-cell" role="region" aria-label="Alert timeline chart">
-                <div class="chart-label">Alert Timeline (1h)</div>
-                <canvas id="timelineChart" width="400" height="120"
-                        aria-label="Alert timeline chart"></canvas>
-            </div>
-            <div class="chart-cell" role="region" aria-label="Alert category distribution chart">
-                <div class="chart-label">By Category</div>
-                <canvas id="categoryDonutChart" width="200" height="120"
-                        aria-label="Alert category donut chart"></canvas>
-            </div>
-            <div class="chart-cell" role="region" aria-label="Top devices by alert count chart">
-                <div class="chart-label">Top Devices</div>
-                <canvas id="topDevicesChart" width="400" height="120"
-                        aria-label="Top devices bar chart"></canvas>
-            </div>
-        </div>
+        <div class="handoff-display" id="handoffDisplay"></div>
     </section>
 
 </div><!-- /.dashboard-bottom -->

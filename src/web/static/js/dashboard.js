@@ -749,7 +749,37 @@
             .catch(function () {});
     }
 
-    // ── Handoff Modal ──────────────────────────────────────────────────────
+    // ── Handoff Display + Modal ─────────────────────────────────────────────
+    function _loadHandoffNotes() {
+        var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
+        var panel = _el('handoffPanel');
+        var display = _el('handoffDisplay');
+        if (!panel || !display) return;
+
+        fetch(apiBase + '/shift/handoffs?limit=3')
+            .then(function (r) { return r.json(); })
+            .then(function (handoffs) {
+                if (!handoffs || handoffs.length === 0) {
+                    panel.style.display = 'none';
+                    return;
+                }
+                panel.style.display = '';
+                display.innerHTML = handoffs.map(function (h) {
+                    return '<div class="handoff-note">'
+                        + '<div class="handoff-meta">'
+                        + '<span class="handoff-operator">' + _esc(h.operator_name || '') + '</span>'
+                        + '<span class="handoff-shift">' + _esc(h.shift_name || '').toUpperCase() + '</span>'
+                        + '<span class="handoff-date">' + _esc(h.shift_date || '') + '</span>'
+                        + (h.critical_count ? '<span class="handoff-stat critical">' + h.critical_count + ' CRIT</span>' : '')
+                        + (h.open_incidents ? '<span class="handoff-stat incidents">' + h.open_incidents + ' OPEN</span>' : '')
+                        + '</div>'
+                        + (h.notes ? '<div class="handoff-text">' + _esc(h.notes) + '</div>' : '')
+                        + '</div>';
+                }).join('');
+            })
+            .catch(function () { panel.style.display = 'none'; });
+    }
+
     function _showHandoffModal() {
         var old = document.getElementById('ackModal');
         if (old) old.remove();
@@ -798,6 +828,10 @@
             }
             var notes = document.getElementById('handoffNotes').value.trim();
             var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
+            var confirmBtn = document.getElementById('handoffConfirm');
+            confirmBtn.textContent = 'Saving...';
+            confirmBtn.disabled = true;
+
             fetch(apiBase + '/shift/handoff', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -811,12 +845,32 @@
                     warning_count: parseInt((_el('shiftWarning') || {}).textContent) || 0,
                 }),
             })
-                .then(function (r) { return r.json(); })
-                .then(function () { modal.remove(); })
+                .then(function (r) {
+                    if (!r.ok) throw new Error('Server returned ' + r.status);
+                    return r.json();
+                })
+                .then(function () {
+                    modal.remove();
+                    _loadHandoffNotes();
+                    _showToast('Handoff note saved successfully');
+                })
                 .catch(function (err) {
                     console.error('[NetWatch] Handoff failed:', err);
+                    confirmBtn.textContent = 'Submit Handoff';
+                    confirmBtn.disabled = false;
+                    _showToast('Handoff save failed — check connection', true);
                 });
         });
+    }
+
+    function _showToast(message, isError) {
+        var existing = document.querySelector('.netwatch-toast');
+        if (existing) existing.remove();
+        var toast = document.createElement('div');
+        toast.className = 'netwatch-toast' + (isError ? ' toast-error' : '');
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        setTimeout(function () { toast.remove(); }, 3000);
     }
 
     // ── Topology node click → populate search ──────────────────────────────
@@ -848,6 +902,7 @@
         setInterval(_loadIncidents, 30000);
 
         _loadShiftInfo();
+        _loadHandoffNotes();
         setInterval(_loadShiftInfo, 60000);
 
         var handoffBtn = _el('btnHandoff');

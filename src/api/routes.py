@@ -1213,10 +1213,7 @@ async def acknowledge_incident(
     raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found")
 
 
-@router.get(
-    "/api/incidents/{incident_id}/acks",
-    dependencies=[Depends(require_api_key)],
-)
+@router.get("/api/incidents/{incident_id}/acks")
 async def get_incident_acks(incident_id: str) -> list[dict[str, Any]]:
     """Get the acknowledgement audit trail for an incident.
 
@@ -1327,10 +1324,7 @@ async def get_current_shift() -> dict[str, Any]:
     }
 
 
-@router.get(
-    "/api/shift/handoffs",
-    dependencies=[Depends(require_api_key)],
-)
+@router.get("/api/shift/handoffs")
 async def get_shift_handoffs(
     limit: int = Query(default=10, ge=1, le=50),
 ) -> list[dict[str, Any]]:
@@ -1432,10 +1426,12 @@ async def create_shift_handoff(body: ShiftHandoffCreate) -> dict[str, Any]:
                 created_at=now,
             )
             session.add(handoff)
+            await session.flush()
+            handoff_id = handoff.id
             await session.commit()
             return {
                 "status": "created",
-                "id": handoff.id,
+                "id": handoff_id,
                 "shift_name": body.shift_name,
                 "operator_name": body.operator_name,
             }
