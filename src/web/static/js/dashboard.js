@@ -64,6 +64,7 @@
     function _buildAlertCard(alert) {
         var card = document.createElement('div');
         card.className = 'alert-card sev-' + (alert.classification || 'INFO');
+        if (alert._acked) card.classList.add('acknowledged');
         card.dataset.id = alert.id || '';
         card.dataset.classification = alert.classification || '';
 
@@ -132,11 +133,12 @@
             });
         }
 
-        // Acknowledge handler
+        // Acknowledge handler — persist in alert data so tab switches preserve state
         var ackBtn = card.querySelector('.btn-ack');
         if (ackBtn) {
             ackBtn.addEventListener('click', function (e) {
                 e.stopPropagation();
+                alert._acked = true;
                 card.classList.add('acknowledged');
                 card.classList.remove('expanded');
             });

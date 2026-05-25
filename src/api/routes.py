@@ -1468,8 +1468,11 @@ async def get_topology() -> dict[str, Any]:
         "KKT-Core-01": 1,
         "KKT-Core-02": 1,
         "KKT-Core-03": 1,
+        "KKT-Core-3": 1,
         "DHK-Core-03": 2,
+        "DHK-Core-2-Agg": 2,
         "COX-Core-01": 2,
+        "COX-Core-3": 2,
         "COX-Core-03": 2,
         "DHK-Core-02": 2,
     }
@@ -1490,13 +1493,33 @@ async def get_topology() -> dict[str, Any]:
                 }
             )
 
-    # Build link list from topology upstreams
+    # Build link list from topology upstreams + add missing remote nodes
     links: list[dict[str, Any]] = []
     seen_links: set[frozenset[str]] = set()
     for _ip, topo in NETWORK_TOPOLOGY.items():
         for bundle, link in topo.upstreams.items():
             remote_topo = NETWORK_TOPOLOGY.get(link.remote_device_ip)
-            remote_name = remote_topo.name if remote_topo else link.remote_device_ip
+            if remote_topo:
+                remote_name = remote_topo.name
+            else:
+                remote_dev = DEVICE_MAP.get(link.remote_device_ip)
+                remote_name = remote_dev.name if remote_dev else link.remote_device_ip
+
+            if remote_name not in node_ids:
+                node_ids.add(remote_name)
+                remote_dev = DEVICE_MAP.get(link.remote_device_ip)
+                nodes.append(
+                    {
+                        "id": remote_name,
+                        "name": remote_name,
+                        "ip": link.remote_device_ip,
+                        "location": remote_dev.location if remote_dev else "",
+                        "platform": remote_dev.platform if remote_dev else "",
+                        "level": _level_map.get(remote_name, 2),
+                        "status": "unknown",
+                    }
+                )
+
             key = frozenset([topo.name, remote_name, bundle])
             if key in seen_links:
                 continue
