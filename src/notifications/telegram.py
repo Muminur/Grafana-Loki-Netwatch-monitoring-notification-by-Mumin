@@ -40,7 +40,9 @@ _log = logging.getLogger(__name__)
 _TELEGRAM_API_BASE = "https://api.telegram.org"
 
 # Telegram bot tokens look like "123456789:ABCDEFghijklmnopqrstuvwxyz-_"
-_TELEGRAM_TOKEN_RE = re.compile(r"^\d+:[\w-]+$")
+_TELEGRAM_TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]+$")
+
+_MAX_TOKEN_LENGTH = 100  # real tokens are ~46 chars; reject anything longer
 
 _MAX_ATTEMPTS = 3
 _BASE_DELAY = 1.0  # seconds
@@ -48,7 +50,19 @@ _MAX_DELAY = 10.0  # seconds
 
 
 def _is_valid_telegram_token(token: str) -> bool:
-    """Return True if *token* matches the Telegram bot-token pattern."""
+    """Return True if *token* matches the Telegram bot-token pattern.
+
+    Checks:
+    1. Token length must not exceed ``_MAX_TOKEN_LENGTH`` (100 characters).
+    2. Token must match ``<numeric_id>:<alphanumeric_string>`` format.
+    """
+    if len(token) > _MAX_TOKEN_LENGTH:
+        _log.error(
+            "telegram_bot_token exceeds %d characters — rejected.",
+            _MAX_TOKEN_LENGTH,
+        )
+        return False
+
     return bool(_TELEGRAM_TOKEN_RE.match(token))
 
 

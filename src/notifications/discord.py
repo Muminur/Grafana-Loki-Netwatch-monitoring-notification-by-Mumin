@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import urllib.parse
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING
 
@@ -44,13 +45,36 @@ _DISCORD_WEBHOOK_RE = re.compile(
     r"^https://discord(?:app)?\.com/api/webhooks/[\w-]+/[\w-]+$"
 )
 
+_MAX_URL_LENGTH = 2048  # reject URLs longer than this
+
 _MAX_ATTEMPTS = 3
 _BASE_DELAY = 1.0  # seconds — first retry delay
 _MAX_DELAY = 10.0  # seconds — cap for exponential back-off
 
 
 def _is_valid_discord_url(url: str) -> bool:
-    """Return True if *url* is a well-formed Discord webhook URL."""
+    """Return True if *url* is a well-formed Discord webhook URL.
+
+    Checks:
+    1. URL length must not exceed ``_MAX_URL_LENGTH`` (2048 characters).
+    2. Scheme must be HTTPS (validated via ``urllib.parse.urlparse``).
+    3. Host and path must match the Discord webhook pattern.
+    """
+    if len(url) > _MAX_URL_LENGTH:
+        _log.error(
+            "discord_webhook_url exceeds %d characters — rejected.",
+            _MAX_URL_LENGTH,
+        )
+        return False
+
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        _log.error(
+            "discord_webhook_url uses scheme %r instead of 'https' — rejected.",
+            parsed.scheme,
+        )
+        return False
+
     return bool(_DISCORD_WEBHOOK_RE.match(url))
 
 

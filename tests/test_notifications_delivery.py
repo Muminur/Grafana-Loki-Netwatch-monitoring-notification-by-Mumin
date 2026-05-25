@@ -1251,3 +1251,307 @@ class TestTelegramEmptyChatId:
             "chat_id" in r.message.lower() or "chat_id" in r.message
             for r in caplog.records
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Discord — URL length limit
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestDiscordUrlLengthLimit:
+    """Discord webhook URLs longer than 2048 characters are rejected."""
+
+    @pytest.mark.asyncio
+    async def test_url_exceeding_2048_chars_rejected(self) -> None:
+        """A URL longer than 2048 characters -> False without HTTP call."""
+        from src.notifications.discord import send_discord_alert
+
+        long_url = "https://discord.com/api/webhooks/123/" + "a" * 2048
+        settings = _make_settings(discord_webhook_url=long_url)
+
+        with patch(_DISCORD_PATCH) as mock_cls:
+            result = await send_discord_alert(_make_enriched(), settings)
+
+        assert result is False
+        mock_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_url_exceeding_2048_chars_logs_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A URL over 2048 chars emits an ERROR log mentioning the limit."""
+        from src.notifications.discord import send_discord_alert
+
+        long_url = "https://discord.com/api/webhooks/123/" + "a" * 2048
+        settings = _make_settings(discord_webhook_url=long_url)
+
+        with patch(_DISCORD_PATCH) as mock_cls, caplog.at_level(logging.ERROR):
+            result = await send_discord_alert(_make_enriched(), settings)
+
+        assert result is False
+        mock_cls.assert_not_called()
+        assert any(
+            "2048" in r.message or "exceeds" in r.message.lower()
+            for r in caplog.records
+            if r.levelno == logging.ERROR
+        )
+
+    @pytest.mark.asyncio
+    async def test_url_at_exactly_2048_chars_accepted(self) -> None:
+        """A URL at exactly 2048 characters is accepted (limit is >2048)."""
+        from src.notifications.discord import send_discord_alert
+
+        # Build a valid-looking URL that is exactly 2048 chars.
+        prefix = "https://discord.com/api/webhooks/123/"
+        padding = "a" * (2048 - len(prefix))
+        url = prefix + padding
+        assert len(url) == 2048
+
+        settings = _make_settings(discord_webhook_url=url)
+        mock_response = _make_response(204)
+        mock_client = _make_mock_client(mock_response)
+
+        with patch(_DISCORD_PATCH, return_value=mock_client):
+            result = await send_discord_alert(_make_enriched(), settings)
+
+        assert result is True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Discord — HTTPS-only scheme validation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestDiscordHttpsOnlyScheme:
+    """Only HTTPS URLs are accepted for the Discord webhook."""
+
+    @pytest.mark.asyncio
+    async def test_http_scheme_rejected(self) -> None:
+        """HTTP (non-TLS) webhook URL -> False without HTTP call."""
+        from src.notifications.discord import send_discord_alert
+
+        settings = _make_settings(
+            discord_webhook_url="http://discord.com/api/webhooks/123/abc"
+        )
+
+        with patch(_DISCORD_PATCH) as mock_cls:
+            result = await send_discord_alert(_make_enriched(), settings)
+
+        assert result is False
+        mock_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_http_scheme_logs_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """HTTP scheme emits an ERROR log mentioning the scheme."""
+        from src.notifications.discord import send_discord_alert
+
+        settings = _make_settings(
+            discord_webhook_url="http://discord.com/api/webhooks/123/abc"
+        )
+
+        with patch(_DISCORD_PATCH) as mock_cls, caplog.at_level(logging.ERROR):
+            result = await send_discord_alert(_make_enriched(), settings)
+
+        assert result is False
+        mock_cls.assert_not_called()
+        assert any(
+            "https" in r.message.lower() or "scheme" in r.message.lower()
+            for r in caplog.records
+            if r.levelno == logging.ERROR
+        )
+
+    @pytest.mark.asyncio
+    async def test_ftp_scheme_rejected(self) -> None:
+        """FTP scheme -> False."""
+        from src.notifications.discord import send_discord_alert
+
+        settings = _make_settings(
+            discord_webhook_url="ftp://discord.com/api/webhooks/123/abc"
+        )
+
+        with patch(_DISCORD_PATCH) as mock_cls:
+            result = await send_discord_alert(_make_enriched(), settings)
+
+        assert result is False
+        mock_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_scheme_rejected(self) -> None:
+        """URL with no scheme -> False."""
+        from src.notifications.discord import send_discord_alert
+
+        settings = _make_settings(
+            discord_webhook_url="discord.com/api/webhooks/123/abc"
+        )
+
+        with patch(_DISCORD_PATCH) as mock_cls:
+            result = await send_discord_alert(_make_enriched(), settings)
+
+        assert result is False
+        mock_cls.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Telegram — token length limit
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestTelegramTokenLengthLimit:
+    """Telegram bot tokens longer than 100 characters are rejected."""
+
+    @pytest.mark.asyncio
+    async def test_token_exceeding_100_chars_rejected(self) -> None:
+        """A token longer than 100 characters -> False without HTTP call."""
+        from src.notifications.telegram import send_telegram_alert
+
+        long_token = "123456:" + "A" * 100  # 107 chars total
+        settings = _make_settings(
+            telegram_enabled=True,
+            telegram_bot_token=long_token,  # noqa: S106
+        )
+
+        with patch(_TELEGRAM_PATCH) as mock_cls:
+            result = await send_telegram_alert(_make_enriched(), settings)
+
+        assert result is False
+        mock_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_token_exceeding_100_chars_logs_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A token over 100 chars emits an ERROR log mentioning the limit."""
+        from src.notifications.telegram import send_telegram_alert
+
+        long_token = "123456:" + "A" * 100
+        settings = _make_settings(
+            telegram_enabled=True,
+            telegram_bot_token=long_token,  # noqa: S106
+        )
+
+        with patch(_TELEGRAM_PATCH) as mock_cls, caplog.at_level(logging.ERROR):
+            result = await send_telegram_alert(_make_enriched(), settings)
+
+        assert result is False
+        mock_cls.assert_not_called()
+        assert any(
+            "100" in r.message or "exceeds" in r.message.lower()
+            for r in caplog.records
+            if r.levelno == logging.ERROR
+        )
+
+    @pytest.mark.asyncio
+    async def test_token_at_exactly_100_chars_accepted(self) -> None:
+        """A token at exactly 100 characters is accepted."""
+        from src.notifications.telegram import send_telegram_alert
+
+        # Build a valid-looking token exactly 100 chars: "123456:" + 93 * 'A'
+        prefix = "123456:"
+        padding = "A" * (100 - len(prefix))
+        token = prefix + padding
+        assert len(token) == 100
+
+        settings = _make_settings(
+            telegram_enabled=True,
+            telegram_bot_token=token,  # noqa: S106
+        )
+        mock_response = _make_response(200)
+        mock_client = _make_mock_client(mock_response)
+
+        with patch(_TELEGRAM_PATCH, return_value=mock_client):
+            result = await send_telegram_alert(_make_enriched(), settings)
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_normal_length_token_accepted(self) -> None:
+        """A typical ~46-char token is accepted."""
+        from src.notifications.telegram import send_telegram_alert
+
+        settings = _make_settings(
+            telegram_enabled=True,
+            telegram_bot_token="123456789:ABCDEFghijklmnopqrstuvwxyz012",  # noqa: S106
+        )
+        mock_response = _make_response(200)
+        mock_client = _make_mock_client(mock_response)
+
+        with patch(_TELEGRAM_PATCH, return_value=mock_client):
+            result = await send_telegram_alert(_make_enriched(), settings)
+
+        assert result is True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Telegram — token format validation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestTelegramTokenFormatValidation:
+    """Telegram token must match numeric_id:alphanumeric_string format."""
+
+    @pytest.mark.asyncio
+    async def test_token_missing_colon_rejected(self) -> None:
+        """Token without colon separator -> False."""
+        from src.notifications.telegram import send_telegram_alert
+
+        settings = _make_settings(
+            telegram_enabled=True,
+            telegram_bot_token="123456ABCtoken",  # noqa: S106
+        )
+
+        with patch(_TELEGRAM_PATCH) as mock_cls:
+            result = await send_telegram_alert(_make_enriched(), settings)
+
+        assert result is False
+        mock_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_token_non_numeric_prefix_rejected(self) -> None:
+        """Token with non-numeric prefix -> False."""
+        from src.notifications.telegram import send_telegram_alert
+
+        settings = _make_settings(
+            telegram_enabled=True,
+            telegram_bot_token="abc:DEFtoken",  # noqa: S106
+        )
+
+        with patch(_TELEGRAM_PATCH) as mock_cls:
+            result = await send_telegram_alert(_make_enriched(), settings)
+
+        assert result is False
+        mock_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_token_with_spaces_rejected(self) -> None:
+        """Token containing spaces -> False."""
+        from src.notifications.telegram import send_telegram_alert
+
+        settings = _make_settings(
+            telegram_enabled=True,
+            telegram_bot_token="123456:ABC DEF token",  # noqa: S106
+        )
+
+        with patch(_TELEGRAM_PATCH) as mock_cls:
+            result = await send_telegram_alert(_make_enriched(), settings)
+
+        assert result is False
+        mock_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_valid_token_with_hyphen_and_underscore(self) -> None:
+        """Token with hyphens and underscores in the suffix is valid."""
+        from src.notifications.telegram import send_telegram_alert
+
+        settings = _make_settings(
+            telegram_enabled=True,
+            telegram_bot_token="123456:ABC-test_token",  # noqa: S106
+        )
+        mock_response = _make_response(200)
+        mock_client = _make_mock_client(mock_response)
+
+        with patch(_TELEGRAM_PATCH, return_value=mock_client):
+            result = await send_telegram_alert(_make_enriched(), settings)
+
+        assert result is True
