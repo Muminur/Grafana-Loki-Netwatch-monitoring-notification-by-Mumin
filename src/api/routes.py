@@ -8,6 +8,7 @@ Milestone 8: DB-backed /api/alerts with period filter; /api/alerts/count.
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import re
 import time
@@ -48,6 +49,9 @@ _alert_id_counter: itertools.count[int] = itertools.count(1)
 
 # DB engine — set during lifespan startup via set_db_engine()
 _db_engine: AsyncEngine | None = None
+
+# Background task references — set during lifespan startup via set_background_tasks()
+_background_tasks: dict[str, asyncio.Task[None]] = {}
 
 # ---------------------------------------------------------------------------
 # Input validation allowlists
@@ -222,6 +226,20 @@ def set_db_engine(engine: AsyncEngine) -> None:
     """
     global _db_engine  # noqa: PLW0603
     _db_engine = engine
+
+
+def set_background_tasks(tasks: dict[str, asyncio.Task[None]]) -> None:
+    """Register background task references for health-check liveness reporting.
+
+    Called from ``main.py`` lifespan after background tasks are created.
+
+    Parameters
+    ----------
+    tasks:
+        Mapping of task name to its ``asyncio.Task`` handle.
+    """
+    global _background_tasks  # noqa: PLW0603
+    _background_tasks = tasks
 
 
 def get_maintenance_store() -> deque[dict[str, Any]]:
@@ -602,8 +620,10 @@ async def health() -> dict[str, Any]:
     -------
     dict
         ``status``, ``version``, ``uptime_seconds``, ``alerts_processed``,
-        ``active_connections``, and ``database_ok``.
+        ``active_connections``, ``database_ok``, and ``background_tasks``.
         ``status`` is ``"degraded"`` when the DB check fails.
+        ``background_tasks`` maps task names to ``True`` (running) or
+        ``False`` (stopped/crashed).
     """
     uptime = time.monotonic() - _APP_START
     database_ok = False
@@ -618,6 +638,8 @@ async def health() -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             database_ok = False
 
+    bg_status = {name: not task.done() for name, task in _background_tasks.items()}
+
     status = "ok" if database_ok or _db_engine is None else "degraded"
     return {
         "status": status,
@@ -626,6 +648,7 @@ async def health() -> dict[str, Any]:
         "alerts_processed": _alerts_processed,
         "active_connections": _active_connections,
         "database_ok": database_ok,
+        "background_tasks": bg_status,
     }
 
 
