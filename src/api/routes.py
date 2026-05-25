@@ -345,7 +345,11 @@ async def _resolve_noise_alerts_on_startup(engine: AsyncEngine) -> int:
             update(AlertLog)
             .where(AlertLog.mnemonic.in_(sorted(_SILENT_FAULT_MNEMONICS)))
             .where(AlertLog.resolved_at.is_(None))
-            .values(resolved_at=now, resolution_reason="noise_toggle_enabled")
+            .values(
+                classification="NOISE",
+                resolved_at=now,
+                resolution_reason="noise_toggle_enabled",
+            )
         )
         result = cast("CursorResult[Any]", await session.execute(stmt))
         await session.commit()
