@@ -184,7 +184,10 @@ NETWORK_TOPOLOGY: dict[str, DeviceTopology] = {
             "Bundle-Ether150": BackhaulLink(
                 description="KKT-Core-02 → KKT-Core-01",
                 remote_device_ip="192.168.202.2",
-                members=[],
+                members=[
+                    "HundredGigE0/0/0/0",
+                    "HundredGigE0/0/0/1",
+                ],
             ),
         },
     ),
@@ -195,13 +198,33 @@ NETWORK_TOPOLOGY: dict[str, DeviceTopology] = {
             "Bundle-Ether400": BackhaulLink(
                 description="DHK-Core-03 → KKT-Core-01",
                 remote_device_ip="192.168.202.2",
-                members=[],
+                members=[
+                    "TenGigE0/0/0/0",
+                    "TenGigE0/0/0/1",
+                    "TenGigE0/0/0/2",
+                    "TenGigE0/0/0/4",
+                    "TenGigE0/0/0/5",
+                    "TenGigE0/0/0/8",
+                ],
             ),
             "Bundle-Ether150": BackhaulLink(
                 description="DHK-Core-03 → COX-Core-03",
                 remote_device_ip="192.168.200.26",
-                members=[],
+                members=[
+                    "TenGigE0/0/0/3",
+                    "TenGigE0/0/0/6",
+                    "TenGigE0/0/0/7",
+                    "TenGigE0/0/0/9",
+                    "TenGigE0/0/0/10",
+                    "TenGigE0/0/0/11",
+                    "TenGigE0/0/0/12/0",
+                    "TenGigE0/0/0/12/1",
+                    "TenGigE0/0/0/12/2",
+                    "TenGigE0/0/0/13/0",
+                    "TenGigE0/0/0/13/2",
+                ],
             ),
+            # Bundle-Ether100 physical members not in extracted running configs
             "Bundle-Ether100": BackhaulLink(
                 description="DHK-Core-03 → DHK-Core-02",
                 remote_device_ip="192.168.200.4",
@@ -216,7 +239,9 @@ NETWORK_TOPOLOGY: dict[str, DeviceTopology] = {
             "Bundle-Ether13": BackhaulLink(
                 description="COX-Core-01 → COX-Core-03",
                 remote_device_ip="192.168.200.26",
-                members=[],
+                members=[
+                    "HundredGigE0/7/0/0",
+                ],
             ),
         },
     ),

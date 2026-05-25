@@ -388,9 +388,10 @@
             return '<div class="incident-card">'
                 + '<div class="incident-title">' + _esc(inc.title || 'Incident ' + inc.id) + '</div>'
                 + '<div class="incident-meta">'
-                + (inc.device ? inc.device + ' · ' : '')
+                + (inc.device ? _esc(inc.device) + ' · ' : '')
                 + (inc.started_at ? _formatTimestamp(inc.started_at) : '')
                 + '</div>'
+                + (inc.client ? '<div class="incident-client">' + _esc(inc.client) + '</div>' : '')
                 + '</div>';
         }).join('');
     }

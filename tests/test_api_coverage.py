@@ -106,6 +106,7 @@ def _make_enriched(
     as_name: str = "",
     classification: str = "CRITICAL",
     rule_id: str = "",
+    client_name: str = "",
 ) -> MagicMock:
     enriched = MagicMock()
     enriched.device_name = device_name
@@ -116,7 +117,7 @@ def _make_enriched(
     enriched.as_name = as_name
     enriched.classification = classification
     enriched.event_type = ""
-    enriched.client_name = ""
+    enriched.client_name = client_name
     enriched.vrf = ""
     enriched.rule_id = rule_id
     enriched.parsed = MagicMock()
@@ -1033,6 +1034,29 @@ def test_add_alert_to_store_creates_and_merges_critical_incident(
     assert incs[0]["alert_count"] == 2
 
 
+def test_add_alert_to_store_incident_includes_client(
+    clean_stores: None,
+) -> None:
+    """Incident created by add_alert_to_store includes client_name from enriched log."""
+    routes_mod._hardware_defects_as_noise = False  # noqa: SLF001
+    enriched = _make_enriched(
+        device_name="DHK-Core-3",
+        source_ip="192.168.200.6",
+        mnemonic="RX_FAULT",
+        message="Interface TenGigE0/0/0/0, Detected Remote Fault",
+        interface_name="TenGigE0/0/0/0",
+        classification="CRITICAL",
+        client_name="DHK-KKT-BH-LINK-02-VIA-F@H-KKT-Te0/1/0/23-121492",
+    )
+    correlated = _make_correlated(incident_id="INC-CLIENT-1")
+    routes_mod.add_alert_to_store(enriched, correlated)
+    incs = [
+        i for i in routes_mod._incidents_store if i["id"] == "INC-CLIENT-1"
+    ]  # noqa: SLF001
+    assert len(incs) == 1
+    assert incs[0]["client"] == "DHK-KKT-BH-LINK-02-VIA-F@H-KKT-Te0/1/0/23-121492"
+
+
 @pytest.mark.asyncio
 async def test_add_alert_to_store_bgp_up_schedules_db_task(
     clean_stores: None, async_db: Any
@@ -1122,3 +1146,145 @@ async def test_add_alert_to_store_bgp_up_schedules_db_task(
         ).scalar_one()
     assert row.resolved_at is not None
     assert row.resolution_reason == "bgp_up_inferred"
+
+
+# ---------------------------------------------------------------------------
+# Hardware-noise toggle — BUG regression tests (RED phase)
+# ---------------------------------------------------------------------------
+# Bug 1: get_incidents() returns _incidents_store as-is without filtering
+#         noise incidents even when _hardware_defects_as_noise is True.
+# Bug 2: add_alert_to_store creates an incident via the correlated.incident_id
+#         path even after the alert has been reclassified as NOISE.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_incidents_filters_noise_when_toggle_enabled(
+    client: AsyncClient, clean_stores: None
+) -> None:
+    """GET /api/incidents must exclude NOISE-classified incidents when the
+    hardware-defects-as-noise toggle is enabled.
+
+    BUG: _incidents_store is returned as-is (line 863-864 in routes.py)
+    without filtering out RX_FAULT/SIGNAL/RFI incidents, so backbone hardware
+    fault incidents appear in the Active Incidents panel even when the operator
+    has toggled them off.
+
+    This test must FAIL until get_incidents() applies the noise filter.
+    """
+    routes_mod._hardware_defects_as_noise = True  # noqa: SLF001
+    routes_mod._incidents_store.append(  # noqa: SLF001
+        {
+            "id": "INC-NOISE-RX",
+            "title": "RXFault-DHK-Core-3 - TGE0/0/0/0 - Remote Fault",
+            "severity": "NOISE",
+            "device": "DHK-Core-3",
+            "mnemonic": "RX_FAULT",
+            "message": "Interface TenGigE0/0/0/0, Detected Remote Fault",
+            "status": "active",
+            "alert_count": 1,
+        }
+    )
+    routes_mod._incidents_store.append(  # noqa: SLF001
+        {
+            "id": "INC-BGP-DOWN",
+            "title": "ADJCHANGE — EQ-RTR-01 DOWN - Orange",
+            "severity": "CRITICAL",
+            "device": "EQ-RTR-01",
+            "mnemonic": "ADJCHANGE",
+            "message": "neighbor X Down - reason",
+            "status": "active",
+            "alert_count": 1,
+        }
+    )
+    async with client as c:
+        resp = await c.get("/api/incidents")
+    assert resp.status_code == 200
+    body = resp.json()
+    # The RX_FAULT noise incident must NOT appear in the response.
+    noise_ids = [i["id"] for i in body if i["mnemonic"] == "RX_FAULT"]
+    assert "INC-NOISE-RX" not in noise_ids, (
+        "BUG: RX_FAULT incident appeared in /api/incidents "
+        "despite hardware_defects_as_noise=True"
+    )
+    # The legitimate ADJCHANGE incident MUST still appear.
+    assert any(i["id"] == "INC-BGP-DOWN" for i in body)
+
+
+@pytest.mark.asyncio
+async def test_noise_toggle_purges_existing_incidents(
+    client: AsyncClient, clean_stores: None
+) -> None:
+    """POST /api/settings/hardware-noise?enabled=true must remove any
+    existing RX_FAULT/SIGNAL/RFI incidents from _incidents_store.
+
+    BUG: The POST handler (routes.py ~line 1152) only sets the flag and
+    persists it to DB — it never purges incidents that are already in
+    _incidents_store with a noise mnemonic.  Enabling the toggle after
+    incidents have been created leaves stale noise incidents visible.
+
+    This test must FAIL until the POST handler purges stale incidents.
+    """
+    routes_mod._incidents_store.append(  # noqa: SLF001
+        {
+            "id": "INC-STALE-RX",
+            "title": "RXFault-DHK-Core-3 - TGE0/0/0/0 - Remote Fault",
+            "severity": "CRITICAL",
+            "device": "DHK-Core-3",
+            "mnemonic": "RX_FAULT",
+            "message": "Interface TenGigE0/0/0/0, Detected Remote Fault",
+            "status": "active",
+            "alert_count": 3,
+        }
+    )
+    async with client as c:
+        resp = await c.post("/api/settings/hardware-noise", params={"enabled": True})
+    assert resp.status_code == 200
+    # After enabling the toggle the stale RX_FAULT incident must be gone.
+    remaining_ids = [i["id"] for i in routes_mod._incidents_store]  # noqa: SLF001
+    assert "INC-STALE-RX" not in remaining_ids, (
+        "BUG: enabling hardware_defects_as_noise did not purge existing "
+        "RX_FAULT incident from _incidents_store"
+    )
+
+
+def test_add_alert_to_store_skips_incident_for_noise_reclassified(
+    clean_stores: None,
+) -> None:
+    """add_alert_to_store must NOT create an incident when the alert has been
+    reclassified as NOISE via the hardware-defects-as-noise toggle, even
+    when correlated.incident_id is non-empty.
+
+    BUG: The incident-creation guard at routes.py ~line 501-503 checks:
+        alert["classification"] == "CRITICAL"
+        OR (correlated.incident_id and not correlated.is_symptom)
+    The NOISE reclassification at line 407 sets alert["classification"]="NOISE",
+    which neutralises the first condition — but the second condition fires
+    whenever correlated.incident_id is non-empty, bypassing the noise filter
+    entirely and inserting a noise incident into _incidents_store.
+
+    TenGigE0/0/0/0 IS a member of Bundle-Ether400 on 192.168.200.11
+    (DHK-Core-03), so is_backhaul_member() returns True and the
+    reclassification is expected to trigger.
+
+    This test must FAIL until the incident-creation guard is fixed.
+    """
+    routes_mod._hardware_defects_as_noise = True  # noqa: SLF001
+    enriched = _make_enriched(
+        device_name="DHK-Core-3",
+        source_ip="192.168.200.11",
+        mnemonic="RX_FAULT",
+        message="Interface TenGigE0/0/0/0, Detected Remote Fault",
+        interface_name="TenGigE0/0/0/0",
+        classification="CRITICAL",
+    )
+    # Non-empty incident_id simulates the correlator having assigned an ID,
+    # which is the bypass path that triggers the bug.
+    correlated = _make_correlated(incident_id="INC-NOISE-1", is_symptom=False)
+    routes_mod.add_alert_to_store(enriched, correlated)
+    assert not any(  # noqa: SLF001
+        i["id"] == "INC-NOISE-1" for i in routes_mod._incidents_store
+    ), (
+        "BUG: noise-reclassified RX_FAULT alert created incident INC-NOISE-1 "
+        "via the correlated.incident_id bypass path"
+    )
