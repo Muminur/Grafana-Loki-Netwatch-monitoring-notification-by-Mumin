@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12"]
 
     steps:
@@ -47,18 +47,13 @@ jobs:
       - name: Type check (mypy)
         run: mypy src/
 
-      - name: Unit and integration tests
-        run: pytest -vv
-
-      - name: End-to-end tests
-        run: pytest tests/e2e -vv
-
-      - name: Coverage
+      - name: Test + Coverage
         run: |
-          coverage run -m pytest
+          coverage run -m pytest -vv
           coverage report --fail-under=85
 
       - name: Security gate
+        if: runner.os != 'Windows'
         run: |
           ! grep -rn --include=*.py "shell=True" src/ || { echo "BANNED: shell=True"; exit 1; }
           ! grep -rn --include=*.py "os\.system(" src/ || { echo "BANNED: os.system"; exit 1; }
