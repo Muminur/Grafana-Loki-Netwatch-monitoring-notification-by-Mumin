@@ -1457,6 +1457,25 @@ async def get_topology() -> dict[str, Any]:
         ``nodes`` — list of device nodes with id, name, location, level.
         ``links`` — list of {source, target, bundle, description} dicts.
     """
+    # Compute live device status from recent alerts
+    _dev_severity: dict[str, str] = {}
+    _dev_crit_ifaces: dict[str, set[str]] = {}
+    for alert in _alerts_store:
+        dev = alert.get("device", "")
+        cls = alert.get("classification", "")
+        if not dev:
+            continue
+        cur = _dev_severity.get(dev, "ok")
+        if cls == "CRITICAL" and cur != "critical":
+            _dev_severity[dev] = "critical"
+            _dev_crit_ifaces.setdefault(dev, set()).add(
+                alert.get("interface", "") or alert.get("interface_name", "")
+            )
+        elif cls == "WARNING" and cur not in ("critical",):
+            _dev_severity[dev] = "warning"
+        elif cur == "ok":
+            _dev_severity[dev] = "ok"
+
     # Build node list from topology data (devices that have topology records)
     node_ids: set[str] = set()
     nodes: list[dict[str, Any]] = []
@@ -1489,7 +1508,7 @@ async def get_topology() -> dict[str, Any]:
                     "location": device_info.location if device_info else "",
                     "platform": device_info.platform if device_info else "",
                     "level": _level_map.get(topo.name, 2),
-                    "status": "unknown",
+                    "status": _dev_severity.get(topo.name, "unknown"),
                 }
             )
 
@@ -1516,7 +1535,7 @@ async def get_topology() -> dict[str, Any]:
                         "location": remote_dev.location if remote_dev else "",
                         "platform": remote_dev.platform if remote_dev else "",
                         "level": _level_map.get(remote_name, 2),
-                        "status": "unknown",
+                        "status": _dev_severity.get(remote_name, "unknown"),
                     }
                 )
 
@@ -1524,6 +1543,22 @@ async def get_topology() -> dict[str, Any]:
             if key in seen_links:
                 continue
             seen_links.add(key)
+            link_status = "unknown"
+            src_sev = _dev_severity.get(topo.name)
+            tgt_sev = _dev_severity.get(remote_name)
+            if src_sev or tgt_sev:
+                crit_ifaces = _dev_crit_ifaces.get(topo.name, set())
+                member_hit = any(m in crit_ifaces for m in link.members)
+                if member_hit:
+                    link_status = "critical"
+                elif "critical" in (src_sev, tgt_sev) or "warning" in (
+                    src_sev,
+                    tgt_sev,
+                ):
+                    link_status = "warning"
+                else:
+                    link_status = "ok"
+
             links.append(
                 {
                     "source": topo.name,
@@ -1531,7 +1566,7 @@ async def get_topology() -> dict[str, Any]:
                     "bundle": bundle,
                     "description": link.description,
                     "members": len(link.members),
-                    "status": "unknown",
+                    "status": link_status,
                 }
             )
 
