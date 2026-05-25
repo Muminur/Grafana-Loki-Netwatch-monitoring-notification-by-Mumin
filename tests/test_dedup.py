@@ -465,6 +465,127 @@ class TestDedupEviction:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DedupEngine input validation tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestDedupValidation:
+    """Tests for DedupEngine constructor input validation."""
+
+    def test_zero_window_seconds_raises(self) -> None:
+        """window_seconds=0 must raise ValueError."""
+        import pytest
+
+        from src.core.dedup import DedupEngine
+
+        with pytest.raises(ValueError, match="window_seconds must be positive"):
+            DedupEngine(window_seconds=0)
+
+    def test_negative_window_seconds_raises(self) -> None:
+        """Negative window_seconds must raise ValueError."""
+        import pytest
+
+        from src.core.dedup import DedupEngine
+
+        with pytest.raises(
+            ValueError, match="window_seconds must be positive, got -10"
+        ):
+            DedupEngine(window_seconds=-10)
+
+    def test_positive_window_seconds_accepted(self) -> None:
+        """Positive window_seconds should work without error."""
+        from src.core.dedup import DedupEngine
+
+        engine = DedupEngine(window_seconds=1)
+        assert engine._window_s == 1.0  # noqa: SLF001
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DedupEngine eviction logging tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestDedupEvictionLogging:
+    """Tests that eviction logs purged entry counts at DEBUG level."""
+
+    def test_eviction_logs_purge_count(self) -> None:
+        """Eviction of stale entries logs the count at DEBUG level."""
+        import logging
+        from contextlib import contextmanager
+        from unittest.mock import patch as mock_patch
+
+        from src.core.dedup import DedupEngine
+
+        @contextmanager
+        def _capture(
+            logger_name: str, level: int = logging.DEBUG
+        ):  # type: ignore[misc]
+            records: list[logging.LogRecord] = []
+            handler = logging.Handler()
+            handler.emit = lambda r: records.append(r)  # type: ignore[assignment]
+            lgr = logging.getLogger(logger_name)
+            lgr.addHandler(handler)
+            old = lgr.level
+            lgr.setLevel(level)
+            try:
+                yield records
+            finally:
+                lgr.removeHandler(handler)
+                lgr.setLevel(old)
+
+        engine = DedupEngine(window_seconds=10)
+
+        ts_old = datetime(2026, 5, 22, 10, 0, 0, tzinfo=_UTC6)
+        ts_new = datetime(2026, 5, 22, 11, 0, 0, tzinfo=_UTC6)
+
+        # Seed with an old event
+        old_parsed = _make_parsed_log(
+            mnemonic="UPDOWN",
+            message="Interface TenGigE0/0/0/0, changed state to Down",
+            facility="PKT_INFRA",
+            subfacility="LINK",
+            timestamp=ts_old,
+        )
+        old_enriched = _make_enriched(
+            bgp_neighbor="",
+            interface_name="TenGigE0/0/0/0",
+            parsed=old_parsed,
+        )
+        engine.should_notify(old_enriched)
+
+        # Set call count to trigger eviction on next call
+        engine._call_count = engine._EVICT_INTERVAL - 1  # noqa: SLF001
+
+        new_parsed = _make_parsed_log(
+            mnemonic="UPDOWN",
+            message="Interface TenGigE0/0/0/1, changed state to Down",
+            facility="PKT_INFRA",
+            subfacility="LINK",
+            timestamp=ts_new,
+        )
+        new_enriched = _make_enriched(
+            bgp_neighbor="",
+            interface_name="TenGigE0/0/0/1",
+            parsed=new_parsed,
+        )
+
+        import time
+
+        mono_now = time.monotonic()
+        with (
+            _capture("src.core.dedup", logging.DEBUG) as records,
+            mock_patch("src.core.dedup.time") as mock_time,
+        ):
+            mock_time.monotonic.return_value = mono_now + 1000.0
+            engine.should_notify(new_enriched)
+
+        # Should have logged the eviction count
+        evict_records = [r for r in records if "Evicted" in r.message]
+        assert len(evict_records) >= 1
+        assert "stale dedup entries" in evict_records[0].message
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # EscalationEngine tests
 # ─────────────────────────────────────────────────────────────────────────────
 
