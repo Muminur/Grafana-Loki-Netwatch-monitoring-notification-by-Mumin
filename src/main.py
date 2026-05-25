@@ -168,7 +168,9 @@ _escalation: EscalationEngine | None = None
 # ---------------------------------------------------------------------------
 
 _WEB_DIR = Path(__file__).resolve().parent / "web"
+_APP_VERSION = "2.0"
 _templates = Jinja2Templates(directory=str(_WEB_DIR / "templates"))
+_templates.env.globals["app_version"] = _APP_VERSION
 
 
 # ---------------------------------------------------------------------------

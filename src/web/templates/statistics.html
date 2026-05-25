@@ -6,7 +6,7 @@
 
 <div class="page-header">
     <h1 class="page-title">
-        <span class="page-icon">◎</span> NETWORK STATISTICS
+        <span class="page-icon" role="img" aria-label="Statistics">◎</span> NETWORK STATISTICS
     </h1>
     <p class="page-subtitle">Performance metrics and alert analytics for BSCCL backbone</p>
 </div>
@@ -26,10 +26,10 @@
     <section class="panel stats-panel stats-health">
         <div class="panel-header">
             <span class="panel-title">
-                <span class="panel-icon">◈</span> NETWORK HEALTH SCORE
+                <span class="panel-icon" role="img" aria-hidden="true">◈</span> NETWORK HEALTH SCORE
             </span>
         </div>
-        <div class="stats-gauge-container">
+        <div class="stats-gauge-container" role="region" aria-label="Network health score chart">
             <canvas id="statsHealthGauge" width="300" height="200"
                     aria-label="Network health score gauge"></canvas>
             <div class="stats-health-value">
@@ -46,10 +46,10 @@
     </section>
 
     <!-- Alert Timeline Stacked Area -->
-    <section class="panel stats-panel stats-timeline">
+    <section class="panel stats-panel stats-timeline" role="region" aria-label="Alert timeline chart">
         <div class="panel-header">
             <span class="panel-title">
-                <span class="panel-icon">◎</span> ALERT TIMELINE
+                <span class="panel-icon" role="img" aria-hidden="true">◎</span> ALERT TIMELINE
             </span>
         </div>
         <canvas id="statsTimelineChart" width="600" height="200"
@@ -57,10 +57,10 @@
     </section>
 
     <!-- Category Donut -->
-    <section class="panel stats-panel stats-donut">
+    <section class="panel stats-panel stats-donut" role="region" aria-label="Alert category distribution chart">
         <div class="panel-header">
             <span class="panel-title">
-                <span class="panel-icon">⬡</span> ALERT CATEGORIES
+                <span class="panel-icon" role="img" aria-hidden="true">⬡</span> ALERT CATEGORIES
             </span>
         </div>
         <canvas id="statsCategoryDonut" width="280" height="200"
@@ -69,10 +69,10 @@
     </section>
 
     <!-- Top Devices Bar Chart -->
-    <section class="panel stats-panel stats-devices">
+    <section class="panel stats-panel stats-devices" role="region" aria-label="Top devices by alert count chart">
         <div class="panel-header">
             <span class="panel-title">
-                <span class="panel-icon">⚙</span> TOP DEVICES BY ALERTS
+                <span class="panel-icon" role="img" aria-hidden="true">⚙</span> TOP DEVICES BY ALERTS
             </span>
         </div>
         <canvas id="statsTopDevicesChart" width="600" height="200"
@@ -83,7 +83,7 @@
     <section class="panel stats-panel stats-summary">
         <div class="panel-header">
             <span class="panel-title">
-                <span class="panel-icon">⚠</span> PERIOD SUMMARY
+                <span class="panel-icon" role="img" aria-hidden="true">⚠</span> PERIOD SUMMARY
             </span>
         </div>
         <div class="summary-grid" id="statsSummaryGrid">
