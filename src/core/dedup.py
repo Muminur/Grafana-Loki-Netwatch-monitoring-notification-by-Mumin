@@ -243,9 +243,7 @@ class DedupEngine:
 
         # Bundle grouping: prune _bundle_seen
         bundle_cutoff = now_event_ts - (2 * self._bundle_window)
-        stale_bundles = [
-            k for k, ts in self._bundle_seen.items() if ts < bundle_cutoff
-        ]
+        stale_bundles = [k for k, ts in self._bundle_seen.items() if ts < bundle_cutoff]
         for k in stale_bundles:
             del self._bundle_seen[k]
 

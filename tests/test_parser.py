@@ -1,9 +1,9 @@
 """Tests for src.core.parser — all 4 IOS-XR syslog formats."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from unittest.mock import patch
 
-from src.core.parser import ParsedLog, _UTC6, parse_syslog
+from src.core.parser import _UTC6, ParsedLog, parse_syslog
 
 # ---------------------------------------------------------------------------
 # Format 1 — IOS-XR with +06 offset (EQ-RTR-01, DHK-Core-3)
@@ -355,7 +355,7 @@ def test_year_rollover_dec_to_jan_forward() -> None:
 
     with patch("src.core.parser.datetime") as mock_dt:
         mock_dt.now.return_value = fake_now
-        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)  # noqa: DTZ001
         result = parse_syslog(raw)
 
     assert result is not None
@@ -378,7 +378,7 @@ def test_year_rollover_jan_receives_dec_log() -> None:
 
     with patch("src.core.parser.datetime") as mock_dt:
         mock_dt.now.return_value = fake_now
-        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)  # noqa: DTZ001
         result = parse_syslog(raw)
 
     assert result is not None
@@ -400,7 +400,7 @@ def test_year_rollover_nov_receives_jan_forward() -> None:
 
     with patch("src.core.parser.datetime") as mock_dt:
         mock_dt.now.return_value = fake_now
-        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)  # noqa: DTZ001
         result = parse_syslog(raw)
 
     assert result is not None

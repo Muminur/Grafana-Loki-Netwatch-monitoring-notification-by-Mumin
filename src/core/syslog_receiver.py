@@ -409,9 +409,7 @@ class SyslogReceiver:
 
         # Suppress entries already delivered on the previous full-page poll.
         new_entries = [
-            (ts, line)
-            for ts, line in entries
-            if (ts, line) not in self._seen_at_cursor
+            (ts, line) for ts, line in entries if (ts, line) not in self._seen_at_cursor
         ]
         for _ts_ns, line in new_entries:
             await self._callback(line)

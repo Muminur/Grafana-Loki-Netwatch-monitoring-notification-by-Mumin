@@ -1121,9 +1121,9 @@ async def _stats_by_period(period_name: str, period_key: str) -> dict[str, Any]:
 
         start, end = _period_to_time_range(period_key)
         async with AsyncSession(_db_engine) as session:
-            stmt = select(
-                AlertLog.classification, func.count(AlertLog.id)
-            ).group_by(AlertLog.classification)
+            stmt = select(AlertLog.classification, func.count(AlertLog.id)).group_by(
+                AlertLog.classification
+            )
             if start is not None:
                 stmt = stmt.where(AlertLog.timestamp >= start)
             if end is not None:

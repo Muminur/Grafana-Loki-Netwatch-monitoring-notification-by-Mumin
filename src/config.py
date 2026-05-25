@@ -166,9 +166,7 @@ class Settings:
         )
     )
     web_host: str = field(default_factory=lambda: os.environ.get("WEB_HOST", "0.0.0.0"))
-    web_port: int = field(
-        default_factory=lambda: _safe_int("WEB_PORT", "8080")
-    )
+    web_port: int = field(default_factory=lambda: _safe_int("WEB_PORT", "8080"))
     discord_webhook_url: str = field(
         default_factory=lambda: os.environ.get("DISCORD_WEBHOOK_URL", ""),
         repr=False,

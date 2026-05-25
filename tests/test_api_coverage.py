@@ -809,10 +809,18 @@ async def test_stats_daily_and_weekly_count(
 ) -> None:
     """daily + weekly stats count matching classifications (848-850, 867-869)."""
     # Use a timestamp that is "now" so it falls within today and this week.
-    now_ts = datetime.now(routes_mod._BDT).replace(tzinfo=None).isoformat()  # noqa: SLF001
-    routes_mod._alerts_store.append({"classification": "CRITICAL", "timestamp": now_ts})  # noqa: SLF001
-    routes_mod._alerts_store.append({"classification": "INFO", "timestamp": now_ts})  # noqa: SLF001
-    routes_mod._alerts_store.append({"classification": "BOGUS", "timestamp": now_ts})  # noqa: SLF001
+    now_ts = (
+        datetime.now(routes_mod._BDT).replace(tzinfo=None).isoformat()
+    )  # noqa: SLF001
+    routes_mod._alerts_store.append(
+        {"classification": "CRITICAL", "timestamp": now_ts}
+    )  # noqa: SLF001
+    routes_mod._alerts_store.append(
+        {"classification": "INFO", "timestamp": now_ts}
+    )  # noqa: SLF001
+    routes_mod._alerts_store.append(
+        {"classification": "BOGUS", "timestamp": now_ts}
+    )  # noqa: SLF001
     async with client as c:
         daily = await c.get("/api/stats/daily")
         weekly = await c.get("/api/stats/weekly")

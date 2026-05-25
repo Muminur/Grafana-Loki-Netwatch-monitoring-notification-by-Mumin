@@ -536,5 +536,7 @@ async def test_cache_persists_across_sessions(engine: AsyncEngine) -> None:
     # Session 2: read back — must find the cached entry without any HTTP call
     async with factory() as session2:
         cached = await get_cached_as(session2, asn=64800)
-        assert cached is not None, "Cache entry was not committed — lost across sessions"
+        assert (
+            cached is not None
+        ), "Cache entry was not committed — lost across sessions"
         assert cached.name == "Persistent Org"
