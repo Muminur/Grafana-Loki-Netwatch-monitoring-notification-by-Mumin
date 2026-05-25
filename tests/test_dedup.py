@@ -125,18 +125,24 @@ class TestDedupEngine:
 
     def test_duplicate_after_window_allowed(self) -> None:
         """Same event after window expires → allowed again with reason 'new'."""
+        from unittest.mock import patch
+
         from src.core.dedup import DedupEngine
 
-        engine = DedupEngine(window_seconds=1)
+        engine = DedupEngine(window_seconds=10)
         enriched = _make_enriched()
 
-        engine.should_notify(enriched)  # prime
+        # Use a controllable monotonic clock so the test is deterministic and
+        # does not require real wall-clock delays (eliminates CI flakiness).
+        clock = {"t": 1000.0}
+        with patch("src.core.dedup.time.monotonic", side_effect=lambda: clock["t"]):
+            engine.should_notify(enriched)  # prime
 
-        import time
+            # Advance the monotonic clock past the 10-second window
+            clock["t"] = 1011.0
 
-        time.sleep(1.1)
+            allowed, reason = engine.should_notify(enriched)
 
-        allowed, reason = engine.should_notify(enriched)
         assert allowed is True
         assert reason == "new"
 
