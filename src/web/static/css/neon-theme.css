@@ -739,6 +739,14 @@ button { cursor: pointer; }
     color: var(--text-secondary);
 }
 
+.incident-client {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--neon-cyan, #00e5ff);
+    margin-top: 0.2rem;
+    opacity: 0.85;
+}
+
 .badge-critical {
     background: rgba(255, 0, 64, 0.15);
     border: 1px solid var(--neon-red-dim);
@@ -1407,9 +1415,10 @@ kbd {
     /* Active incidents — stretch to fill the left column at 4K */
     .incidents-list { max-height: calc(100vh - 200px); }
     .incident-card  { padding: 0.9rem 1.2rem; margin-bottom: 0.6rem; }
-    .incident-title { font-size: 0.95rem; }
-    .incident-meta  { font-size: 0.85rem; }
-    .badge-critical { font-size: 0.75rem; padding: 0.2rem 0.6rem; }
+    .incident-title  { font-size: 0.95rem; }
+    .incident-meta   { font-size: 0.85rem; }
+    .incident-client { font-size: 0.8rem; }
+    .badge-critical  { font-size: 0.75rem; padding: 0.2rem 0.6rem; }
 
     /* Severity counters across the top */
     .sev-count { font-size: 2.6rem; }

@@ -498,9 +498,13 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
 
                         loop.create_task(_resolve_with_logging())
 
-    if not is_recovery and (
-        alert["classification"] == "CRITICAL"
-        or (correlated.incident_id and not correlated.is_symptom)
+    if (
+        not is_recovery
+        and alert["classification"] != "NOISE"
+        and (
+            alert["classification"] == "CRITICAL"
+            or (correlated.incident_id and not correlated.is_symptom)
+        )
     ):
         inc_id = correlated.incident_id or f"ALERT-{alert['id']}"
         existing = next((i for i in _incidents_store if i["id"] == inc_id), None)
@@ -518,7 +522,7 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
                         interface_name=enriched.interface_name,
                         as_name=enriched.as_name,
                     ),
-                    "severity": enriched.classification,
+                    "severity": alert["classification"],
                     "device": enriched.device_name,
                     "mnemonic": enriched.parsed.mnemonic,
                     "message": enriched.parsed.message[:200],
@@ -861,6 +865,12 @@ async def get_incidents() -> list[dict[str, Any]]:
     a restart.
     """
     if _incidents_store:
+        if _hardware_defects_as_noise:
+            return [
+                inc
+                for inc in _incidents_store
+                if inc.get("mnemonic") not in _SILENT_FAULT_MNEMONICS
+            ]
         return list(_incidents_store)
 
     if _db_engine is None:
@@ -1150,6 +1160,12 @@ async def set_hardware_noise_setting(enabled: bool = True) -> dict[str, bool]:
     """
     global _hardware_defects_as_noise  # noqa: PLW0603
     _hardware_defects_as_noise = enabled
+    if enabled:
+        _incidents_store[:] = [
+            inc
+            for inc in _incidents_store
+            if inc.get("mnemonic") not in _SILENT_FAULT_MNEMONICS
+        ]
     if _db_engine is not None:
         try:
             from sqlalchemy.ext.asyncio import (
