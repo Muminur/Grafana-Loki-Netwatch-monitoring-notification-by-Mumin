@@ -25,8 +25,11 @@ Covers:
 
 from __future__ import annotations
 
+import logging
 import re
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 from src.core.correlator import CorrelatedEvent, CorrelationEngine
 from src.core.enricher import EnrichedLog
@@ -38,6 +41,29 @@ from src.data.topology import (
     get_downstream_devices,
     is_backhaul_member,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+
+@contextmanager
+def _capture_logs(
+    logger_name: str, level: int = logging.DEBUG
+) -> Generator[list[logging.LogRecord], None, None]:
+    """Capture log records emitted by *logger_name* at *level* or above."""
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = lambda record: records.append(record)  # type: ignore[assignment]
+    logger = logging.getLogger(logger_name)
+    logger.addHandler(handler)
+    old_level = logger.level
+    logger.setLevel(level)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+
 
 # ---------------------------------------------------------------------------
 # Topology module tests
@@ -724,3 +750,121 @@ class TestCorrelationWindowBoundary:
         result = engine.correlate(bgp_down)
         # Should be INDEPENDENT because the backhaul event is too old
         assert result.is_independent is True
+
+
+class TestIncidentMemoryBounds:
+    """Tests for the max_incidents cap on the CorrelationEngine."""
+
+    def test_default_max_incidents(self) -> None:
+        """Default max_incidents is 10,000."""
+        engine = CorrelationEngine()
+        assert engine._max_incidents == 10_000  # noqa: SLF001
+
+    def test_custom_max_incidents(self) -> None:
+        """max_incidents can be set via constructor."""
+        engine = CorrelationEngine(max_incidents=5)
+        assert engine._max_incidents == 5  # noqa: SLF001
+
+    def test_eviction_when_cap_reached(self) -> None:
+        """When max_incidents is reached, oldest incident is evicted."""
+        engine = CorrelationEngine(max_incidents=3)
+
+        # Manually inject 3 incidents to fill the cache
+        ids = []
+        for _i in range(3):
+            inc_id = engine._generate_incident_id()  # noqa: SLF001
+            engine._incidents[inc_id] = []  # noqa: SLF001
+            ids.append(inc_id)
+
+        assert len(engine._incidents) == 3  # noqa: SLF001
+
+        # Enforce the cap — this should evict the oldest
+        engine._enforce_incident_cap()  # noqa: SLF001
+
+        assert len(engine._incidents) == 2  # noqa: SLF001
+        # The first incident should be gone
+        assert ids[0] not in engine._incidents  # noqa: SLF001
+        # The remaining two should still be present
+        assert ids[1] in engine._incidents  # noqa: SLF001
+        assert ids[2] in engine._incidents  # noqa: SLF001
+
+    def test_eviction_cleans_device_incident_map(self) -> None:
+        """Eviction also removes entries from _device_incident."""
+        engine = CorrelationEngine(max_incidents=2)
+
+        # Inject 2 incidents and map them to device IPs
+        id1 = engine._generate_incident_id()  # noqa: SLF001
+        engine._incidents[id1] = []  # noqa: SLF001
+        engine._device_incident["192.168.0.1"] = id1  # noqa: SLF001
+
+        id2 = engine._generate_incident_id()  # noqa: SLF001
+        engine._incidents[id2] = []  # noqa: SLF001
+        engine._device_incident["192.168.0.2"] = id2  # noqa: SLF001
+
+        # Enforce cap — should evict id1
+        engine._enforce_incident_cap()  # noqa: SLF001
+
+        assert id1 not in engine._incidents  # noqa: SLF001
+        assert "192.168.0.1" not in engine._device_incident  # noqa: SLF001
+        assert id2 in engine._incidents  # noqa: SLF001
+        assert "192.168.0.2" in engine._device_incident  # noqa: SLF001
+
+    def test_eviction_logs_warning(self) -> None:
+        """Eviction logs a warning with the incident ID and cap value."""
+        engine = CorrelationEngine(max_incidents=1)
+        inc_id = engine._generate_incident_id()  # noqa: SLF001
+        engine._incidents[inc_id] = []  # noqa: SLF001
+
+        with _capture_logs("src.core.correlator", logging.WARNING) as records:
+            engine._enforce_incident_cap()  # noqa: SLF001
+
+        assert len(records) >= 1
+        assert "Incident cache full" in records[0].message
+        assert inc_id in records[0].message
+
+    def test_no_eviction_below_cap(self) -> None:
+        """No eviction occurs when incident count is below the cap."""
+        engine = CorrelationEngine(max_incidents=10)
+
+        for _ in range(5):
+            inc_id = engine._generate_incident_id()  # noqa: SLF001
+            engine._incidents[inc_id] = []  # noqa: SLF001
+
+        assert len(engine._incidents) == 5  # noqa: SLF001
+        engine._enforce_incident_cap()  # noqa: SLF001
+        assert len(engine._incidents) == 5  # noqa: SLF001
+
+    def test_purge_still_works_alongside_cap(self) -> None:
+        """The 24-hour purge logic is unaffected by the cap feature."""
+        engine = CorrelationEngine(max_incidents=100)
+
+        # Inject an old incident with events older than 24 hours
+        inc_id = engine._generate_incident_id()  # noqa: SLF001
+        old_ts = datetime.now(_UTC6) - timedelta(hours=25)
+        old_parsed = _make_parsed(ts=old_ts)
+        old_enriched = EnrichedLog(
+            parsed=old_parsed,
+            classification="CRITICAL",
+            rule_id="R01",
+            event_type="BGP Peer Down",
+            notify=True,
+            device_name="Test-Device",
+            device_location="Test",
+            interface_name="",
+            interface_description="",
+            bundle_parent="",
+            client_name="",
+            bgp_neighbor="10.0.0.1",
+            as_number=12345,
+            as_name="TestAS",
+            vrf="network",
+        )
+        engine._incidents[inc_id] = [old_enriched]  # noqa: SLF001
+        engine._device_incident["192.168.0.1"] = inc_id  # noqa: SLF001
+
+        # Purge should remove the stale incident
+        now = datetime.now(_UTC6)
+        engine._purge_stale_incidents(now)  # noqa: SLF001
+
+        assert inc_id not in engine._incidents  # noqa: SLF001
+        assert "192.168.0.1" not in engine._device_incident  # noqa: SLF001

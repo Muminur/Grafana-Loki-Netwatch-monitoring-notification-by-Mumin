@@ -111,6 +111,9 @@ class DedupEngine:
         flap_window: int = 120,
         bundle_window: int = 30,
     ) -> None:
+        if window_seconds <= 0:
+            msg = f"window_seconds must be positive, got {window_seconds}"
+            raise ValueError(msg)
         self._window_s: float = float(window_seconds)
         self._flap_window = timedelta(seconds=flap_window)
         self._bundle_window = timedelta(seconds=bundle_window)
@@ -257,9 +260,15 @@ class DedupEngine:
         for k in stale_bgp:
             del self._bgp_states[k]
 
-        evicted = len(stale_keys) + len(stale_bundles) + len(stale_bgp)
-        if evicted > 0:
-            _log.debug("Evicted %d stale entries from dedup dicts", evicted)
+        purged = len(stale_keys) + len(stale_bundles) + len(stale_bgp)
+        if purged > 0:
+            _log.debug(
+                "Evicted %d stale dedup entries (dedup=%d, bundle=%d, bgp=%d)",
+                purged,
+                len(stale_keys),
+                len(stale_bundles),
+                len(stale_bgp),
+            )
 
     def _bundle_key(self, enriched: EnrichedLog) -> str:
         """Key for bundle-grouping: ``device:bundle_parent``."""

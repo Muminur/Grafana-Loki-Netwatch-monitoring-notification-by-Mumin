@@ -14,12 +14,15 @@ buffer and requires no async I/O.
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from src.data.topology import get_downstream_devices, is_backhaul_member
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from src.core.enricher import EnrichedLog
@@ -89,7 +92,10 @@ class CorrelationEngine:
 
     Parameters
     ----------
-    None — instantiate with defaults for normal use.
+    max_incidents:
+        Upper bound on the number of incidents held in memory.  When a new
+        incident would exceed this limit the oldest incident (by creation
+        order) is evicted and a warning is logged.  Defaults to ``10_000``.
     """
 
     CORRELATION_WINDOW: int = 60  # seconds — backhaul / mass-event window
@@ -97,7 +103,9 @@ class CorrelationEngine:
     FLAP_WINDOW: int = 300  # seconds — flap detection window
     MASS_BGP_THRESHOLD: int = 5  # min BGP peer downs to declare a mass event
 
-    def __init__(self) -> None:
+    def __init__(self, max_incidents: int = 10_000) -> None:
+        self._max_incidents = max_incidents
+
         # Recent events: list of (timestamp, EnrichedLog)
         self._recent: list[tuple[datetime, EnrichedLog]] = []
 
@@ -249,6 +257,7 @@ class CorrelationEngine:
             existing_incident = self._device_incident.get(device_ip)
             if existing_incident is None:
                 # Open a new mass-event incident
+                self._enforce_incident_cap()
                 new_id = self._generate_incident_id()
                 self._incidents[new_id] = mass_events + [enriched]
                 self._device_incident[device_ip] = new_id
@@ -307,6 +316,26 @@ class CorrelationEngine:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _enforce_incident_cap(self) -> None:
+        """Evict the oldest incident if the cache has reached *max_incidents*.
+
+        The oldest incident is determined by insertion order (Python 3.7+ dicts
+        preserve insertion order).  A warning is logged on every eviction so
+        operators can tune the cap or purge interval if it fires frequently.
+        """
+        while len(self._incidents) >= self._max_incidents:
+            oldest_id = next(iter(self._incidents))
+            _log.warning(
+                "Incident cache full (%d), evicting oldest incident %s",
+                self._max_incidents,
+                oldest_id,
+            )
+            del self._incidents[oldest_id]
+            # Clean up reverse-map entries pointing to the evicted incident
+            for key in list(self._device_incident.keys()):
+                if self._device_incident[key] == oldest_id:
+                    del self._device_incident[key]
 
     def _generate_incident_id(self) -> str:
         """Generate a unique incident ID in INC-YYYYMMDD-NNN format.
@@ -388,6 +417,7 @@ class CorrelationEngine:
                 # Create or reuse an incident for this backhaul event
                 bh_incident_key = f"{bh_device}:{bundle_name}"
                 if bh_incident_key not in self._device_incident:
+                    self._enforce_incident_cap()
                     inc_id = self._generate_incident_id()
                     self._incidents[inc_id] = []
                     self._device_incident[bh_incident_key] = inc_id
