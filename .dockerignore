@@ -76,6 +76,12 @@ TASKS.md
 *.swo
 *~
 
+# ── Large / generated files ──────────────────────────────────────
+preview*.png
+*.webp
+*.stackdump
+log.txt
+
 # ── OS cruft ─────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
