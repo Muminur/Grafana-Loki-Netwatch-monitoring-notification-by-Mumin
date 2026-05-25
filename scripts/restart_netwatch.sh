@@ -61,9 +61,13 @@ echo "[1/3] Stopping running NetWatch server ..."
 ALL_PIDS=""
 # (a) by command line — our app only (catches a --reload parent + workers)
 ALL_PIDS="$ALL_PIDS $(pgrep -f 'uvicorn.*src\.main:app' 2>/dev/null || true)"
+# (a2) catch orphaned multiprocessing children from a crashed parent
+ALL_PIDS="$ALL_PIDS $(pgrep -f 'multiprocessing.spawn' 2>/dev/null || true)"
 # (b) by port — fallback for anything still holding it
 if command -v lsof >/dev/null 2>&1; then
   ALL_PIDS="$ALL_PIDS $(lsof -ti tcp:"$PORT" -sTCP:LISTEN 2>/dev/null || true)"
+elif command -v ss >/dev/null 2>&1; then
+  ALL_PIDS="$ALL_PIDS $(ss -tlnp "sport = :$PORT" 2>/dev/null | grep -oP 'pid=\K[0-9]+' || true)"
 elif command -v fuser >/dev/null 2>&1; then
   ALL_PIDS="$ALL_PIDS $(fuser "$PORT/tcp" 2>/dev/null || true)"
 fi

@@ -203,6 +203,21 @@ async def _on_syslog_line(raw_line: str) -> None:
     else:
         should_send = True
 
+    # ── Noise reclassification (before DB write) ─────────────────────────
+    from src.api.routes import _SILENT_FAULT_MNEMONICS  # noqa: PLC0415
+
+    db_classification = enriched.classification
+    if enriched.parsed.mnemonic in _SILENT_FAULT_MNEMONICS:
+        from src.api.routes import _hardware_defects_as_noise  # noqa: PLC0415
+        from src.data.topology import is_backhaul_member  # noqa: PLC0415
+
+        if _hardware_defects_as_noise:
+            _is_member, _ = is_backhaul_member(
+                enriched.parsed.source_ip, enriched.interface_name
+            )
+            if _is_member:
+                db_classification = "NOISE"
+
     # ── Store to DB ────────────────────────────────────────────────────────
     suppress = correlated.suppress_notification if correlated is not None else False
     will_notify = should_send and enriched.notify and not suppress
@@ -221,7 +236,7 @@ async def _on_syslog_line(raw_line: str) -> None:
                 mnemonic=enriched.parsed.mnemonic,
                 message=enriched.parsed.message,
                 raw=enriched.parsed.raw,
-                classification=enriched.classification,
+                classification=db_classification,
                 interface_name=enriched.interface_name,
                 interface_description=enriched.interface_description,
                 client_name=enriched.client_name,
