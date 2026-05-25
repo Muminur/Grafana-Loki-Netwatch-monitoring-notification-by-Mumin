@@ -88,34 +88,34 @@
 
             <!-- Tab Bar -->
             <div class="tab-bar" role="tablist">
-                <button class="tab" data-tab="all" role="tab" aria-selected="false"
-                        title="All alerts (keyboard: 1)">
+                <button class="tab" id="tabAll" data-tab="all" role="tab" aria-selected="false"
+                        aria-controls="alertsContainer" title="All alerts (keyboard: 0)">
                     ALL <span class="tab-badge" id="tabCountAll">0</span>
                 </button>
-                <button class="tab tab-critical active" data-tab="CRITICAL" role="tab" aria-selected="true"
-                        title="Critical alerts (keyboard: 1)">
+                <button class="tab tab-critical active" id="tabCritical" data-tab="CRITICAL" role="tab" aria-selected="true"
+                        aria-controls="alertsContainer" title="Critical alerts (keyboard: 1)">
                     CRITICAL <span class="tab-badge tab-badge-critical" id="tabCountCritical">0</span>
                 </button>
-                <button class="tab tab-warning" data-tab="WARNING" role="tab" aria-selected="false"
-                        title="Warning alerts (keyboard: 2)">
+                <button class="tab tab-warning" id="tabWarning" data-tab="WARNING" role="tab" aria-selected="false"
+                        aria-controls="alertsContainer" title="Warning alerts (keyboard: 2)">
                     WARNING <span class="tab-badge tab-badge-warning" id="tabCountWarning">0</span>
                 </button>
-                <button class="tab tab-info" data-tab="INFO" role="tab" aria-selected="false"
-                        title="Info alerts (keyboard: 3)">
+                <button class="tab tab-info" id="tabInfo" data-tab="INFO" role="tab" aria-selected="false"
+                        aria-controls="alertsContainer" title="Info alerts (keyboard: 3)">
                     INFO <span class="tab-badge" id="tabCountInfo">0</span>
                 </button>
-                <button class="tab tab-noise" data-tab="NOISE" role="tab" aria-selected="false"
-                        title="Noise alerts (keyboard: 4)">
+                <button class="tab tab-noise" id="tabNoise" data-tab="NOISE" role="tab" aria-selected="false"
+                        aria-controls="alertsContainer" title="Noise alerts (keyboard: 4)">
                     NOISE <span class="tab-badge" id="tabCountNoise">0</span>
                 </button>
-                <button class="tab tab-login" data-tab="USER_LOGIN" role="tab" aria-selected="false"
-                        title="Login events (keyboard: 5)">
+                <button class="tab tab-login" id="tabLogin" data-tab="USER_LOGIN" role="tab" aria-selected="false"
+                        aria-controls="alertsContainer" title="Login events (keyboard: 5)">
                     LOGIN <span class="tab-badge" id="tabCountLogin">0</span>
                 </button>
             </div>
 
             <!-- Alert Cards Container -->
-            <div class="alerts-container" id="alertsContainer" role="tabpanel">
+            <div class="alerts-container" id="alertsContainer" role="tabpanel" aria-labelledby="tabCritical">
                 <div class="empty-state" id="alertsEmpty">
                     <span class="empty-text">No alerts in selected period</span>
                 </div>
