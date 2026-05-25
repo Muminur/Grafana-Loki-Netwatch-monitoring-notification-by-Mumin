@@ -74,6 +74,11 @@ htmlcov/
 *.swo
 *~
 
+# ── Development artifacts ────────────────────────────────────────
+*.stackdump
+log.txt
+preview-*
+
 # ── OS cruft ─────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
