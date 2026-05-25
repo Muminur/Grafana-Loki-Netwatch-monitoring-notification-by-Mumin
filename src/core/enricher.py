@@ -92,7 +92,7 @@ class EnrichedLog:
     client_name: str  # derived from interface description or ""
     # From AS / BGP extraction
     bgp_neighbor: str  # e.g. "2001:de8:4::39:9077:1" or ""
-    as_number: int  # extracted AS number or 0
+    as_number: int | None  # extracted AS number or None when absent
     as_name: str  # from as_database or ""
     vrf: str  # extracted VRF name or ""
 
@@ -110,7 +110,7 @@ def _extract_interface(message: str) -> str:
     """
     for pattern in _IFACE_PATTERNS:
         m = pattern.search(message)
-        if m:
+        if m and m.lastindex and m.lastindex >= 1:
             return m.group(1).rstrip(",.;:")
     return ""
 
@@ -121,14 +121,14 @@ def _extract_bgp_neighbor(message: str) -> str:
     return m.group(1) if m else ""
 
 
-def _extract_as_number(raw: str) -> int:
+def _extract_as_number(raw: str) -> int | None:
     """Extract an AS number from the raw syslog line.
 
     Matches patterns like ``(AS: 399077)`` or ``(AS 399077)``.
-    Returns 0 when not found.
+    Returns ``None`` when not found (0 is not a valid AS number).
     """
     m = _AS_RE.search(raw)
-    return int(m.group(1)) if m else 0
+    return int(m.group(1)) if m else None
 
 
 def _extract_vrf(raw: str) -> str:
@@ -174,8 +174,8 @@ def enrich(parsed: ParsedLog) -> EnrichedLog:
     -------
     EnrichedLog
         A frozen dataclass combining all enrichment fields.  Unknown / absent
-        fields default to empty string or zero rather than ``None`` so that
-        callers never need to guard against ``None``.
+        string fields default to empty string.  ``as_number`` is ``None``
+        when no AS number was found (0 is not a valid AS number).
     """
     # ── Classification ─────────────────────────────────────────────────────
     cls_result = classify(parsed)
@@ -214,7 +214,7 @@ def enrich(parsed: ParsedLog) -> EnrichedLog:
     vrf = _extract_vrf(parsed.raw)
 
     as_name = ""
-    if as_number:
+    if as_number is not None:
         as_info = lookup_as(as_number)
         if as_info is not None:
             as_name = as_info.name

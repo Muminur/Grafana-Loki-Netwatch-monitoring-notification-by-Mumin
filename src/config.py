@@ -61,7 +61,11 @@ def _validate_monitor_host(value: str) -> str:
         raise ValueError(msg)
     v = value.strip()
     if _SCHEME_RE.match(v):
-        msg = f"MONITOR_HOST must be a hostname or IP address, not a URI: {value!r}"
+        msg = (
+            f"MONITOR_HOST must be a hostname or IP"
+            f" (e.g., '192.168.1.1' or 'example.com'),"
+            f" not a URI: {value!r}"
+        )
         raise ValueError(msg)
     # Anything that looks like an IP (dotted-decimal, or contains ':' for IPv6,
     # or a bracketed IPv6 literal) must be a *valid* IP — this rejects malformed
@@ -73,11 +77,18 @@ def _validate_monitor_host(value: str) -> str:
         try:
             ipaddress.ip_address(candidate)
         except ValueError as exc:
-            msg = f"MONITOR_HOST is not a valid IP address: {value!r}"
+            msg = (
+                f"MONITOR_HOST is not a valid IP address"
+                f" (e.g., '192.168.1.1' or '::1'): {value!r}"
+            )
             raise ValueError(msg) from exc
         return v
     if not _HOSTNAME_RE.match(v):
-        msg = f"MONITOR_HOST is not a valid hostname or IP address: {value!r}"
+        msg = (
+            f"MONITOR_HOST is not a valid hostname or IP"
+            f" address (e.g., '192.168.1.1' or"
+            f" 'example.com'): {value!r}"
+        )
         raise ValueError(msg)
     return v
 

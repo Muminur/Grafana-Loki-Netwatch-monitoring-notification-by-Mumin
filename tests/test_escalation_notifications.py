@@ -96,7 +96,7 @@ def _make_enriched(
     bundle_parent: str = "",
     client_name: str = "",
     bgp_neighbor: str = "2001:de8:4::39:9077:1",
-    as_number: int = 399077,
+    as_number: int | None = 399077,
     as_name: str = "TCLOUD",
     vrf: str = "network",
     parsed: ParsedLog | None = None,

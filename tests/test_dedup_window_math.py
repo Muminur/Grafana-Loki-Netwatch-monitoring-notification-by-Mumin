@@ -90,7 +90,7 @@ def _make_enriched(
         bundle_parent=bundle_parent,
         client_name="",
         bgp_neighbor=bgp_neighbor,
-        as_number=0,
+        as_number=None,
         as_name="",
         vrf="",
     )
@@ -468,7 +468,7 @@ class TestNormalRealtimePath:
                 bundle_parent="",
                 client_name="",
                 bgp_neighbor=neighbor,
-                as_number=0,
+                as_number=None,
                 as_name="",
                 vrf="",
             )
@@ -511,7 +511,7 @@ class TestNormalRealtimePath:
                 bundle_parent="Bundle-Ether10",
                 client_name="",
                 bgp_neighbor="",
-                as_number=0,
+                as_number=None,
                 as_name="",
                 vrf="",
             )

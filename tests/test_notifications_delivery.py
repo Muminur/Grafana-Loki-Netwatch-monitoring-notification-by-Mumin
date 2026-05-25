@@ -92,7 +92,7 @@ def _make_enriched(
     bundle_parent: str = "",
     client_name: str = "",
     bgp_neighbor: str = "1.2.3.4",
-    as_number: int = 12345,
+    as_number: int | None = 12345,
     as_name: str = "TESTNET",
     vrf: str = "default",
     parsed: ParsedLog | None = None,

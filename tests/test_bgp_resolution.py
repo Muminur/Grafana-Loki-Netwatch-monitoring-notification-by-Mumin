@@ -22,7 +22,7 @@ def _make_enriched(
     message: str,
     interface_name: str = "",
     bgp_neighbor: str = "",
-    as_number: int = 0,
+    as_number: int | None = 0,
     as_name: str = "",
     classification: str = "CRITICAL",
     rule_id: str = "",

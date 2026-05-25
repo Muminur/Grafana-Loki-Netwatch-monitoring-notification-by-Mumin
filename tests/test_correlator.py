@@ -401,7 +401,7 @@ def _make_enriched(
     interface_name: str = "",
     bundle_parent: str = "",
     bgp_neighbor: str = "1.2.3.4",
-    as_number: int = 12345,
+    as_number: int | None = 12345,
     as_name: str = "TestAS",
     device_name: str = "Equinix-RTR-1",
     ts: datetime | None = None,
