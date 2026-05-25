@@ -242,7 +242,7 @@ Futuristic "Mission Control" design with:
 - **Client/circuit info** — each incident card shows the client name or circuit ID when available (e.g. `DHK-KKT-BH-LINK-02-VIA-F@H-KKT-Te0/1/0/23-121492`)
 - **Acknowledge with audit trail** — ACK button on each incident opens a modal requiring operator name and comment; full audit history stored in SQLite (`/api/incidents/{id}/acks`)
 - **Bulk acknowledge** — `Shift+A` acknowledges all active incidents with a single comment
-- **Visual/sound alarm** — unacknowledged incidents pulse with red glow border and trigger a repeating alarm every 30 seconds; acknowledged incidents dim to green border and silence the alarm
+- **Visual/sound alarm** — unacknowledged incidents pulse with red glow border and trigger an alarm sound; configurable "Repeat Incident Alarm" toggle in Settings controls whether the alarm repeats every 30 seconds or plays only once on first detection (pulsing red border always stays visible)
 - **Auto-resolution** — DOWN incidents automatically clear when the interface/BGP recovers
 - **Device-specific matching** — same interface name on different routers (connecting to different far-end equipment) is correctly treated as separate incidents
 - **ASN organization names** — resolved via BigDataCloud API, cached in SQLite (never re-fetched)

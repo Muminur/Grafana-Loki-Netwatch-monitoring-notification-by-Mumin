@@ -131,6 +131,18 @@
                 </div>
             </div>
             <div class="form-group">
+                <label class="form-label" for="repeatAlarmEnabled">Repeat Incident Alarm</label>
+                <div class="toggle-row">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="repeatAlarmEnabled" name="repeat_alarm_enabled" checked
+                               aria-describedby="repeatAlarm-hint">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="toggle-desc">Repeat alarm every 30 seconds for unacknowledged incidents</span>
+                </div>
+                <span class="form-hint" id="repeatAlarm-hint">When disabled, the alarm plays once when an incident is first detected but does not repeat. The pulsing red border remains visible either way.</span>
+            </div>
+            <div class="form-group">
                 <div class="sound-test-buttons">
                     <button type="button" class="btn btn-test btn-test-critical"
                             onclick="if(window.NetwatchSounds) window.NetwatchSounds.testCritical()">
@@ -218,7 +230,8 @@
                 <kbd>0</kbd><span>ALL tab</span>
             </div>
             <div class="shortcut-row">
-                <kbd>A</kbd><span>Acknowledge selected</span>
+                <kbd>A</kbd><span>Acknowledge selected alert</span>
+                <kbd>Shift+A</kbd><span>Bulk ACK incidents</span>
                 <kbd>N</kbd><span>Toggle mute</span>
                 <kbd>/</kbd><span>Focus search</span>
             </div>
@@ -241,6 +254,19 @@ document.addEventListener('DOMContentLoaded', function() {
         soundToggle.addEventListener('change', function() {
             if (window.NetwatchSounds) {
                 window.NetwatchSounds.setEnabled(soundToggle.checked);
+            }
+        });
+    }
+
+    // Repeat Incident Alarm toggle (localStorage-backed)
+    var repeatToggle = document.getElementById('repeatAlarmEnabled');
+    if (repeatToggle) {
+        repeatToggle.checked = localStorage.getItem('netwatch_repeat_alarm') !== 'false';
+        repeatToggle.addEventListener('change', function() {
+            var enabled = repeatToggle.checked;
+            localStorage.setItem('netwatch_repeat_alarm', enabled ? 'true' : 'false');
+            if (window.NetwatchDashboard) {
+                window.NetwatchDashboard.setRepeatAlarm(enabled);
             }
         });
     }

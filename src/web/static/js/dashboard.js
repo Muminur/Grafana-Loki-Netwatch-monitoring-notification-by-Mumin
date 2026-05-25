@@ -491,20 +491,23 @@
     // ── Incident Alarm System (only for unacked active incidents) ─────────
     var _incidentAlarmInterval = null;
     var _incidentAlarmActive = false;
+    var _repeatAlarmEnabled = localStorage.getItem('netwatch_repeat_alarm') !== 'false';
 
     function _startIncidentAlarm() {
         if (_incidentAlarmActive) return;
         _incidentAlarmActive = true;
         document.body.classList.add('has-active-incidents');
-        // Play alarm every 30 seconds for unacked incidents
-        _incidentAlarmInterval = setInterval(function () {
-            if (window.NetwatchSounds && window.NetwatchSounds.isEnabled()) {
-                window.NetwatchSounds.play('CRITICAL');
-            }
-        }, 30000);
-        // Play immediately on first detection
+        // Play immediately on first detection (always)
         if (window.NetwatchSounds && window.NetwatchSounds.isEnabled()) {
             window.NetwatchSounds.play('CRITICAL');
+        }
+        // Repeat every 30 seconds only if repeat is enabled
+        if (_repeatAlarmEnabled) {
+            _incidentAlarmInterval = setInterval(function () {
+                if (window.NetwatchSounds && window.NetwatchSounds.isEnabled()) {
+                    window.NetwatchSounds.play('CRITICAL');
+                }
+            }, 30000);
         }
     }
 
@@ -515,6 +518,23 @@
         if (_incidentAlarmInterval) {
             clearInterval(_incidentAlarmInterval);
             _incidentAlarmInterval = null;
+        }
+    }
+
+    function _setRepeatAlarm(enabled) {
+        _repeatAlarmEnabled = enabled;
+        localStorage.setItem('netwatch_repeat_alarm', enabled ? 'true' : 'false');
+        if (_incidentAlarmActive) {
+            if (enabled && !_incidentAlarmInterval) {
+                _incidentAlarmInterval = setInterval(function () {
+                    if (window.NetwatchSounds && window.NetwatchSounds.isEnabled()) {
+                        window.NetwatchSounds.play('CRITICAL');
+                    }
+                }, 30000);
+            } else if (!enabled && _incidentAlarmInterval) {
+                clearInterval(_incidentAlarmInterval);
+                _incidentAlarmInterval = null;
+            }
         }
     }
 
@@ -874,5 +894,7 @@
             if (!confirm('Acknowledge all ' + count + ' active incidents?')) return;
             _showBulkAckModal(unacked);
         },
+        setRepeatAlarm: function (enabled) { _setRepeatAlarm(enabled); },
+        isRepeatAlarmEnabled: function () { return _repeatAlarmEnabled; },
     };
 })();
