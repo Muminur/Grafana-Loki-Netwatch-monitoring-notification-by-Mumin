@@ -606,7 +606,7 @@ async def _run_reconstruction(eng: EscalationEngine, db_engine: Any) -> None:
     from src.core.parser import parse_syslog
 
     try:
-        cutoff = datetime.now(_UTC6) - timedelta(seconds=eng._delay.total_seconds() * 2)
+        cutoff = datetime.now(_UTC6) - timedelta(seconds=eng.escalation_delay_seconds * 2)
         async with AsyncSession(db_engine) as session:
             stmt = (
                 select(AlertLog)

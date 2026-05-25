@@ -42,6 +42,7 @@ from src.api.routes import (
     increment_alerts_processed,
     load_persisted_state,
     router,
+    set_background_tasks,
     set_db_engine,
 )
 from src.api.websocket import WebSocketManager
@@ -591,7 +592,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         _utc6_tz = _timezone(_timedelta(hours=6))
         # Use 2× the delay as the lookback window; access via public-friendly
         # notation by reading the already-set private attr once at startup.
-        _esc_delay_secs = _escalation._delay.total_seconds()  # noqa: SLF001
+        _esc_delay_secs = _escalation.escalation_delay_seconds
         _esc_cutoff = _datetime.now(_utc6_tz) - _timedelta(seconds=_esc_delay_secs * 2)
 
         async with AsyncSession(engine) as session:
@@ -671,6 +672,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     hourly_task = asyncio.create_task(_hourly_aggregator(engine))
     _log.info("Hourly stats aggregator started (5-minute interval)")
 
+    # ── Register task handles for /health liveness reporting ───────────────
+    set_background_tasks({
+        "digest": digest_task,
+        "escalation": escalation_task,
+        "aggregator": hourly_task,
+    })
+
     yield  # application runs here
 
     # ── Shutdown ───────────────────────────────────────────────────────────
@@ -723,7 +731,7 @@ app.add_middleware(
     allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["*"],
+    allow_headers=["content-type", "x-api-key"],
 )
 
 # ── Request-ID middleware (added second; wraps CORS, wrapped by SecurityHeaders) ─

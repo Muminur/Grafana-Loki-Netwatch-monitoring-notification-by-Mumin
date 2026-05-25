@@ -47,6 +47,11 @@ class EscalationEngine:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
+    @property
+    def escalation_delay_seconds(self) -> float:
+        """Return the escalation delay in seconds."""
+        return self._delay.total_seconds()
+
     def track_alert(self, enriched: EnrichedLog) -> None:
         """Track a CRITICAL alert for potential escalation.
 
