@@ -64,6 +64,7 @@
     var _charts = {};             // chart instance registry by canvas id
     var _timelineBuckets = [];    // 60 × 1-min buckets
     var _deviceCounts = {};       // device → count
+    var _resizeObserver = null;   // ResizeObserver (if used) — cleaned up on unload
 
     // ── Timeline buckets (rolling 60-min window) ──────────────────────────────
     function _currentMinute() {
@@ -348,6 +349,26 @@
         }
     }
 
+    // ── Accessibility: set role and aria-label on chart canvases ─────────────
+    var _chartTitles = {
+        healthGaugeChart:     'Network Health Gauge',
+        timelineChart:        'Alert Timeline (60 minutes)',
+        categoryDonutChart:   'Alert Category Distribution',
+        topDevicesChart:      'Top Devices by Alert Count',
+        statsHealthGauge:     'Statistics Health Gauge',
+        statsTimelineChart:   'Statistics Alert Timeline',
+        statsCategoryDonut:   'Statistics Category Distribution',
+        statsTopDevicesChart: 'Statistics Top Devices by Alert Count',
+    };
+
+    function _setChartAccessibility(canvasId) {
+        var canvas = document.getElementById(canvasId);
+        if (!canvas) return;
+        var title = _chartTitles[canvasId] || canvasId;
+        canvas.setAttribute('role', 'img');
+        canvas.setAttribute('aria-label', 'Chart: ' + title);
+    }
+
     // ── Init dashboard mini-charts ────────────────────────────────────────────
     function initDashboard() {
         _isLargeDisplay = _evaluateDisplaySize();
@@ -356,6 +377,12 @@
         _initTimelineChart('timelineChart');
         _initCategoryDonut('categoryDonutChart');
         _initTopDevicesBar('topDevicesChart');
+
+        // Set accessibility attributes on dashboard canvases
+        _setChartAccessibility('healthGaugeChart');
+        _setChartAccessibility('timelineChart');
+        _setChartAccessibility('categoryDonutChart');
+        _setChartAccessibility('topDevicesChart');
     }
 
     // ── Init statistics page charts ───────────────────────────────────────────
@@ -366,6 +393,12 @@
         _initTimelineChart('statsTimelineChart');
         _initCategoryDonut('statsCategoryDonut');
         _initTopDevicesBar('statsTopDevicesChart');
+
+        // Set accessibility attributes on statistics canvases
+        _setChartAccessibility('statsHealthGauge');
+        _setChartAccessibility('statsTimelineChart');
+        _setChartAccessibility('statsCategoryDonut');
+        _setChartAccessibility('statsTopDevicesChart');
 
         // Load initial stats from API
         var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
@@ -474,6 +507,21 @@
             initStats();
         }
         window.addEventListener('resize', _onResize);
+    });
+
+    // ── Cleanup on page unload to prevent memory leaks ───────────────────────
+    window.addEventListener('beforeunload', function () {
+        if (_resizeObserver) {
+            _resizeObserver.disconnect();
+            _resizeObserver = null;
+        }
+        // Destroy all Chart.js instances to release canvas memory
+        Object.keys(_charts).forEach(function (id) {
+            if (_charts[id]) {
+                _charts[id].destroy();
+            }
+        });
+        _charts = {};
     });
 
     // Public API

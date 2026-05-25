@@ -20,6 +20,8 @@
 
     var NODE_RADIUS = 22;
     var SVG_NS = 'http://www.w3.org/2000/svg';
+    var _resizeObserver = null;   // ResizeObserver — cleaned up on unload
+    var _lastClickTime = 0;       // Debounce guard for node click handler
 
     // Level x-position presets (0=top, 1=mid, 2=bottom in vertical layout)
     var LEVEL_Y = { 0: 50, 1: 140, 2: 230 };
@@ -212,10 +214,14 @@
             title.textContent = node.name + ' (' + (node.location || '') + ') — ' + (node.status || 'unknown');
             g.appendChild(title);
 
-            // Click handler — dispatch filter event or set hash
+            // Click handler — dispatch filter event or set hash (debounced)
             g.style.cursor = 'pointer';
             g.addEventListener('click', (function (nodeName) {
                 return function () {
+                    var now = Date.now();
+                    if (now - _lastClickTime < 500) return; // Debounce 500ms
+                    _lastClickTime = now;
+
                     var evt = null;
                     try {
                         evt = new CustomEvent('netwatch:filter-device', { detail: { device: nodeName } });
@@ -262,9 +268,17 @@
 
             // Re-render on container resize
             if (typeof ResizeObserver !== 'undefined') {
-                var ro = new ResizeObserver(_onContainerResize);
-                ro.observe(svgContainer.parentElement || svgContainer);
+                _resizeObserver = new ResizeObserver(_onContainerResize);
+                _resizeObserver.observe(svgContainer.parentElement || svgContainer);
             }
+        }
+    });
+
+    // ── Cleanup on page unload to prevent memory leaks ───────────────────────
+    window.addEventListener('beforeunload', function () {
+        if (_resizeObserver) {
+            _resizeObserver.disconnect();
+            _resizeObserver = null;
         }
     });
 
