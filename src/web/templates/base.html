@@ -10,11 +10,14 @@
     <link rel="stylesheet" href="/static/css/fonts.css"
           onerror="this.onerror=null;this.href='https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=JetBrains+Mono:wght@300;400;500;700&family=Inter:wght@300;400;500;600&display=swap';">
 
-    <!-- Chart.js self-hosted; CDN fallback -->
+    <!-- Chart.js self-hosted; CDN fallback (sync load to avoid race with charts.js) -->
     <script src="/static/vendor/chart.umd.min.js"></script>
     <script>
     if (typeof Chart === 'undefined') {
-        document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"><\/script>');
+        var s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js';
+        s.async = false;
+        document.head.appendChild(s);
     }
     </script>
 
