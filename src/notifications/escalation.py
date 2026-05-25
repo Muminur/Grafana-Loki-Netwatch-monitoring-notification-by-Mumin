@@ -158,24 +158,26 @@ class EscalationEngine:
             acknowledged,
         )
 
-    def get_pending_escalations(self) -> list[EnrichedLog]:
+    def get_pending_escalations(self) -> list[tuple[EnrichedLog, int]]:
         """Return alerts that need escalation (unacknowledged after delay).
 
         Returns
         -------
-        list[EnrichedLog]
+        list[tuple[EnrichedLog, int]]
             All tracked CRITICAL alerts whose ``tracked_at`` time is older
             than ``escalation_delay`` and have not been acknowledged.
+            Each tuple contains (enriched_log, elapsed_minutes).
         """
         now = datetime.now(_UTC6)
-        pending: list[EnrichedLog] = []
+        pending: list[tuple[EnrichedLog, int]] = []
 
         for key, (enriched, tracked_at) in self._tracked.items():
             if key in self._acked:
                 continue
             elapsed = now - tracked_at
             if elapsed >= self._delay:
-                pending.append(enriched)
+                elapsed_minutes = int(elapsed.total_seconds() / 60)
+                pending.append((enriched, elapsed_minutes))
                 _log.debug(
                     "Pending escalation: %s/%s (elapsed %.0fs)",
                     enriched.device_name,
@@ -184,3 +186,38 @@ class EscalationEngine:
                 )
 
         return pending
+
+    def mark_escalated(self, device_name: str, mnemonic: str) -> bool:
+        """Mark an alert as escalated so it is not re-sent every check cycle.
+
+        Adds the matching keys to ``_acked`` so they are excluded from future
+        ``get_pending_escalations()`` calls.  This is distinct from
+        ``acknowledge()``, which represents human acknowledgement — here we
+        use the same underlying set to suppress repeat escalation dispatches.
+
+        Parameters
+        ----------
+        device_name:
+            The device name as stored in ``EnrichedLog.device_name``.
+        mnemonic:
+            The syslog mnemonic as stored in ``EnrichedLog.parsed.mnemonic``.
+
+        Returns
+        -------
+        bool
+            ``True`` if at least one matching tracked alert was found,
+            ``False`` otherwise.
+        """
+        matching_keys = [
+            k for k in self._tracked if k[0] == device_name and k[1] == mnemonic
+        ]
+        if not matching_keys:
+            _log.debug(
+                "mark_escalated: no tracked alert for %s/%s", device_name, mnemonic
+            )
+            return False
+
+        for key in matching_keys:
+            self._acked.add(key)
+        _log.debug("Alert marked as escalated: %s/%s", device_name, mnemonic)
+        return True
