@@ -144,7 +144,8 @@ def test_restore_preserves_tracked_at_so_old_alert_is_immediately_pending(
 
     pending = eng.get_pending_escalations()
     assert len(pending) == 1
-    assert pending[0].parsed.mnemonic == enriched.parsed.mnemonic
+    alert, _elapsed = pending[0]
+    assert alert.parsed.mnemonic == enriched.parsed.mnemonic
 
 
 def test_restore_recent_alert_not_yet_pending(
@@ -233,7 +234,8 @@ def test_restore_multiple_alerts(fresh_escalation: EscalationEngine) -> None:
     pending = eng.get_pending_escalations()
     # Only e1 is past the threshold
     assert len(pending) == 1
-    assert pending[0].parsed.mnemonic == e1.parsed.mnemonic
+    alert, _elapsed = pending[0]
+    assert alert.parsed.mnemonic == e1.parsed.mnemonic
 
 
 # ---------------------------------------------------------------------------

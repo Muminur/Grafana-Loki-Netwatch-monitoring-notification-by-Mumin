@@ -247,3 +247,144 @@ def format_telegram_message(enriched: EnrichedLog) -> str:
 
     raw_msg = "\n".join(lines)
     return _sanitise(raw_msg, max_len=_MAX_TEXT_LEN)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Escalation formatters
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Discord escalation embed color: pure red, distinct from regular CRITICAL
+# (which uses 0xFF0040) so operators can immediately identify escalations.
+ESCALATION_DISCORD_COLOR = 0xFF0000
+
+
+def format_escalation_discord_embed(
+    enriched: EnrichedLog, elapsed_minutes: int
+) -> dict[str, Any]:
+    """Format an escalation notice as a Discord webhook payload.
+
+    Uses pure red (0xFF0000) to distinguish from regular CRITICAL alerts
+    (0xFF0040).  Includes elapsed time and an "UNACKNOWLEDGED" marker so
+    operators know this alert has been waiting for more than 15 minutes.
+
+    Parameters
+    ----------
+    enriched:
+        The fully enriched syslog event being escalated.
+    elapsed_minutes:
+        How many minutes the alert has been unacknowledged.
+
+    Returns
+    -------
+    dict
+        Ready-to-POST Discord webhook payload with a single embed.
+    """
+    safe_device = _sanitise(enriched.device_name)
+    safe_mnemonic = _sanitise(enriched.parsed.mnemonic)
+    safe_iface = _sanitise(enriched.interface_name) if enriched.interface_name else ""
+    safe_neighbor = _sanitise(enriched.bgp_neighbor) if enriched.bgp_neighbor else ""
+
+    discriminator = safe_iface or safe_neighbor
+
+    title = f"🚨 ESCALATION — {safe_device}"
+    description_parts = [
+        f"`{safe_mnemonic}`",
+    ]
+    if discriminator:
+        description_parts.append(f"on `{discriminator}`")
+    description_parts.append(
+        f"\n**Unacknowledged for {elapsed_minutes} minutes**"
+        " — CRITICAL alert requires attention"
+    )
+    description = " ".join(description_parts[:2]) + description_parts[-1]
+
+    ts_str = enriched.parsed.timestamp.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+    fields: list[dict[str, Any]] = [
+        {"name": "Device", "value": safe_device, "inline": True},
+    ]
+    if enriched.device_location:
+        fields.append(
+            {
+                "name": "Location",
+                "value": _sanitise(enriched.device_location),
+                "inline": True,
+            }
+        )
+    fields.append(
+        {
+            "name": "Status",
+            "value": f"UNACKNOWLEDGED FOR >{elapsed_minutes} MIN",
+            "inline": True,
+        }
+    )
+    fields.append({"name": "Original Alert", "value": ts_str, "inline": False})
+    if discriminator:
+        fields.append(
+            {"name": "Interface / Peer", "value": discriminator, "inline": False}
+        )
+
+    embed: dict[str, Any] = {
+        "title": title,
+        "description": description,
+        "color": ESCALATION_DISCORD_COLOR,
+        "fields": fields,
+        "footer": {"text": "BSCCL NetWatch — Escalation"},
+        "timestamp": enriched.parsed.timestamp.isoformat(),
+    }
+
+    return {"embeds": [embed]}
+
+
+def format_escalation_telegram_message(
+    enriched: EnrichedLog, elapsed_minutes: int
+) -> str:
+    """Format an escalation notice as a Telegram Markdown message string.
+
+    Prefixes with bold "⚠️ ESCALATION" to distinguish from regular alerts.
+
+    Parameters
+    ----------
+    enriched:
+        The fully enriched syslog event being escalated.
+    elapsed_minutes:
+        How many minutes the alert has been unacknowledged.
+
+    Returns
+    -------
+    str
+        Telegram Markdown-formatted escalation text.
+    """
+    lines: list[str] = []
+
+    lines.append(f"*⚠️ ESCALATION — {_sanitise(enriched.device_name)}*")
+    lines.append(f"*{_sanitise(enriched.parsed.mnemonic)}*")
+    lines.append("")
+
+    lines.append(f"*Unacknowledged for {elapsed_minutes} minutes*")
+    lines.append("CRITICAL alert requires immediate attention")
+    lines.append("")
+
+    if enriched.interface_name:
+        iface = _sanitise(enriched.interface_name)
+        if enriched.interface_description:
+            iface += f" — {_sanitise(enriched.interface_description)}"
+        lines.append(f"*Interface:* `{iface}`")
+
+    if enriched.bgp_neighbor:
+        peer = _sanitise(enriched.bgp_neighbor)
+        if enriched.as_name:
+            peer += f" (AS{enriched.as_number} {_sanitise(enriched.as_name)})"
+        elif enriched.as_number:
+            peer += f" (AS{enriched.as_number})"
+        lines.append(f"*Peer:* `{peer}`")
+
+    if enriched.device_location:
+        lines.append(f"*Location:* {_sanitise(enriched.device_location)}")
+
+    lines.append("")
+    ts_str = enriched.parsed.timestamp.strftime("%Y-%m-%d %H:%M:%S %Z")
+    lines.append(f"*Original Alert:* _{ts_str}_")
+
+    raw_msg = "\n".join(lines)
+    return _sanitise(raw_msg, max_len=_MAX_TEXT_LEN)

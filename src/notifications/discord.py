@@ -26,7 +26,10 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from src.notifications.formatter import format_discord_embed
+from src.notifications.formatter import (
+    format_discord_embed,
+    format_escalation_discord_embed,
+)
 
 if TYPE_CHECKING:
     from src.config import Settings
@@ -182,6 +185,126 @@ async def send_discord_alert(enriched: EnrichedLog, settings: Settings) -> bool:
 
     _log.warning(
         "Discord alert delivery failed after %d attempts for %s/%s: %s",
+        _MAX_ATTEMPTS,
+        enriched.device_name,
+        enriched.parsed.mnemonic,
+        last_error,
+    )
+    return False
+
+
+async def send_discord_escalation(
+    enriched: EnrichedLog, elapsed_minutes: int, settings: Settings
+) -> bool:
+    """Send a Discord escalation embed for an unacknowledged CRITICAL alert.
+
+    Uses a distinct pure-red color (0xFF0000) and escalation-specific
+    formatting to differentiate from regular CRITICAL alerts (0xFF0040).
+
+    Parameters
+    ----------
+    enriched:
+        The fully enriched syslog event to escalate.
+    elapsed_minutes:
+        How many minutes the alert has been unacknowledged.
+    settings:
+        Application settings containing ``discord_webhook_url`` and
+        ``discord_enabled``.
+
+    Returns
+    -------
+    bool
+        ``True`` if the webhook was delivered successfully (HTTP 2xx),
+        ``False`` for any failure.  Never raises.
+    """
+    if not settings.discord_enabled:
+        _log.debug("Discord notifications disabled — skipping escalation.")
+        return False
+
+    if not settings.discord_webhook_url:
+        _log.warning("discord_webhook_url is empty — cannot send Discord escalation.")
+        return False
+
+    if not _is_valid_discord_url(settings.discord_webhook_url):
+        _log.error("discord_webhook_url has invalid format — skipping escalation.")
+        return False
+
+    payload = format_escalation_discord_embed(enriched, elapsed_minutes)
+
+    last_error: str = ""
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    settings.discord_webhook_url,
+                    json=payload,
+                )
+        except httpx.TimeoutException as exc:
+            last_error = f"timeout: {type(exc).__name__}"
+            _log.warning(
+                "Discord escalation timed out (attempt %d/%d): %s",
+                attempt,
+                _MAX_ATTEMPTS,
+                type(exc).__name__,
+            )
+        except httpx.RequestError as exc:
+            last_error = f"request error: {type(exc).__name__}"
+            _log.warning(
+                "Discord escalation request failed (attempt %d/%d): %s",
+                attempt,
+                _MAX_ATTEMPTS,
+                type(exc).__name__,
+            )
+        else:
+            if response.status_code in (200, 204):
+                _log.debug(
+                    "Discord escalation sent for %s/%s (HTTP %d)",
+                    enriched.device_name,
+                    enriched.parsed.mnemonic,
+                    response.status_code,
+                )
+                return True
+
+            if response.status_code == 429:
+                retry_after = min(
+                    _parse_retry_after(response.headers.get("Retry-After", "1")),
+                    _MAX_DELAY,
+                )
+                last_error = "HTTP 429 (rate-limited)"
+                _log.warning(
+                    "Discord escalation rate-limited (attempt %d/%d); "
+                    "sleeping %.1f s",
+                    attempt,
+                    _MAX_ATTEMPTS,
+                    retry_after,
+                )
+                if attempt < _MAX_ATTEMPTS:
+                    await asyncio.sleep(retry_after)
+                continue
+
+            if response.status_code >= 500:
+                last_error = f"HTTP {response.status_code}"
+                _log.warning(
+                    "Discord escalation returned HTTP %d (attempt %d/%d): %s",
+                    response.status_code,
+                    attempt,
+                    _MAX_ATTEMPTS,
+                    response.text[:200],
+                )
+            else:
+                _log.error(
+                    "Discord escalation returned HTTP %d: %s",
+                    response.status_code,
+                    response.text[:200],
+                )
+                return False
+
+        if attempt < _MAX_ATTEMPTS:
+            delay = min(_BASE_DELAY * (2 ** (attempt - 1)), _MAX_DELAY)
+            await asyncio.sleep(delay)
+
+    _log.warning(
+        "Discord escalation delivery failed after %d attempts for %s/%s: %s",
         _MAX_ATTEMPTS,
         enriched.device_name,
         enriched.parsed.mnemonic,

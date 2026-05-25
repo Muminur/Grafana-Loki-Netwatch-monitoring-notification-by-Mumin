@@ -60,9 +60,9 @@ from src.metrics import (
     record_dedup_suppressed,
     record_notification,
 )
-from src.notifications.discord import send_discord_alert
+from src.notifications.discord import send_discord_alert, send_discord_escalation
 from src.notifications.escalation import EscalationEngine
-from src.notifications.telegram import send_telegram_alert
+from src.notifications.telegram import send_telegram_alert, send_telegram_escalation
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -355,25 +355,59 @@ async def _escalation_checker() -> None:
     """Background task: check for pending escalations every 60 seconds.
 
     Alerts that have been tracked by the escalation engine for longer than
-    the escalation delay (default 15 min) without acknowledgement are logged
-    as pending escalations.  Notification dispatch will be added in a later
-    milestone once the escalation alert format is finalised.
+    the escalation delay (default 15 min) without acknowledgement are sent
+    as escalation notifications to Discord and Telegram, then marked as
+    escalated so they are not re-sent on every subsequent check cycle.
     """
     while True:
         try:
             await asyncio.sleep(60)
             if _escalation is not None:
                 pending = _escalation.get_pending_escalations()
-                for alert in pending:
+                for alert, elapsed_minutes in pending:
                     _log.warning(
-                        "ESCALATION: %s/%s unacknowledged for >15 min",
+                        "ESCALATION: %s/%s unacknowledged for >%d min",
                         alert.device_name,
                         alert.parsed.mnemonic,
+                        elapsed_minutes,
                     )
+                    settings = get_settings()
+                    if settings.discord_enabled:
+                        await send_discord_escalation(alert, elapsed_minutes, settings)
+                    if settings.telegram_enabled:
+                        await send_telegram_escalation(alert, elapsed_minutes, settings)
+                    _escalation.mark_escalated(alert.device_name, alert.parsed.mnemonic)
         except asyncio.CancelledError:
             break
         except Exception as exc:  # noqa: BLE001
             _log.error("Escalation checker error: %s", exc)
+
+
+async def _hourly_aggregator(engine: object) -> None:
+    """Background task: aggregate alert counts into HourlyStats every 5 minutes.
+
+    Opens a fresh session, calls ``aggregate_hourly()``, commits, and sleeps
+    for 5 minutes.  Any exception other than ``CancelledError`` is caught and
+    logged so a transient DB error never crashes the server.
+
+    Parameters
+    ----------
+    engine:
+        The SQLAlchemy async engine used to open a session for the aggregation.
+    """
+    from src.statistics.aggregator import aggregate_hourly  # noqa: PLC0415
+
+    while True:
+        try:
+            await asyncio.sleep(300)  # 5 minutes
+            async with AsyncSession(engine) as session:  # type: ignore[arg-type]
+                await aggregate_hourly(session)
+                await session.commit()
+            _log.debug("HourlyStats aggregation completed")
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:  # noqa: BLE001
+            _log.error("Hourly aggregator error: %s", exc)
 
 
 @asynccontextmanager
@@ -387,6 +421,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     3. Start the syslog receiver (async background task).
     4. Start the daily digest scheduler background task.
     5. Start the escalation checker background task.
+    6. Start the hourly stats aggregator background task.
 
     Shutdown
     --------
@@ -632,6 +667,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     escalation_task = asyncio.create_task(_escalation_checker())
     _log.info("Escalation checker started (60-second interval)")
 
+    # ── Hourly stats aggregator ────────────────────────────────────────────
+    hourly_task = asyncio.create_task(_hourly_aggregator(engine))
+    _log.info("Hourly stats aggregator started (5-minute interval)")
+
     yield  # application runs here
 
     # ── Shutdown ───────────────────────────────────────────────────────────
@@ -641,10 +680,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     _log.info("Cancelling background tasks…")
     digest_task.cancel()
     escalation_task.cancel()
+    hourly_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await digest_task
     with contextlib.suppress(asyncio.CancelledError):
         await escalation_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await hourly_task
 
     _log.info("Disposing DB engine…")
     await engine.dispose()

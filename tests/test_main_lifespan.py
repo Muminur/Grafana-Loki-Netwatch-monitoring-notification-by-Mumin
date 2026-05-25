@@ -737,3 +737,146 @@ def test_ws_filtered_sets_filter_then_disconnects() -> None:
         # Second message keeps the loop alive once (line 507).
         ws.send_text("keepalive")
     # Closing triggers the disconnect cleanup (line 511).
+
+
+# ---------------------------------------------------------------------------
+# _hourly_aggregator background task
+# ---------------------------------------------------------------------------
+
+
+async def test_hourly_aggregator_writes_hourly_stats(tmp_path: Path) -> None:
+    """_hourly_aggregator opens a session, calls aggregate_hourly, and commits.
+
+    One sleep iteration is allowed to run; the second sleep raises
+    CancelledError to terminate the loop.  We verify that HourlyStats received
+    at least one row (meaning aggregate_hourly was actually called and committed).
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.database.models import AlertLog, HourlyStats
+
+    engine = await get_engine(_db_url(tmp_path))
+    await create_tables(engine)
+
+    # Seed one alert so aggregate_hourly has something to bucket.
+    hour_ts = datetime(2026, 5, 25, 10, 0, 0, tzinfo=UTC)
+    async with AsyncSession(engine) as session:
+        session.add(
+            AlertLog(
+                timestamp=hour_ts + timedelta(minutes=5),
+                source_ip="192.168.203.1",
+                device_name="BSCCL-EQ-RTR-01",
+                hostname="BSCCL-EQ-RTR-01",
+                facility="BGP",
+                severity_level=5,
+                mnemonic="ADJCHANGE",
+                message="test",
+                raw="raw line",
+                classification="CRITICAL",
+            )
+        )
+        await session.commit()
+
+    call_count = {"n": 0}
+
+    async def _fake_sleep(_seconds: float) -> None:
+        call_count["n"] += 1
+        if call_count["n"] >= 2:
+            raise asyncio.CancelledError
+
+    try:
+        with (
+            patch("src.main.asyncio.sleep", _fake_sleep),
+            contextlib.suppress(asyncio.CancelledError),
+        ):
+            await main_mod._hourly_aggregator(engine)  # noqa: SLF001
+    finally:
+        pass  # engine disposed below
+
+    # Verify at least one HourlyStats row was written and committed.
+    async with AsyncSession(engine) as session:
+        result = await session.execute(select(HourlyStats))
+        rows = result.scalars().all()
+
+    await engine.dispose()
+
+    assert len(rows) >= 1, "HourlyStats must have at least one row after aggregation"
+    assert rows[0].device_name == "BSCCL-EQ-RTR-01"
+    assert rows[0].critical_count == 1
+
+
+async def test_hourly_aggregator_swallows_errors() -> None:
+    """A non-cancel exception in the aggregation loop is logged, not raised.
+
+    The first sleep raises a RuntimeError (simulating a DB failure); the second
+    sleep raises CancelledError to stop the loop.  The task must reach the
+    second iteration, proving the first error was caught and swallowed.
+    """
+    state = {"n": 0}
+
+    async def _fake_sleep(_seconds: float) -> None:
+        state["n"] += 1
+        if state["n"] == 1:
+            raise RuntimeError("transient aggregator error")
+        raise asyncio.CancelledError
+
+    with (
+        patch("src.main.asyncio.sleep", _fake_sleep),
+        contextlib.suppress(asyncio.CancelledError),
+    ):
+        await main_mod._hourly_aggregator(engine=object())  # noqa: SLF001
+
+    # Reached second iteration → the first error was swallowed.
+    assert state["n"] == 2
+
+
+async def test_hourly_aggregator_cancels_cleanly() -> None:
+    """CancelledError on the first sleep breaks the loop without propagating."""
+    state = {"n": 0}
+
+    async def _fake_sleep(_seconds: float) -> None:
+        state["n"] += 1
+        raise asyncio.CancelledError
+
+    # CancelledError must not propagate out of _hourly_aggregator.
+    await main_mod._hourly_aggregator(engine=object())  # noqa: SLF001
+    assert state["n"] == 1
+
+
+@pytest.mark.usefixtures("_reset_pipeline_globals")
+async def test_lifespan_creates_hourly_aggregator_task(tmp_path: Path) -> None:
+    """Lifespan startup must create the hourly aggregator background task.
+
+    We verify this by patching _hourly_aggregator with a spy coroutine that
+    records when it is called, then confirming the patched version ran during
+    the lifespan startup.
+    """
+    settings = _make_settings(tmp_path)
+    _StubReceiver.instances.clear()
+
+    async def _fast_sleep(_seconds: float) -> None:
+        await asyncio.sleep(0)
+
+    hourly_called = {"n": 0}
+
+    async def _stub_hourly_aggregator(_engine: object) -> None:
+        hourly_called["n"] += 1
+        # Yield control once then return so the task completes quickly.
+        await asyncio.sleep(0)
+
+    with (
+        patch.object(main_mod, "get_settings", return_value=settings),
+        patch.object(main_mod, "SyslogReceiver", _StubReceiver),
+        patch("src.main.asyncio.sleep", _fast_sleep),
+        patch.object(main_mod, "_hourly_aggregator", _stub_hourly_aggregator),
+    ):
+        async with main_mod.lifespan(main_mod.app):
+            # Give the event loop a chance to schedule the created task.
+            await asyncio.sleep(0)
+
+    assert (
+        hourly_called["n"] >= 1
+    ), "_hourly_aggregator must be called during lifespan startup"

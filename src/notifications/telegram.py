@@ -26,7 +26,10 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from src.notifications.formatter import format_telegram_message
+from src.notifications.formatter import (
+    format_escalation_telegram_message,
+    format_telegram_message,
+)
 
 if TYPE_CHECKING:
     from src.config import Settings
@@ -196,6 +199,145 @@ async def send_telegram_alert(enriched: EnrichedLog, settings: Settings) -> bool
 
     _log.warning(
         "Telegram alert delivery failed after %d attempts for %s/%s: %s",
+        _MAX_ATTEMPTS,
+        enriched.device_name,
+        enriched.parsed.mnemonic,
+        last_error,
+    )
+    return False
+
+
+async def send_telegram_escalation(
+    enriched: EnrichedLog, elapsed_minutes: int, settings: Settings
+) -> bool:
+    """Send a Telegram escalation message for an unacknowledged CRITICAL alert.
+
+    Prefixes the message with bold "⚠️ ESCALATION" to distinguish from
+    regular alert messages.
+
+    Parameters
+    ----------
+    enriched:
+        The fully enriched syslog event to escalate.
+    elapsed_minutes:
+        How many minutes the alert has been unacknowledged.
+    settings:
+        Application settings containing ``telegram_bot_token``,
+        ``telegram_chat_id``, and ``telegram_enabled``.
+
+    Returns
+    -------
+    bool
+        ``True`` if the message was delivered successfully (HTTP 200 + ok),
+        ``False`` for any failure.  Never raises.
+    """
+    if not settings.telegram_enabled:
+        _log.debug("Telegram notifications disabled — skipping escalation.")
+        return False
+
+    if not settings.telegram_bot_token:
+        _log.warning("telegram_bot_token is empty — cannot send Telegram escalation.")
+        return False
+
+    if not settings.telegram_chat_id:
+        _log.warning("telegram_chat_id is empty — cannot send Telegram escalation.")
+        return False
+
+    if not _is_valid_telegram_token(settings.telegram_bot_token):
+        _log.error(
+            "telegram_bot_token has invalid format — skipping escalation.",
+        )
+        return False
+
+    text = format_escalation_telegram_message(enriched, elapsed_minutes)
+    url = f"{_TELEGRAM_API_BASE}/bot{settings.telegram_bot_token}/sendMessage"
+    payload = {
+        "chat_id": settings.telegram_chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True,
+    }
+
+    last_error: str = ""
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(url, json=payload)
+        except httpx.TimeoutException as exc:
+            last_error = f"timeout: {type(exc).__name__}"
+            _log.warning(
+                "Telegram escalation timed out (attempt %d/%d): %s",
+                attempt,
+                _MAX_ATTEMPTS,
+                type(exc).__name__,
+            )
+        except httpx.RequestError as exc:
+            last_error = f"request error: {type(exc).__name__}"
+            _log.warning(
+                "Telegram escalation request failed (attempt %d/%d): %s",
+                attempt,
+                _MAX_ATTEMPTS,
+                type(exc).__name__,
+            )
+        else:
+            if response.status_code == 200:
+                try:
+                    body = response.json()
+                    if body.get("ok"):
+                        _log.debug(
+                            "Telegram escalation sent for %s/%s",
+                            enriched.device_name,
+                            enriched.parsed.mnemonic,
+                        )
+                        return True
+                    _log.error("Telegram escalation API returned ok=false: %s", body)
+                    return False
+                except Exception as exc:  # noqa: BLE001
+                    _log.error(
+                        "Failed to parse Telegram escalation response JSON: %s", exc
+                    )
+                    return False
+
+            if response.status_code == 429:
+                retry_after = min(
+                    _parse_retry_after(response.headers.get("Retry-After", "1")),
+                    _MAX_DELAY,
+                )
+                last_error = "HTTP 429 (rate-limited)"
+                _log.warning(
+                    "Telegram escalation rate-limited (attempt %d/%d); "
+                    "sleeping %.1f s",
+                    attempt,
+                    _MAX_ATTEMPTS,
+                    retry_after,
+                )
+                if attempt < _MAX_ATTEMPTS:
+                    await asyncio.sleep(retry_after)
+                continue
+
+            if response.status_code >= 500:
+                last_error = f"HTTP {response.status_code}"
+                _log.warning(
+                    "Telegram escalation returned HTTP %d (attempt %d/%d): %s",
+                    response.status_code,
+                    attempt,
+                    _MAX_ATTEMPTS,
+                    response.text[:200],
+                )
+            else:
+                _log.error(
+                    "Telegram escalation returned HTTP %d: %s",
+                    response.status_code,
+                    response.text[:200],
+                )
+                return False
+
+        if attempt < _MAX_ATTEMPTS:
+            delay = min(_BASE_DELAY * (2 ** (attempt - 1)), _MAX_DELAY)
+            await asyncio.sleep(delay)
+
+    _log.warning(
+        "Telegram escalation delivery failed after %d attempts for %s/%s: %s",
         _MAX_ATTEMPTS,
         enriched.device_name,
         enriched.parsed.mnemonic,
