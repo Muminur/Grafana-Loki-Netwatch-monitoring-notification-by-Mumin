@@ -444,7 +444,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
 
     # Re-classify existing alerts whose rules may have changed since they
     # were ingested (classification is stored at ingestion time).
+    # Skip alerts already reclassified as NOISE by the hardware-noise toggle.
     try:
+        from src.api.routes import (  # noqa: PLC0415
+            _SILENT_FAULT_MNEMONICS as _NOISE_MNEMONICS,
+        )
+        from src.api.routes import (  # noqa: PLC0415
+            _hardware_defects_as_noise as _noise_on,
+        )
         from src.core.classifier import classify  # noqa: PLC0415
 
         async with AsyncSession(engine) as session:
@@ -453,6 +460,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
             fixed = 0
             for row in rows:
                 if not row.raw:
+                    continue
+                if (
+                    _noise_on
+                    and row.mnemonic in _NOISE_MNEMONICS
+                    and row.classification == "NOISE"
+                ):
                     continue
                 parsed = parse_syslog(row.raw)
                 if parsed is None:
