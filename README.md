@@ -245,13 +245,16 @@ Futuristic "Mission Control" design with:
 - **ASN organization names** — resolved via BigDataCloud API, cached in SQLite (never re-fetched)
 
 ### Live Features
-- **Auto-reconnecting WebSocket** for real-time alert push
+- **Auto-reconnecting WebSocket** with heartbeat — stale connections detected after 30s of silence; visible reconnection feedback ("Reconnecting...", "Connection lost — check server") after repeated failures
+- **Race-safe alert fetching** — WebSocket events are queued during REST fetches to prevent data corruption; API calls are debounced (300ms) to prevent server flooding
+- **Loading & error states** — async fetches show loading indicators and surface errors to the operator instead of failing silently
 - **Deduplication enforced** — DB storage, WebSocket broadcast, and in-memory store all respect the 5-minute dedup window
 - **Client-side dedup safety net** — 5-minute sliding-window check in the browser
 - **Web Audio API** sound alerts (critical alarm, warning chime, recovery arpeggio)
 - **Browser notifications** for CRITICAL events
 - **Keyboard shortcuts** — `1-5` switch tabs, `A` acknowledge, `N` mute, `/` search
-- **SVG network topology** with live device status colors
+- **SVG network topology** with live device status colors and click debouncing
+- **Chart accessibility** — `aria-label` and `role=img` on all chart canvases; ResizeObserver properly cleaned up on page unload
 
 ### Settings & Maintenance
 - **Hardware Defects as Noise** toggle (Settings page, default ON) — classifies persistent
@@ -412,18 +415,21 @@ A background task (`_hourly_aggregator`) runs every 5 minutes and pre-aggregates
 
 Production-hardening applied across the stack:
 
-- **HTTP security headers** on every response — `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`. CORS origins are configurable via `CORS_ORIGINS`.
-- **SSRF guard** — `MONITOR_HOST` is validated at startup (rejects URI schemes and malformed IP addresses).
-- **Notification delivery** — Discord/Telegram sends retry with exponential backoff, honour HTTP 429 `Retry-After`, validate webhook/token format, and sanitise message fields; secrets are never written to logs.
-- **Syslog ingest resilience** — Loki HTTP poll uses exponential backoff with a lag warning and page-boundary cursor de-duplication (no silent data loss); `health_status()` surfaces receiver state.
-- **Input limits** — the parser caps line length (ReDoS/DoS guard); the API validates `severity`/`period` filters (HTTP 400) and bounds the in-memory maintenance store; the WebSocket manager caps connections and drops slow clients (backpressure).
+- **HTTP security headers** on every response — `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`. CORS origins configurable via `CORS_ORIGINS`; `allow_headers` restricted to `content-type` and `x-api-key`.
+- **SSRF guard** — `MONITOR_HOST` is validated at startup (rejects URI schemes and malformed IP addresses) with descriptive error messages including valid examples.
+- **Notification delivery** — Discord webhook URLs validated for HTTPS-only and length (2048 max); Telegram bot tokens validated for format and length (100 max). Sends retry with exponential backoff, honour HTTP 429 `Retry-After`, sanitise message fields; secrets never written to logs.
+- **Syslog ingest resilience** — Loki HTTP poll uses exponential backoff with a lag warning and page-boundary cursor de-duplication (no silent data loss); UDP rate limiting (1000 pkt/s default) with token bucket and guaranteed socket cleanup via `try/finally`; per-transport error counters exposed via `health_status()`.
+- **Memory-bounded correlation** — incident cache capped at 10,000 entries with LRU eviction; prevents unbounded memory growth during high-volume events.
+- **Input limits** — the parser caps line length (ReDoS/DoS guard); the API validates `severity`/`period` filters (HTTP 400) and bounds the in-memory maintenance store; the WebSocket manager caps connections and drops slow clients (backpressure); dedup engine validates `window_seconds > 0`.
 - **Database** — `incident_id` and silent-fault-resolution indexes, an idempotent index migration, and connection pre-ping.
 - **AS-cache** — tight timeout, bounded retry, timezone-correct TTL, and URL/key redaction in logs.
-- **Supply chain & image** — CI runs `pip-audit`; the Docker image is pinned and non-root with a `.dockerignore`, resource limits, and `no-new-privileges`.
+- **Supply chain & image** — CI runs `pip-audit`; all dependencies pinned with upper bounds; Docker image is pinned and non-root with a `.dockerignore`, resource limits, and `no-new-privileges`.
 - **Authentication (opt-in)** — set `API_KEY` to require an `X-API-Key` header (constant-time check, `WWW-Authenticate` challenge on 401) for mutating endpoints; empty = disabled, so existing deployments are unaffected.
 - **State survives restart** — maintenance windows, the Hardware-Defects-as-Noise toggle, and in-flight CRITICAL escalation tracking are persisted to SQLite and restored on startup; the incident-ID counter is seeded from the DB so IDs never collide across a restart.
-- **Observability** — optional structured JSON logs (`LOG_FORMAT=json`) with a per-request `X-Request-ID`, plus a Prometheus `/metrics` endpoint (alerts processed, dedup suppressed, notifications sent, live WebSocket connections).
-- **Dedup correctness** — the window uses `max(event-time, monotonic)` elapsed so replayed/historical logs and backward clock steps are handled without mis-suppressing real alerts.
+- **Observability** — optional structured JSON logs (`LOG_FORMAT=json`) with a per-request `X-Request-ID`, Prometheus `/metrics` endpoint (alerts processed, dedup suppressed, notifications sent, live WebSocket connections), and `/health` endpoint with background task liveness.
+- **Dedup correctness** — the window uses `max(event-time, monotonic)` elapsed so replayed/historical logs and backward clock steps are handled without mis-suppressing real alerts. Eviction logging tracks purged entries for operational visibility.
+- **Accessibility** — ARIA labels on form hints, chart containers, and emoji icons; keyboard focus indicators (`:focus-visible`) on all interactive elements; acknowledged alert contrast meets WCAG AA (opacity 0.6 + grayscale); responsive tablet breakpoint at 768px.
+- **Static asset cache busting** — CSS/JS served with version query params (`?v=2.0`) to ensure clients load updated assets after deployments.
 
 ---
 
@@ -433,7 +439,7 @@ Production-hardening applied across the stack:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Health check — uptime, alert count, and live DB connectivity (`database_ok`; `status: degraded` when the DB check fails) |
+| `/health` | GET | Health check — uptime, alert count, DB connectivity, and background task liveness (`background_tasks: {digest, escalation, aggregator}`; `status: degraded` when the DB check fails) |
 | `/metrics` | GET | Prometheus metrics (alerts processed, dedup suppressed, notifications sent, WebSocket connections) |
 | `/api/alerts` | GET | Paginated alerts with severity/device/time filters |
 | `/api/alerts/count` | GET | Alert counts by classification for a period |
@@ -532,14 +538,14 @@ bsccl-netwatch/
 
 ## CI Pipeline
 
-GitHub Actions runs on every push and PR across a **4-cell matrix**:
+GitHub Actions runs on every push and PR across a **6-cell matrix**:
 
-| | Ubuntu | macOS |
-|---|---|---|
-| **Python 3.11** | ruff, black, mypy, pytest, coverage | ruff, black, mypy, pytest, coverage |
-| **Python 3.12** | ruff, black, mypy, pytest, coverage | ruff, black, mypy, pytest, coverage |
+| | Ubuntu | macOS | Windows |
+|---|---|---|---|
+| **Python 3.11** | ruff, black, mypy, pytest, coverage | ruff, black, mypy, pytest, coverage | pytest, coverage |
+| **Python 3.12** | ruff, black, mypy, pytest, coverage | ruff, black, mypy, pytest, coverage | pytest, coverage |
 
-**Security gates**: an automated grep over Python sources (no `shell=True`, `os.system(`, `eval(`, `exec(`, or bare `except:`) plus a **`pip-audit`** dependency-vulnerability scan. Runs cancel obsolete in-progress jobs on the same ref (`concurrency`) and cache pip via `setup-python`.
+**Security gates**: an automated grep over Python sources (no `shell=True`, `os.system(`, `eval(`, `exec(`, or bare `except:`) plus a **`pip-audit`** dependency-vulnerability scan. All dependencies pinned with both lower and upper bounds to prevent unexpected breakage. Runs cancel obsolete in-progress jobs on the same ref (`concurrency`) and cache pip via `setup-python`.
 
 ---
 
