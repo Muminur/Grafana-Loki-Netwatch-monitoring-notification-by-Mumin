@@ -61,6 +61,12 @@
 
         osc.start(now + start);
         osc.stop(now + start + dur + 0.05);
+
+        // Disconnect nodes after playback to prevent memory leaks
+        osc.onended = function () {
+            osc.disconnect();
+            gainNode.disconnect();
+        };
     }
 
     // ── Sound presets ─────────────────────────────────────────────────────────
