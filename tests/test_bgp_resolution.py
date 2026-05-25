@@ -412,7 +412,7 @@ class TestBgpUpDbPersistence:
 
         async with AsyncSession(async_db) as session:
             alert = AlertLog(
-                timestamp=datetime(2026, 5, 23, 16, 22, 55, tzinfo=UTC),
+                timestamp=datetime.now(UTC),
                 source_ip="192.168.203.1",
                 device_name="Equinix-RTR-1",
                 hostname="BSCCL-EQ-RTR-01",
@@ -452,7 +452,7 @@ class TestBgpUpDbPersistence:
 
         async with AsyncSession(async_db) as session:
             alert = AlertLog(
-                timestamp=datetime(2026, 5, 23, 16, 22, 55, tzinfo=UTC),
+                timestamp=datetime.now(UTC),
                 source_ip="192.168.203.1",
                 device_name="Equinix-RTR-1",
                 hostname="BSCCL-EQ-RTR-01",
@@ -502,7 +502,7 @@ class TestIncidentReconstructionFiltering:
 
         async with AsyncSession(async_db) as session:
             resolved_alert = AlertLog(
-                timestamp=datetime(2026, 5, 23, 16, 22, 55, tzinfo=UTC),
+                timestamp=datetime.now(UTC),
                 source_ip="192.168.203.1",
                 device_name="Equinix-RTR-1",
                 hostname="BSCCL-EQ-RTR-01",
@@ -514,11 +514,11 @@ class TestIncidentReconstructionFiltering:
                 raw="raw log line",
                 classification="CRITICAL",
                 interface_name="TenGigE0/0/0/7",
-                resolved_at=datetime(2026, 5, 23, 16, 25, 0, tzinfo=UTC),
+                resolved_at=datetime.now(UTC),
                 resolution_reason="bgp_up_inferred",
             )
             unresolved_alert = AlertLog(
-                timestamp=datetime(2026, 5, 23, 16, 22, 56, tzinfo=UTC),
+                timestamp=datetime.now(UTC),
                 source_ip="192.168.203.1",
                 device_name="Equinix-RTR-1",
                 hostname="BSCCL-EQ-RTR-01",
