@@ -213,7 +213,6 @@ The dashboard is designed for deployment on a 55-inch 4K TV in the Network Opera
 - **4K typography scaling** — base font 14px → 24px at `@media (min-width: 2000px)` for distance reading
 - **~49 visible alert rows** at 4K resolution, filling the full viewport height
 - **CRITICAL tab** is the default view on page load
-- **Chart.js font scaling** — legend/tooltip text adapts to viewport (10px desk → 16px 4K)
 - Responsive collapse to single column below 1100px for desk/dev use
 
 ### Neon-Themed UI
@@ -256,7 +255,8 @@ Three shifts aligned to BSCCL NOC operations (BDT timezone):
 | Night | 22:30 — 08:00 |
 
 - **Shift banner** at the top of the dashboard showing current shift name, start time, CRITICAL/WARNING counts since shift start, and open incident count
-- **Handoff notes** — outgoing operator clicks HANDOFF to submit a free-text note with shift context, persisted in SQLite and available to the incoming operator via `GET /api/shift/handoffs`
+- **Handoff notes** — outgoing operator clicks HANDOFF to submit a free-text note with shift context, persisted in SQLite; incoming operator sees the last 3 notes in a "LAST SHIFT HANDOFF" panel below the topology
+- **Toast feedback** — success/error notifications after handoff submission
 - **Shift summary API** — `GET /api/shift/current` returns the current shift name, start time, and alert counts since shift start
 
 ### Live Features
@@ -269,24 +269,30 @@ Three shifts aligned to BSCCL NOC operations (BDT timezone):
 - **Browser notifications** for CRITICAL events
 - **Keyboard shortcuts** — `1-5` switch tabs, `A` acknowledge alert, `Shift+A` bulk-acknowledge incidents, `N` mute, `/` search
 - **SVG network topology** with live device status colors and click debouncing
-- **Chart accessibility** — `aria-label` and `role=img` on all chart canvases; ResizeObserver properly cleaned up on page unload
+### Settings Page (All Toggles Functional)
 
-### Settings & Maintenance
-- **Hardware Defects as Noise** toggle (Settings page, default ON) — classifies persistent
+**Notification Preferences** (server-side, persisted in DB):
+- **Discord Notifications** — enable/disable Discord webhook alerts at runtime
+- **Telegram Notifications** — enable/disable Telegram bot alerts at runtime
+- **Deduplication Window** — adjust the dedup suppression window (30–3600 seconds)
+
+**Alert Classification:**
+- **Hardware Defects as Noise** toggle (default ON) — classifies persistent
   hardware faults (`RX_FAULT` / `SIGNAL` / `RFI`) on backbone P2P bundle members as NOISE
-  instead of CRITICAL, so a flapping optic doesn't drown the CRITICAL tab. Toggle off to treat
-  them as CRITICAL again. Exposed via `GET`/`POST /api/settings/hardware-noise`.
-  On startup, existing unresolved noise-eligible alerts are automatically reclassified to NOISE
-  and moved out of Active Incidents. Toggling the setting also purges stale incidents immediately.
-- **Maintenance windows** — schedule planned-work windows per device (`/api/maintenance`);
-  CRITICAL notifications for that device are suppressed for the window's duration.
+  instead of CRITICAL. Exposed via `GET`/`POST /api/settings/hardware-noise`
 
-### Charts (Chart.js)
-- Alert timeline (stacked area, configurable range)
-- Category donut (severity distribution)
-- Top devices bar chart
-- Network health gauge (0-100 score)
-- Chart cell overflow capped at 4K viewports
+**Sound Settings** (client-side, localStorage):
+- **Alert Sounds** master toggle — enable/disable all sounds
+- **Critical Alarm** — toggle the critical event alarm sound
+- **Warning Chime** — toggle the warning event chime
+- **Recovery Arpeggio** — toggle the recovery event sound
+- **Repeat Incident Alarm** — when ON, alarm repeats every 30s for unacked incidents; when OFF, plays once on first detection (pulsing red border remains visible either way)
+- **Test buttons** — preview each sound type
+
+**Maintenance Windows:**
+- **Create** maintenance windows per device with start/end time and reason
+- **List** active/upcoming windows with delete buttons
+- **Auto-suppression** — CRITICAL notifications for a device are suppressed during its maintenance window
 
 ---
 
@@ -471,6 +477,7 @@ Production-hardening applied across the stack:
 | `/api/stats/monthly` | GET | 30-day statistics |
 | `/api/stats/yearly` | GET | 12-month statistics |
 | `/api/settings/hardware-noise` | GET / POST | Read or toggle "Hardware Defects as Noise" |
+| `/api/settings/notifications` | GET / POST | Read or update notification preferences (Discord, Telegram, dedup window) |
 | `/api/maintenance` | GET / POST | List or create maintenance windows |
 | `/api/maintenance/{id}` | DELETE | Delete a maintenance window |
 | `/api/devices` | GET | All 34 devices with status |
