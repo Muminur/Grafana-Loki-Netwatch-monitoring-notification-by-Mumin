@@ -76,6 +76,16 @@ class _StubReceiver:
         self.stopped = False
         _StubReceiver.instances.append(self)
 
+    @property
+    def is_connected(self) -> bool:
+        """Stub always reports not connected."""
+        return False
+
+    @property
+    def last_message_at(self) -> None:
+        """Stub has no messages."""
+        return None
+
     async def start(self) -> None:
         self.started = True
 

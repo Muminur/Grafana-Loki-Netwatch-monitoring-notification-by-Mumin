@@ -47,6 +47,7 @@ import re
 import socket
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
@@ -139,6 +140,9 @@ class ReceiverHealth:
         Number of consecutive HTTP poll errors since the last success.
     error_counters:
         Cumulative error counts per transport.
+    last_message_at:
+        UTC datetime of the last received syslog message, or ``None`` if
+        no message has been received yet.
     """
 
     running: bool
@@ -149,6 +153,7 @@ class ReceiverHealth:
     error_counters: TransportErrorCounters = field(
         default_factory=TransportErrorCounters
     )
+    last_message_at: datetime | None = None
 
 
 class SyslogReceiver:
@@ -196,6 +201,9 @@ class SyslogReceiver:
         # a data source (WS connected, HTTP poll succeeding, or UDP bound).
         self._is_connected: bool = False
 
+        # --- Last-message timestamp (UTC) ---
+        self._last_message_at: datetime | None = None
+
         # --- Per-transport error counters (cumulative) ---
         self._error_counters = TransportErrorCounters()
         # Monotonic time of the last per-transport error summary log.
@@ -221,6 +229,22 @@ class SyslogReceiver:
         started, has lost its connection, or is in a reconnect back-off cycle.
         """
         return self._is_connected
+
+    @property
+    def last_message_at(self) -> datetime | None:
+        """UTC timestamp of the last received syslog message.
+
+        Returns ``None`` if no message has been received yet.
+        """
+        return self._last_message_at
+
+    def _record_message_received(self) -> None:
+        """Update the last-message timestamp to the current UTC time.
+
+        Called internally whenever a syslog line is successfully extracted
+        and dispatched to the callback.
+        """
+        self._last_message_at = datetime.now(UTC)
 
     async def start(self) -> None:
         """Start receiving.  Tries WS → HTTP → UDP based on syslog_mode.
@@ -378,6 +402,7 @@ class SyslogReceiver:
                 http=self._error_counters.http,
                 udp=self._error_counters.udp,
             ),
+            last_message_at=self._last_message_at,
         )
 
     # ------------------------------------------------------------------
@@ -516,6 +541,7 @@ class SyslogReceiver:
                         raw_msg = raw_msg.decode()
                     lines = self._extract_lines_from_ws(raw_msg)
                     for line in lines:
+                        self._record_message_received()
                         await self._callback(line)
             finally:
                 self._is_connected = False
@@ -628,6 +654,7 @@ class SyslogReceiver:
             (ts, line) for ts, line in entries if (ts, line) not in self._seen_at_cursor
         ]
         for _ts_ns, line in new_entries:
+            self._record_message_received()
             await self._callback(line)
 
         count = len(entries)
@@ -701,6 +728,7 @@ class SyslogReceiver:
                         continue
                     line = data.decode(errors="replace").rstrip("\n\r")
                     if line:
+                        self._record_message_received()
                         await self._callback(line)
                 except OSError:
                     self._record_error("udp")

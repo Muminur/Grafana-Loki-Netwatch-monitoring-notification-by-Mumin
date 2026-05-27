@@ -46,6 +46,7 @@ from src.api.routes import (
     router,
     set_background_tasks,
     set_db_engine,
+    set_receiver,
 )
 from src.api.websocket import WebSocketManager
 from src.config import get_settings
@@ -493,6 +494,107 @@ async def _retention_cleanup(engine: object) -> None:
             _log.error("Retention cleanup error: %s", exc)
 
 
+_STALE_THRESHOLD_SECONDS = 600  # 10 minutes without a syslog message
+
+
+async def _self_monitor(receiver: SyslogReceiver) -> None:
+    """Background task: detect stale syslog data and alert operators.
+
+    Runs every 60 seconds.  When no syslog message has been received in
+    the last 10 minutes, sends a one-shot notification via Discord and
+    Telegram.  The alert flag resets automatically once data flow resumes,
+    so a fresh notification is sent on the next outage.
+
+    A startup grace period equal to the stale threshold prevents false
+    alerts when the app starts and no syslog messages have arrived yet.
+    """
+    import time  # noqa: PLC0415
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    stale_alert_sent = False
+    start_monotonic = time.monotonic()
+
+    while True:
+        try:
+            await asyncio.sleep(60)
+            last_msg = receiver.last_message_at
+            if last_msg is not None:
+                elapsed = (datetime.now(UTC) - last_msg).total_seconds()
+                is_stale = elapsed > _STALE_THRESHOLD_SECONDS
+            else:
+                # No message ever received — only flag stale after the
+                # startup grace period (same as the stale threshold) so
+                # we don't fire a false alert on fresh startup.
+                uptime = time.monotonic() - start_monotonic
+                is_stale = uptime > _STALE_THRESHOLD_SECONDS
+
+            if is_stale and not stale_alert_sent:
+                settings = get_settings()
+                host = settings.monitor_host
+                message = (
+                    f"NetWatch has not received any syslog data for "
+                    f"10 minutes — check Loki connection at "
+                    f"{host}:3100"
+                )
+                _log.warning("Self-monitor: %s", message)
+
+                if settings.discord_enabled and settings.discord_webhook_url:
+                    try:
+                        import httpx as _httpx  # noqa: PLC0415
+
+                        payload = {
+                            "embeds": [
+                                {
+                                    "title": "⚠️ NetWatch Self-Monitor Alert",
+                                    "description": message,
+                                    "color": 0xFF8C00,
+                                }
+                            ]
+                        }
+                        async with _httpx.AsyncClient(timeout=10.0) as client:
+                            await client.post(
+                                settings.discord_webhook_url, json=payload
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        _log.error("Self-monitor Discord send failed: %s", exc)
+
+                if (
+                    settings.telegram_enabled
+                    and settings.telegram_bot_token
+                    and settings.telegram_chat_id
+                ):
+                    try:
+                        import httpx as _httpx  # noqa: PLC0415
+
+                        url = (
+                            f"https://api.telegram.org"
+                            f"/bot{settings.telegram_bot_token}/sendMessage"
+                        )
+                        tg_text = (
+                            "*NetWatch Self-Monitor*" f"\n{message}"
+                        )
+                        tg_payload = {
+                            "chat_id": settings.telegram_chat_id,
+                            "text": tg_text,
+                            "parse_mode": "Markdown",
+                        }
+                        async with _httpx.AsyncClient(timeout=10.0) as client:
+                            await client.post(url, json=tg_payload)
+                    except Exception as exc:  # noqa: BLE001
+                        _log.error("Self-monitor Telegram send failed: %s", exc)
+
+                stale_alert_sent = True
+
+            elif not is_stale and stale_alert_sent:
+                _log.info("Self-monitor: syslog data flow resumed")
+                stale_alert_sent = False
+
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:  # noqa: BLE001
+            _log.error("Self-monitor error: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     """Application lifespan: startup and shutdown logic.
@@ -739,6 +841,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         _log.warning("Could not read last alert timestamp: %s", exc)
 
     receiver = SyslogReceiver(settings, _on_syslog_line, resume_from_ns=resume_ns)
+    set_receiver(receiver)
     try:
         await receiver.start()
         _log.info("SyslogReceiver started (mode: %s)", settings.syslog_mode)
@@ -770,6 +873,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         settings.retention_days,
     )
 
+    # ── Self-monitor (stale data detection) ───────────────────────────────
+    self_monitor_task = asyncio.create_task(_self_monitor(receiver))
+    _log.info("Self-monitor started (60-second interval, 10-minute stale threshold)")
+
     # ── Register task handles for /health liveness reporting ───────────────
     set_background_tasks(
         {
@@ -777,6 +884,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
             "escalation": escalation_task,
             "aggregator": hourly_task,
             "retention": retention_task,
+            "self_monitor": self_monitor_task,
         }
     )
 
@@ -791,6 +899,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     escalation_task.cancel()
     hourly_task.cancel()
     retention_task.cancel()
+    self_monitor_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await digest_task
     with contextlib.suppress(asyncio.CancelledError):
@@ -799,6 +908,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         await hourly_task
     with contextlib.suppress(asyncio.CancelledError):
         await retention_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await self_monitor_task
 
     _log.info("Disposing DB engine…")
     await engine.dispose()
