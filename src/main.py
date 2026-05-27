@@ -679,8 +679,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         _log.warning("Could not read last alert timestamp: %s", exc)
 
     receiver = SyslogReceiver(settings, _on_syslog_line, resume_from_ns=resume_ns)
-    await receiver.start()
-    _log.info("SyslogReceiver started (mode: %s)", settings.syslog_mode)
+    try:
+        await receiver.start()
+        _log.info("SyslogReceiver started (mode: %s)", settings.syslog_mode)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "SyslogReceiver initial start failed (%s); "
+            "dashboard will serve cached data. "
+            "Receiver background task will retry automatically.",
+            exc,
+        )
 
     # ── Daily digest scheduler ─────────────────────────────────────────────
     digest_task = asyncio.create_task(_digest_scheduler(engine))

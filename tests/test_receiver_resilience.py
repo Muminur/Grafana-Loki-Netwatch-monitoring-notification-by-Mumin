@@ -5,6 +5,9 @@ Covers:
 - Lag / consecutive-failure WARNING threshold
 - Cursor safety when multiple entries share the same nanosecond timestamp
 - ``health_status()`` correctness
+- ``is_connected`` property
+- Startup resilience when Loki is unreachable
+- Reconnect with backoff when all transports fail
 - Credential masking in logged URLs
 
 Every network boundary (httpx, websockets, UDP) is mocked.
@@ -17,6 +20,7 @@ import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from src.config import Settings
@@ -26,10 +30,11 @@ from src.core.syslog_receiver import (
     _HTTP_POLL_FAIL_THRESHOLD,
     _HTTP_POLL_INTERVAL,
     _UDP_RATE_LIMIT_DEFAULT,
-    _UDP_RATE_WARN_INTERVAL,
+    _WS_FALLBACK_BACKOFF_BASE,
+    _WS_FALLBACK_BACKOFF_CAP,
+    _WS_FALLBACK_BACKOFF_FACTOR,
     ReceiverHealth,
     SyslogReceiver,
-    TransportErrorCounters,
     _mask_url,
 )
 
@@ -107,6 +112,7 @@ def test_health_status_initial_state() -> None:
     assert isinstance(h, ReceiverHealth)
     assert h.running is False
     assert h.mode == "idle"
+    assert h.connected is False
     assert h.last_poll_ns == 0
     assert h.consecutive_http_failures == 0
 
@@ -754,9 +760,9 @@ def test_udp_rate_limit_warning_suppressed_within_interval(
         receiver._udp_allow_packet()  # noqa: SLF001  — should be suppressed
 
     rate_warnings = [r for r in caplog.records if "rate limit" in r.message.lower()]
-    assert len(rate_warnings) == 1, (
-        f"Expected exactly 1 rate-limit warning, got {len(rate_warnings)}"
-    )
+    assert (
+        len(rate_warnings) == 1
+    ), f"Expected exactly 1 rate-limit warning, got {len(rate_warnings)}"
 
 
 def test_udp_rate_limit_default_value() -> None:
@@ -897,7 +903,8 @@ def test_record_error_logs_at_interval(caplog: pytest.LogCaptureFixture) -> None
             receiver._record_error("ws")  # noqa: SLF001
 
     info_summaries = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.levelno == logging.INFO and "Transport error totals" in r.message
     ]
     assert len(info_summaries) >= 1
@@ -954,3 +961,298 @@ async def test_udp_socket_closed_on_unexpected_exception() -> None:
         await receiver._udp_listen()  # noqa: SLF001
 
     mock_sock.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 11. is_connected property
+# ---------------------------------------------------------------------------
+
+
+def test_is_connected_initially_false() -> None:
+    """is_connected is False before start() is called."""
+    receiver = SyslogReceiver(_settings(), AsyncMock())
+    assert receiver.is_connected is False
+
+
+def test_is_connected_matches_internal_state() -> None:
+    """is_connected reflects the internal _is_connected flag."""
+    receiver = SyslogReceiver(_settings(), AsyncMock())
+    receiver._is_connected = True  # noqa: SLF001
+    assert receiver.is_connected is True
+    receiver._is_connected = False  # noqa: SLF001
+    assert receiver.is_connected is False
+
+
+def test_health_status_includes_connected_field() -> None:
+    """health_status() includes a connected field that reflects is_connected."""
+    receiver = SyslogReceiver(_settings(), AsyncMock())
+    h = receiver.health_status()
+    assert h.connected is False
+
+    receiver._is_connected = True  # noqa: SLF001
+    h2 = receiver.health_status()
+    assert h2.connected is True
+
+
+# ---------------------------------------------------------------------------
+# 12. Startup resilience — Loki unreachable
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_does_not_crash_when_ws_and_http_unreachable() -> None:
+    """start() completes without error when all transports fail.
+
+    The receiver must start background tasks that retry internally,
+    rather than raising an exception that would crash the app.
+    """
+    settings = _settings(syslog_mode="loki_ws")
+    receiver = SyslogReceiver(settings, AsyncMock())
+
+    attempt_count = {"n": 0}
+
+    async def _failing_fallback() -> None:
+        """Simulate all transports failing, then stop after one retry cycle."""
+        attempt_count["n"] += 1
+        if attempt_count["n"] >= 2:
+            receiver._running = False  # noqa: SLF001
+            return
+        # First cycle: raise to simulate WS failure in _ws_tail_once
+        raise ConnectionError("Loki unreachable")
+
+    # Replace the internal fallback method so no real network I/O occurs.
+    with patch.object(receiver, "_ws_tail_with_fallback", new=_failing_fallback):
+        # start() must not raise — it just creates background tasks.
+        await receiver.start()
+        # Give the task a chance to run.
+        await asyncio.sleep(0)
+        assert receiver.is_connected is False
+        await receiver.stop()
+
+
+@pytest.mark.asyncio
+async def test_ws_fallback_retries_when_all_transports_fail() -> None:
+    """When WS, HTTP, and UDP all fail, the fallback loop retries with backoff.
+
+    Verifies:
+    - The loop does not exit on total transport failure
+    - Sleep durations follow exponential backoff
+    - is_connected stays False throughout failures
+    """
+    settings = _settings(syslog_mode="loki_ws")
+    receiver = SyslogReceiver(settings, AsyncMock())
+    receiver._running = True  # noqa: SLF001
+
+    sleep_durations: list[float] = []
+
+    async def fail_ws_once() -> None:
+        raise ConnectionError("ws down")
+
+    async def fail_http_once() -> int:
+        raise httpx.ConnectError("http down")
+
+    async def fail_udp() -> None:
+        raise OSError("udp bind failed")
+
+    cycle_count = {"n": 0}
+
+    async def track_sleep(delay: float) -> None:
+        sleep_durations.append(delay)
+        cycle_count["n"] += 1
+        if cycle_count["n"] >= 3:
+            receiver._running = False  # noqa: SLF001
+
+    with (
+        patch.object(receiver, "_ws_tail_once", side_effect=fail_ws_once),
+        patch.object(receiver, "_http_poll_once", side_effect=fail_http_once),
+        patch.object(receiver, "_udp_listen", side_effect=fail_udp),
+        patch("src.core.syslog_receiver.asyncio.sleep", new=track_sleep),
+    ):
+        await receiver._ws_tail_with_fallback()  # noqa: SLF001
+
+    # Verify backoff sequence: 1, 2, 4 (base * factor^n, capped at 60)
+    expected = [
+        min(
+            _WS_FALLBACK_BACKOFF_BASE * (_WS_FALLBACK_BACKOFF_FACTOR**i),
+            _WS_FALLBACK_BACKOFF_CAP,
+        )
+        for i in range(3)
+    ]
+    assert (
+        sleep_durations == expected
+    ), f"Expected backoff sequence {expected}, got {sleep_durations}"
+    assert receiver.is_connected is False
+
+
+@pytest.mark.asyncio
+async def test_ws_fallback_recovers_when_loki_comes_back() -> None:
+    """After initial failures, receiver connects when Loki becomes available.
+
+    Simulates WS failing twice, then succeeding on the third attempt.
+    Verifies is_connected transitions from False to True.
+    """
+    settings = _settings(syslog_mode="loki_ws")
+    receiver = SyslogReceiver(settings, AsyncMock())
+    receiver._running = True  # noqa: SLF001
+
+    ws_call_count = {"n": 0}
+
+    async def ws_eventually_succeeds() -> None:
+        ws_call_count["n"] += 1
+        if ws_call_count["n"] <= 2:
+            raise ConnectionError("ws down")
+        # Third call: simulate successful connection then clean return
+        receiver._is_connected = True  # noqa: SLF001
+
+    async def ws_tail_noop() -> None:
+        """Simulate the persistent WS loop returning cleanly."""
+        receiver._running = False  # noqa: SLF001
+
+    async def fail_http() -> int:
+        raise httpx.ConnectError("http down")
+
+    async def fail_udp() -> None:
+        raise OSError("udp bind failed")
+
+    async def noop_sleep(_delay: float) -> None:
+        pass
+
+    with (
+        patch.object(receiver, "_ws_tail_once", side_effect=ws_eventually_succeeds),
+        patch.object(receiver, "_ws_tail", new=ws_tail_noop),
+        patch.object(receiver, "_http_poll_once", side_effect=fail_http),
+        patch.object(receiver, "_udp_listen", side_effect=fail_udp),
+        patch("src.core.syslog_receiver.asyncio.sleep", new=noop_sleep),
+    ):
+        await receiver._ws_tail_with_fallback()  # noqa: SLF001
+
+    assert receiver.is_connected is True
+
+
+@pytest.mark.asyncio
+async def test_ws_fallback_http_recovery() -> None:
+    """When WS always fails but HTTP succeeds, receiver uses HTTP.
+
+    Verifies is_connected becomes True and active mode is 'http'.
+    """
+    settings = _settings(syslog_mode="loki_ws")
+    receiver = SyslogReceiver(settings, AsyncMock())
+    receiver._running = True  # noqa: SLF001
+
+    async def fail_ws() -> None:
+        raise ConnectionError("ws down")
+
+    async def http_ok() -> int:
+        return 0
+
+    async def http_poll_loop() -> None:
+        """Simulate the persistent HTTP poll loop returning cleanly."""
+        receiver._running = False  # noqa: SLF001
+
+    with (
+        patch.object(receiver, "_ws_tail_once", side_effect=fail_ws),
+        patch.object(receiver, "_http_poll_once", new=http_ok),
+        patch.object(receiver, "_http_poll", new=http_poll_loop),
+    ):
+        await receiver._ws_tail_with_fallback()  # noqa: SLF001
+
+    assert receiver._active_mode == "http"  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_ws_fallback_backoff_cap_at_60s() -> None:
+    """Backoff delay in the fallback loop is capped at 60 seconds."""
+    settings = _settings(syslog_mode="loki_ws")
+    receiver = SyslogReceiver(settings, AsyncMock())
+    receiver._running = True  # noqa: SLF001
+
+    sleep_durations: list[float] = []
+    cycle_count = {"n": 0}
+
+    async def fail_ws() -> None:
+        raise ConnectionError("ws down")
+
+    async def fail_http() -> int:
+        raise httpx.ConnectError("http down")
+
+    async def fail_udp() -> None:
+        raise OSError("udp bind failed")
+
+    async def track_sleep(delay: float) -> None:
+        sleep_durations.append(delay)
+        cycle_count["n"] += 1
+        if cycle_count["n"] >= 8:
+            receiver._running = False  # noqa: SLF001
+
+    with (
+        patch.object(receiver, "_ws_tail_once", side_effect=fail_ws),
+        patch.object(receiver, "_http_poll_once", side_effect=fail_http),
+        patch.object(receiver, "_udp_listen", side_effect=fail_udp),
+        patch("src.core.syslog_receiver.asyncio.sleep", new=track_sleep),
+    ):
+        await receiver._ws_tail_with_fallback()  # noqa: SLF001
+
+    # All delays should be <= 60.0
+    for d in sleep_durations:
+        assert (
+            d <= _WS_FALLBACK_BACKOFF_CAP
+        ), f"Backoff delay {d} exceeds cap {_WS_FALLBACK_BACKOFF_CAP}"
+    # The last few should be exactly 60.0 (1 -> 2 -> 4 -> 8 -> 16 -> 32 -> 60 -> 60)
+    assert sleep_durations[-1] == _WS_FALLBACK_BACKOFF_CAP
+
+
+@pytest.mark.asyncio
+async def test_is_connected_false_after_stop() -> None:
+    """is_connected is False after stop() is called."""
+    receiver = SyslogReceiver(_settings(), AsyncMock())
+    receiver._is_connected = True  # noqa: SLF001
+    await receiver.stop()
+    assert receiver.is_connected is False
+
+
+@pytest.mark.asyncio
+async def test_http_poll_sets_connected_true_on_success() -> None:
+    """is_connected is set to True after a successful HTTP poll cycle."""
+    settings = _settings()
+    receiver = SyslogReceiver(settings, AsyncMock())
+    receiver._running = True  # noqa: SLF001
+
+    call_count = {"n": 0}
+
+    async def succeed_once() -> int:
+        call_count["n"] += 1
+        return 0
+
+    async def stop_after_one(_delay: float) -> None:
+        receiver._running = False  # noqa: SLF001
+
+    with (
+        patch.object(receiver, "_http_poll_once", side_effect=succeed_once),
+        patch("src.core.syslog_receiver.asyncio.sleep", new=stop_after_one),
+    ):
+        await receiver._http_poll()  # noqa: SLF001
+
+    assert receiver.is_connected is True
+
+
+@pytest.mark.asyncio
+async def test_http_poll_sets_connected_false_on_failure() -> None:
+    """is_connected is set to False when HTTP poll fails."""
+    settings = _settings()
+    receiver = SyslogReceiver(settings, AsyncMock())
+    receiver._running = True  # noqa: SLF001
+    receiver._is_connected = True  # noqa: SLF001
+
+    async def fail_once() -> int:
+        raise RuntimeError("loki down")
+
+    async def stopper(_delay: float) -> None:
+        receiver._running = False  # noqa: SLF001
+
+    with (
+        patch.object(receiver, "_http_poll_once", side_effect=fail_once),
+        patch("src.core.syslog_receiver.asyncio.sleep", new=stopper),
+    ):
+        await receiver._http_poll()  # noqa: SLF001
+
+    assert receiver.is_connected is False

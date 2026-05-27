@@ -310,6 +310,7 @@ async def test_ws_tail_with_fallback_calls_http_on_ws_failure() -> None:
 
     settings = Settings(monitor_host="127.0.0.1")
     receiver = SyslogReceiver(settings, callback)
+    receiver._running = True  # noqa: SLF001
 
     # _ws_tail_once raises ConnectionError (WS unavailable)
     ws_fail = AsyncMock(side_effect=ConnectionError("WS unavailable"))
@@ -364,6 +365,7 @@ async def test_ws_tail_with_fallback_calls_udp_on_http_failure() -> None:
 
     settings = Settings(monitor_host="127.0.0.1")
     receiver = SyslogReceiver(settings, callback)
+    receiver._running = True  # noqa: SLF001
 
     ws_fail = AsyncMock(side_effect=ConnectionError("WS unavailable"))
     http_fail = AsyncMock(side_effect=OSError("HTTP unavailable"))
@@ -401,6 +403,7 @@ async def test_ws_tail_with_fallback_stays_on_ws_when_successful() -> None:
 
     settings = Settings(monitor_host="127.0.0.1")
     receiver = SyslogReceiver(settings, callback)
+    receiver._running = True  # noqa: SLF001
 
     msg = _make_loki_ws_message(_SAMPLE_LOG)
     mock_ws = AsyncMock()
@@ -443,6 +446,7 @@ async def test_ws_tail_with_fallback_websocket_exception_triggers_fallback() -> 
 
     settings = Settings(monitor_host="127.0.0.1")
     receiver = SyslogReceiver(settings, AsyncMock())
+    receiver._running = True  # noqa: SLF001
 
     ws_fail = AsyncMock(
         side_effect=websockets.exceptions.WebSocketException("bad handshake")

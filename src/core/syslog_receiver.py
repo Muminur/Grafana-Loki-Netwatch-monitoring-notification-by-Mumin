@@ -10,6 +10,12 @@ Connection strategy:
 
 WebSocket reconnects with exponential back-off: 1 s, 2 s, 4 s … max 30 s.
 
+When ALL transports fail (e.g. Loki unavailable during datacenter restart),
+the receiver enters a resilient retry loop with exponential back-off (1 s,
+2 s, 4 s, … max 60 s) that retries the WS → HTTP → UDP cascade until a
+connection succeeds.  The ``is_connected`` property reflects the current
+connection state so the dashboard can display a degraded-but-running status.
+
 HTTP poll error path uses the same exponential back-off strategy so that a
 downed Loki instance is not hammered with requests.  The back-off resets to
 the base delay on the first successful poll.
@@ -61,6 +67,11 @@ _LOKI_QUERY = '{job="Router-Logs"}'  # default; overridden by settings.loki_quer
 # Exponential back-off parameters for the HTTP poll error path.
 _HTTP_BACKOFF_BASE = 1.0  # seconds – initial delay after first failure
 _HTTP_BACKOFF_CAP = 30.0  # seconds – maximum delay
+
+# Exponential back-off parameters for the WS fallback reconnect loop.
+_WS_FALLBACK_BACKOFF_BASE = 1.0  # seconds – initial delay
+_WS_FALLBACK_BACKOFF_CAP = 60.0  # seconds – maximum delay
+_WS_FALLBACK_BACKOFF_FACTOR = 2  # multiplier per attempt
 
 # Emit a WARNING when this many consecutive HTTP poll failures are observed.
 _HTTP_POLL_FAIL_THRESHOLD = 5
@@ -118,6 +129,9 @@ class ReceiverHealth:
     mode:
         Active transport mode: ``"ws"``, ``"http"``, or ``"udp"``.
         ``"idle"`` when the receiver has not yet been started.
+    connected:
+        ``True`` when the receiver has an active connection to a data source.
+        ``False`` when disconnected or in a reconnect back-off cycle.
     last_poll_ns:
         Nanosecond timestamp of the last HTTP cursor position.  ``0`` when
         no HTTP poll has completed yet.
@@ -129,6 +143,7 @@ class ReceiverHealth:
 
     running: bool
     mode: str
+    connected: bool
     last_poll_ns: int
     consecutive_http_failures: int
     error_counters: TransportErrorCounters = field(
@@ -177,6 +192,10 @@ class SyslogReceiver:
         # use and closed in stop().  Avoids creating a new client per cycle.
         self._http_client: httpx.AsyncClient | None = None
 
+        # Tracks whether the receiver currently has an active connection to
+        # a data source (WS connected, HTTP poll succeeding, or UDP bound).
+        self._is_connected: bool = False
+
         # --- Per-transport error counters (cumulative) ---
         self._error_counters = TransportErrorCounters()
         # Monotonic time of the last per-transport error summary log.
@@ -191,6 +210,17 @@ class SyslogReceiver:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    @property
+    def is_connected(self) -> bool:
+        """Whether the receiver currently has an active data source connection.
+
+        Returns ``True`` when a WebSocket session is open, the HTTP poller
+        has successfully completed at least one cycle, or the UDP socket is
+        bound and listening.  Returns ``False`` when the receiver has not
+        started, has lost its connection, or is in a reconnect back-off cycle.
+        """
+        return self._is_connected
 
     async def start(self) -> None:
         """Start receiving.  Tries WS → HTTP → UDP based on syslog_mode.
@@ -226,36 +256,91 @@ class SyslogReceiver:
         succeeds, the persistent ``_ws_tail()`` reconnect loop takes over.
         If the probe raises, fall back to HTTP poll (then UDP).
 
+        When ALL transports fail on the initial attempt, the method does NOT
+        exit.  Instead it enters a resilient reconnect loop with exponential
+        back-off (1 s -> 2 s -> ... -> 60 s cap), retrying the WS -> HTTP ->
+        UDP cascade until a connection succeeds or the receiver is stopped.
+        This ensures the application remains functional when Loki is
+        temporarily unreachable during datacenter restarts.
+
         Note: ``_ws_tail()`` starts a fresh WebSocket session internally, so
         data read by the probe and data read by the persistent loop are from
         separate connections with no overlap.
         """
-        try:
-            self._active_mode = "ws"
-            await self._ws_tail_once()
-            # Connection succeeded — hand off to the persistent reconnect loop
-            await self._ws_tail()
-        except (
-            ConnectionError,
-            OSError,
-            websockets.exceptions.WebSocketException,
-        ) as exc:
-            _log.warning("WS connection failed (%s), falling back to HTTP poll", exc)
+        delay = _WS_FALLBACK_BACKOFF_BASE
+
+        while self._running:
+            # ── Try WebSocket ─────────────────────────────────────────
+            try:
+                self._active_mode = "ws"
+                await self._ws_tail_once()
+                self._is_connected = True
+                # Connection succeeded — hand off to the persistent reconnect loop
+                delay = _WS_FALLBACK_BACKOFF_BASE  # reset on success
+                await self._ws_tail()
+                # _ws_tail returned (e.g. due to _running=False) — exit
+                return
+            except (
+                ConnectionError,
+                OSError,
+                websockets.exceptions.WebSocketException,
+            ) as exc:
+                self._is_connected = False
+                _log.warning(
+                    "WS connection failed (%s), falling back to HTTP poll", exc
+                )
+
+            if not self._running:
+                return
+
+            # ── Try HTTP poll ─────────────────────────────────────────
             self._active_mode = "http"
             try:
                 await self._http_poll_once()
+                self._is_connected = True
                 # HTTP reachable — run the persistent poll loop
+                delay = _WS_FALLBACK_BACKOFF_BASE  # reset on success
                 await self._http_poll()
+                return
             except (httpx.RequestError, ConnectionError, OSError) as http_exc:
+                self._is_connected = False
                 _log.warning(
                     "HTTP poll also failed (%s), falling back to UDP", http_exc
                 )
-                self._active_mode = "udp"
+
+            if not self._running:
+                return
+
+            # ── Try UDP ───────────────────────────────────────────────
+            self._active_mode = "udp"
+            try:
                 await self._udp_listen()
+                return
+            except OSError as udp_exc:
+                self._is_connected = False
+                _log.warning(
+                    "UDP listen also failed (%s); all transports unavailable",
+                    udp_exc,
+                )
+
+            if not self._running:
+                return
+
+            # ── All transports failed — back off and retry ────────────
+            _log.warning(
+                "All transports failed. Retrying in %.0f s…",
+                delay,
+            )
+            await asyncio.sleep(delay)
+            delay = min(
+                delay * _WS_FALLBACK_BACKOFF_FACTOR,
+                _WS_FALLBACK_BACKOFF_CAP,
+            )
 
     async def stop(self) -> None:
         """Gracefully cancel all running receiver tasks and close resources."""
         self._running = False
+        self._is_connected = False
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -285,6 +370,7 @@ class SyslogReceiver:
         return ReceiverHealth(
             running=self._running,
             mode=self._active_mode,
+            connected=self._is_connected,
             last_poll_ns=self._last_poll_ns,
             consecutive_http_failures=self._http_fail_count,
             error_counters=TransportErrorCounters(
@@ -316,10 +402,7 @@ class SyslogReceiver:
             total = self._error_counters.udp
 
         now = time.monotonic()
-        if (
-            total % _ERROR_LOG_INTERVAL == 0
-            or now - self._last_error_log_time >= 60.0
-        ):
+        if total % _ERROR_LOG_INTERVAL == 0 or now - self._last_error_log_time >= 60.0:
             self._last_error_log_time = now
             _log.info(
                 "Transport error totals: ws=%d, http=%d, udp=%d",
@@ -410,6 +493,7 @@ class SyslogReceiver:
                 OSError,
                 websockets.exceptions.WebSocketException,
             ) as exc:
+                self._is_connected = False
                 self._record_error("ws")
                 _log.warning("WS disconnect (attempt %d): %s", attempt, exc)
                 if max_attempts is not None and attempt >= max_attempts:
@@ -424,12 +508,17 @@ class SyslogReceiver:
         query = self._settings.loki_query
         url = f"{self._settings.loki_ws_url}?query={quote(query)}"
         async with websockets.connect(url) as ws:
-            async for raw_msg in ws:
-                if isinstance(raw_msg, bytes):
-                    raw_msg = raw_msg.decode()
-                lines = self._extract_lines_from_ws(raw_msg)
-                for line in lines:
-                    await self._callback(line)
+            self._is_connected = True
+            _log.info("WebSocket connected to Loki")
+            try:
+                async for raw_msg in ws:
+                    if isinstance(raw_msg, bytes):
+                        raw_msg = raw_msg.decode()
+                    lines = self._extract_lines_from_ws(raw_msg)
+                    for line in lines:
+                        await self._callback(line)
+            finally:
+                self._is_connected = False
 
     # ------------------------------------------------------------------
     # HTTP poll
@@ -455,6 +544,7 @@ class SyslogReceiver:
             try:
                 count = await self._http_poll_once()
                 # Successful poll — reset failure tracking and back-off delay.
+                self._is_connected = True
                 if self._http_fail_count > 0:
                     _log.info(
                         "HTTP poll recovered after %d consecutive failure(s)",
@@ -465,6 +555,7 @@ class SyslogReceiver:
                 while count >= self._POLL_LIMIT and self._running:
                     count = await self._http_poll_once()
             except Exception as exc:  # noqa: BLE001
+                self._is_connected = False
                 self._http_fail_count += 1
                 self._record_error("http")
                 _log.warning(
@@ -597,6 +688,7 @@ class SyslogReceiver:
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind(("0.0.0.0", port))
+            self._is_connected = True
 
             _log.info("UDP syslog listener started on port %d", port)
 
@@ -615,6 +707,7 @@ class SyslogReceiver:
                     if not self._running:
                         break
         finally:
+            self._is_connected = False
             sock.close()
 
     # ------------------------------------------------------------------
