@@ -214,26 +214,39 @@
             title.textContent = node.name + ' (' + (node.location || '') + ') — ' + (node.status || 'unknown');
             g.appendChild(title);
 
-            // Click handler — dispatch filter event or set hash (debounced)
+            // Click handler — dispatch detail + filter events (debounced)
             g.style.cursor = 'pointer';
-            g.addEventListener('click', (function (nodeName) {
+            g.addEventListener('click', (function (nodeData) {
                 return function () {
                     var now = Date.now();
                     if (now - _lastClickTime < 500) return; // Debounce 500ms
                     _lastClickTime = now;
 
-                    var evt = null;
+                    // Dispatch device-detail event with full node metadata
                     try {
-                        evt = new CustomEvent('netwatch:filter-device', { detail: { device: nodeName } });
+                        document.dispatchEvent(new CustomEvent('netwatch:device-detail', {
+                            detail: {
+                                device: nodeData.name,
+                                location: nodeData.location || '',
+                                platform: nodeData.platform || '',
+                                ip: nodeData.ip || '',
+                                status: nodeData.status || 'unknown',
+                            },
+                        }));
+                    } catch (e) {
+                        // CustomEvent not supported — fall through to filter
+                    }
+
+                    try {
+                        document.dispatchEvent(new CustomEvent('netwatch:filter-device', {
+                            detail: { device: nodeData.name },
+                        }));
                     } catch (e) {
                         // IE fallback — not expected but safe
                     }
-                    if (evt) {
-                        document.dispatchEvent(evt);
-                    }
-                    window.location.hash = '#device=' + encodeURIComponent(nodeName);
+                    window.location.hash = '#device=' + encodeURIComponent(nodeData.name);
                 };
-            })(node.name));
+            })(node));
 
             nodeGroup.appendChild(g);
         });
