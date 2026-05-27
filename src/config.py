@@ -238,6 +238,9 @@ class Settings:
     log_level: str = field(
         default_factory=lambda: _validate_log_level(os.environ.get("LOG_LEVEL", "INFO"))
     )
+    retention_days: int = field(
+        default_factory=lambda: _safe_int("RETENTION_DAYS", "90")
+    )
 
     @property
     def loki_datasource_id(self) -> int:

@@ -7,15 +7,15 @@ caller manages the session explicitly.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
-from src.database.models import AlertLog, AppSetting, MaintenanceWindow
+from src.database.models import AlertLog, AppSetting, HourlyStats, MaintenanceWindow
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 
 async def insert_alert(session: AsyncSession, alert: AlertLog) -> AlertLog:
@@ -235,3 +235,78 @@ async def set_app_setting(session: AsyncSession, key: str, value: str) -> AppSet
         row.updated_at = datetime.now(UTC)
     await session.flush()
     return row
+
+
+# ---------------------------------------------------------------------------
+# Retention cleanup
+# ---------------------------------------------------------------------------
+
+
+async def prune_old_alerts(session: AsyncSession, retention_days: int) -> int:
+    """Delete ``AlertLog`` rows older than *retention_days*.
+
+    SQLite stores AlertLog timestamps as naive BDT (UTC+6) face values, so
+    the cutoff is computed as a naive datetime to match.  Uses
+    ``synchronize_session=False`` so the ORM does not attempt in-Python
+    evaluation of remaining session objects after the bulk delete.
+
+    Args:
+        session: An active async session.  The caller is responsible for
+            committing the transaction.
+        retention_days: Age threshold in days.  Rows with a ``timestamp``
+            older than the cutoff are deleted.
+
+    Returns:
+        The number of rows deleted.
+    """
+    # Strip tzinfo so the cutoff is naive, matching stored BDT timestamps.
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=retention_days)
+    stmt = (
+        delete(AlertLog)
+        .where(AlertLog.timestamp < cutoff)
+        .execution_options(synchronize_session=False)
+    )
+    result = await session.execute(stmt)
+    return result.rowcount  # type: ignore[return-value]
+
+
+async def prune_old_stats(session: AsyncSession, max_age_days: int = 365) -> int:
+    """Delete ``HourlyStats`` rows older than *max_age_days*.
+
+    Uses a naive datetime cutoff to match the naive BDT values stored in
+    SQLite, consistent with :func:`prune_old_alerts`.
+
+    Args:
+        session: An active async session.  The caller is responsible for
+            committing the transaction.
+        max_age_days: Age threshold in days.  Defaults to 365.
+
+    Returns:
+        The number of rows deleted.
+    """
+    # Strip tzinfo so the cutoff is naive, matching stored BDT timestamps.
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=max_age_days)
+    stmt = (
+        delete(HourlyStats)
+        .where(HourlyStats.hour < cutoff)
+        .execution_options(synchronize_session=False)
+    )
+    result = await session.execute(stmt)
+    return result.rowcount  # type: ignore[return-value]
+
+
+async def vacuum_db(engine: AsyncEngine) -> None:
+    """Run SQLite ``VACUUM`` to reclaim disk space after bulk deletes.
+
+    ``VACUUM`` cannot run inside a transaction, so this function uses a raw
+    DBAPI connection with ``isolation_level`` set to autocommit.
+
+    Args:
+        engine: The SQLAlchemy async engine whose underlying database will
+            be vacuumed.
+    """
+    from sqlalchemy import text  # noqa: PLC0415
+
+    async with engine.connect() as conn:
+        await conn.execution_options(isolation_level="AUTOCOMMIT")
+        await conn.execute(text("VACUUM"))
