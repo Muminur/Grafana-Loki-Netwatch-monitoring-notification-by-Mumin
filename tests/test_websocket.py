@@ -5,6 +5,9 @@ TDD approach.
 - Integration tests (connect via TestClient) are kept separate from the async
   broadcast calls to avoid event-loop conflicts between TestClient threads and
   the asyncio event loop.
+- WebSocket authentication tests verify that the ``_ws_authenticate`` helper
+  in ``src/main.py`` enforces or skips token auth based on the ``API_KEY``
+  setting.
 """
 
 from __future__ import annotations
@@ -232,3 +235,96 @@ async def test_disconnect_twice_no_error() -> None:
     # Second disconnect — safe
     await manager.disconnect(ws)
     assert manager.active_connections == 0
+
+
+# ---------------------------------------------------------------------------
+# 10. WebSocket authentication — backward compatibility (auth disabled)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ws_auth_disabled_allows_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When API_KEY is empty, _ws_authenticate returns True (connection allowed)."""
+    from src.config import get_settings
+    from src.main import _ws_authenticate
+
+    monkeypatch.delenv("API_KEY", raising=False)
+    if hasattr(get_settings, "cache_clear"):
+        get_settings.cache_clear()
+
+    ws = _make_mock_websocket()
+    ws.query_params = {}  # No token param
+
+    try:
+        result = await _ws_authenticate(ws)
+        assert result is True
+        # accept and close should NOT have been called
+        ws.accept.assert_not_awaited()
+        ws.close.assert_not_awaited()
+    finally:
+        monkeypatch.delenv("API_KEY", raising=False)
+        if hasattr(get_settings, "cache_clear"):
+            get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# 11. WebSocket authentication — valid token accepted
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ws_auth_valid_token_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When API_KEY is set, a matching token query param allows the connection."""
+    from src.config import get_settings
+    from src.main import _ws_authenticate
+
+    monkeypatch.setenv("API_KEY", "ws-test-secret")
+    if hasattr(get_settings, "cache_clear"):
+        get_settings.cache_clear()
+
+    ws = _make_mock_websocket()
+    ws.query_params = {"token": "ws-test-secret"}
+
+    try:
+        result = await _ws_authenticate(ws)
+        assert result is True
+        # Connection was authorised — accept/close not called by auth helper
+        ws.accept.assert_not_awaited()
+        ws.close.assert_not_awaited()
+    finally:
+        monkeypatch.delenv("API_KEY", raising=False)
+        if hasattr(get_settings, "cache_clear"):
+            get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# 12. WebSocket authentication — whitespace-only key disables auth
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ws_auth_whitespace_key_disables_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A whitespace-only API_KEY is treated as unset (auth disabled)."""
+    from src.config import get_settings
+    from src.main import _ws_authenticate
+
+    monkeypatch.setenv("API_KEY", "   ")
+    if hasattr(get_settings, "cache_clear"):
+        get_settings.cache_clear()
+
+    ws = _make_mock_websocket()
+    ws.query_params = {}
+
+    try:
+        result = await _ws_authenticate(ws)
+        assert result is True
+    finally:
+        monkeypatch.delenv("API_KEY", raising=False)
+        if hasattr(get_settings, "cache_clear"):
+            get_settings.cache_clear()
