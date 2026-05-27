@@ -1045,6 +1045,92 @@ button { cursor: pointer; }
 .summary-critical .summary-value { color: var(--neon-red); text-shadow: 0 0 8px var(--neon-red-glow); }
 .summary-warning  .summary-value { color: var(--neon-yellow); text-shadow: 0 0 8px var(--neon-yellow-glow); }
 
+/* ── Heatmap ──────────────────────────────────────────────────────────── */
+.stats-heatmap { grid-column: span 2; }
+
+.heatmap-wrapper {
+    padding: 1rem;
+    overflow-x: auto;
+}
+
+.heatmap-hour-labels {
+    display: grid;
+    grid-template-columns: 48px repeat(24, 1fr);
+    gap: 2px;
+    margin-bottom: 2px;
+}
+
+.heatmap-corner {
+    /* Empty top-left corner cell */
+}
+
+.heatmap-hour-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+    text-align: center;
+    line-height: 1;
+}
+
+.heatmap-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.heatmap-row {
+    display: grid;
+    grid-template-columns: 48px repeat(24, 1fr);
+    gap: 2px;
+    align-items: center;
+}
+
+.heatmap-day-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+    text-align: right;
+    padding-right: 6px;
+    white-space: nowrap;
+}
+
+.heatmap-cell {
+    aspect-ratio: 1;
+    min-width: 20px;
+    min-height: 20px;
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.03);
+    cursor: default;
+    transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.heatmap-cell:hover {
+    transform: scale(1.3);
+    z-index: 1;
+    outline: 1px solid var(--neon-cyan);
+    outline-offset: 1px;
+}
+
+.heatmap-legend {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    margin-top: 0.75rem;
+}
+
+.heatmap-legend-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+}
+
+.heatmap-legend-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 2px;
+}
+
 /* ── Settings Page ─────────────────────────────────────────────────────── */
 .settings-layout {
     display: grid;
@@ -1439,7 +1525,7 @@ kbd {
 @media (max-width: 900px) {
     .severity-bar { grid-template-columns: repeat(2, 1fr); }
     .stats-layout { grid-template-columns: 1fr; }
-    .stats-health, .stats-timeline, .stats-donut, .stats-devices, .stats-summary {
+    .stats-health, .stats-timeline, .stats-donut, .stats-devices, .stats-summary, .stats-heatmap {
         grid-column: 1;
     }
     .settings-layout { grid-template-columns: 1fr; }

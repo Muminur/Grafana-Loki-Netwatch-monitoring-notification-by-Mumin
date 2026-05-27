@@ -79,6 +79,54 @@
                 aria-label="Top devices by alert count bar chart"></canvas>
     </section>
 
+    <!-- Alert Heatmap -->
+    <section class="panel stats-panel stats-heatmap" role="region" aria-label="Alert heatmap — when alerts occur">
+        <div class="panel-header">
+            <span class="panel-title">
+                <span class="panel-icon" role="img" aria-hidden="true">&#9638;</span> ALERT HEATMAP — WHEN ALERTS OCCUR
+            </span>
+        </div>
+        <div id="heatmapContainer" class="heatmap-wrapper">
+            <div class="heatmap-hour-labels" aria-hidden="true">
+                <span class="heatmap-corner"></span>
+                <span class="heatmap-hour-label">00</span>
+                <span class="heatmap-hour-label">01</span>
+                <span class="heatmap-hour-label">02</span>
+                <span class="heatmap-hour-label">03</span>
+                <span class="heatmap-hour-label">04</span>
+                <span class="heatmap-hour-label">05</span>
+                <span class="heatmap-hour-label">06</span>
+                <span class="heatmap-hour-label">07</span>
+                <span class="heatmap-hour-label">08</span>
+                <span class="heatmap-hour-label">09</span>
+                <span class="heatmap-hour-label">10</span>
+                <span class="heatmap-hour-label">11</span>
+                <span class="heatmap-hour-label">12</span>
+                <span class="heatmap-hour-label">13</span>
+                <span class="heatmap-hour-label">14</span>
+                <span class="heatmap-hour-label">15</span>
+                <span class="heatmap-hour-label">16</span>
+                <span class="heatmap-hour-label">17</span>
+                <span class="heatmap-hour-label">18</span>
+                <span class="heatmap-hour-label">19</span>
+                <span class="heatmap-hour-label">20</span>
+                <span class="heatmap-hour-label">21</span>
+                <span class="heatmap-hour-label">22</span>
+                <span class="heatmap-hour-label">23</span>
+            </div>
+            <div class="heatmap-body" id="heatmapBody">
+                <!-- Rows rendered by JS -->
+            </div>
+            <div class="heatmap-legend">
+                <span class="heatmap-legend-label">Fewer</span>
+                <span class="heatmap-legend-swatch" style="background:var(--neon-green)"></span>
+                <span class="heatmap-legend-swatch" style="background:var(--neon-yellow)"></span>
+                <span class="heatmap-legend-swatch" style="background:var(--neon-red)"></span>
+                <span class="heatmap-legend-label">More</span>
+            </div>
+        </div>
+    </section>
+
     <!-- Summary Counters -->
     <section class="panel stats-panel stats-summary">
         <div class="panel-header">
