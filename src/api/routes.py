@@ -1262,59 +1262,75 @@ async def get_incidents() -> list[dict[str, Any]]:
         result = await session.execute(stmt)
         rows = result.scalars().all()
 
-    # First pass: collect resolved device+interface pairs and BGP sessions.
+    # Determine the latest state per device+key using a single pass.
+    # Because the query is ORDER BY timestamp DESC, the FIRST row seen for
+    # each key is the most recent event.  If that event is a recovery, the
+    # session/interface is considered resolved even if older DOWN rows exist
+    # in the result set.  If the most recent event is active (DOWN/fault),
+    # the incident is kept regardless of any earlier UP rows — this fixes the
+    # temporal ordering bug where a DOWN→UP→DOWN sequence was incorrectly
+    # resolved because any UP was found, irrespective of timing.
+    #
     # Resolution is DEVICE-SPECIFIC: the same interface name on different
     # routers connects to different far-end equipment (e.g., KKT-Core-1
     # TGE0/0/1/7 → Equinix vs KKT-Core-2 TGE0/0/1/7 → F@H-IPT-02).
-    resolved: set[str] = set()
-    for row in rows:
-        if not _is_recovery_event(row.mnemonic, row.message or ""):
-            continue
-        iface = row.interface_name or _extract_iface_from_msg(row.message or "")
-        if row.mnemonic == "ADJCHANGE" and row.as_number:
-            resolved.add(f"{row.device_name}:BGP:{row.as_number}")
-        elif iface:
-            resolved.add(f"{row.device_name}:{iface}")
+    latest_state: dict[str, str] = {}  # key → "recovery" | "active"
+    key_rows: dict[str, list[Any]] = {}  # key → list of non-recovery rows
 
-    seen: dict[str, dict[str, Any]] = {}
     for row in rows:
-        if _is_recovery_event(row.mnemonic, row.message or ""):
-            continue
+        is_recovery = _is_recovery_event(row.mnemonic, row.message or "")
         iface = row.interface_name or _extract_iface_from_msg(row.message or "")
         if row.mnemonic == "ADJCHANGE" and row.as_number:
-            if f"{row.device_name}:BGP:{row.as_number}" in resolved:
-                continue
-            discriminator = str(row.as_number)
+            key = f"{row.device_name}:BGP:{row.as_number}"
+        elif iface:
+            key = f"{row.device_name}:{iface}"
         else:
-            if iface and f"{row.device_name}:{iface}" in resolved:
-                continue
-            discriminator = row.bgp_neighbor or iface or ""
-        key = f"{row.device_name}:{row.mnemonic}:{discriminator}"
-        if key in seen:
-            seen[key]["alert_count"] = seen[key].get("alert_count", 0) + 1
+            key = f"{row.device_name}:{row.mnemonic}:{row.bgp_neighbor or ''}"
+
+        if key not in latest_state:
+            latest_state[key] = "recovery" if is_recovery else "active"
+
+        if not is_recovery:
+            key_rows.setdefault(key, []).append(row)
+
+    # Build incidents only for keys whose latest event is NOT a recovery.
+    seen: dict[str, dict[str, Any]] = {}
+    for key, state in latest_state.items():
+        if state == "recovery":
             continue
-        inc = {
-            "id": f"ALERT-{row.id}",
-            "title": build_incident_title(
-                mnemonic=row.mnemonic,
-                device_name=row.device_name,
-                message=row.message or "",
-                interface_name=row.interface_name or "",
-                as_name=row.as_name or "",
-            ),
-            "severity": "CRITICAL",
-            "device": row.device_name,
-            "mnemonic": row.mnemonic,
-            "message": (row.message or "")[:200],
-            "status": "active",
-            "alert_count": 1,
-            "started_at": row.timestamp.isoformat() if row.timestamp else "",
-            "last_alert": row.timestamp.isoformat() if row.timestamp else "",
-            "interface": row.interface_name or "",
-            "client": row.client_name or "",
-            "as_name": row.as_name or "",
-        }
-        seen[key] = inc
+        for row in key_rows.get(key, []):
+            discriminator = ""
+            if row.mnemonic == "ADJCHANGE" and row.as_number:
+                discriminator = str(row.as_number)
+            else:
+                iface = row.interface_name or _extract_iface_from_msg(row.message or "")
+                discriminator = row.bgp_neighbor or iface or ""
+            seen_key = f"{row.device_name}:{row.mnemonic}:{discriminator}"
+            if seen_key in seen:
+                seen[seen_key]["alert_count"] = seen[seen_key].get("alert_count", 0) + 1
+                continue
+            inc = {
+                "id": f"ALERT-{row.id}",
+                "title": build_incident_title(
+                    mnemonic=row.mnemonic,
+                    device_name=row.device_name,
+                    message=row.message or "",
+                    interface_name=row.interface_name or "",
+                    as_name=row.as_name or "",
+                ),
+                "severity": "CRITICAL",
+                "device": row.device_name,
+                "mnemonic": row.mnemonic,
+                "message": (row.message or "")[:200],
+                "status": "active",
+                "alert_count": 1,
+                "started_at": (row.timestamp.isoformat() if row.timestamp else ""),
+                "last_alert": (row.timestamp.isoformat() if row.timestamp else ""),
+                "interface": row.interface_name or "",
+                "client": row.client_name or "",
+                "as_name": row.as_name or "",
+            }
+            seen[seen_key] = inc
 
     # Cache synthesized incidents into the in-memory store so they are
     # available for acknowledge/resolve operations without another DB hit.

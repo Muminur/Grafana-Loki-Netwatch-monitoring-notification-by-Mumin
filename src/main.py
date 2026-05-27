@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.api.routes import (
+    _is_recovery_event,
     add_alert_to_store,
     get_maintenance_store,
     increment_alerts_processed,
@@ -227,6 +228,16 @@ async def _on_syslog_line(raw_line: str) -> None:
     else:
         should_send = True
 
+    # Recovery events (Interface UP, BGP UP, Bundle ACTIVE, etc.) must always
+    # reach add_alert_to_store() and be persisted to DB so that the incident
+    # auto-resolution logic can remove the matching DOWN incident from the
+    # in-memory store.  Dedup still controls whether notifications are sent.
+    is_recovery = _is_recovery_event(
+        enriched.parsed.mnemonic,
+        enriched.parsed.message,
+        enriched.rule_id,
+    )
+
     # ── Store to DB ────────────────────────────────────────────────────────
     # NOTE: Noise reclassification (hardware defects on backhaul members) is
     # handled exclusively in add_alert_to_store() (routes.py) to avoid the
@@ -234,7 +245,7 @@ async def _on_syslog_line(raw_line: str) -> None:
     suppress = correlated.suppress_notification if correlated is not None else False
     will_notify = should_send and enriched.notify and not suppress
     incident_id = (correlated.incident_id or "") if correlated is not None else ""
-    if should_send and _engine is not None:
+    if (should_send or is_recovery) and _engine is not None:
         try:
             alert = AlertLog(
                 timestamp=enriched.parsed.timestamp,
@@ -265,7 +276,10 @@ async def _on_syslog_line(raw_line: str) -> None:
             _log.error("DB insert failed: %s", exc)
 
     # ── Update in-memory API store ─────────────────────────────────────────
-    if should_send:
+    # Recovery events are always processed here regardless of dedup status so
+    # that the incident auto-resolution logic in add_alert_to_store() can
+    # remove matching DOWN incidents from _incidents_store.
+    if should_send or is_recovery:
         if correlated is None:
             correlated = CorrelatedEvent(enriched=enriched)
         try:
