@@ -21,6 +21,9 @@
         USER_LOGIN: 0,
     };
 
+    // ── Browser Notification state ───────────────────────────────────────────
+    var _browserNotifEnabled = localStorage.getItem('netwatch_browser_notif') === 'true';
+
     // Race-condition guard: queue WebSocket alerts while a fetch is in-flight
     var _isFetching = false;
     var _alertQueue = [];
@@ -302,6 +305,42 @@
         return false;
     }
 
+    // ── Browser Notifications ────────────────────────────────────────────────
+    function _requestNotificationPermission() {
+        if (!('Notification' in window)) return;
+        if (Notification.permission === 'granted') return;
+        if (Notification.permission === 'denied') return;
+        Notification.requestPermission();
+    }
+
+    function _fireBrowserNotification(alert) {
+        if (!_browserNotifEnabled) return;
+        if (!('Notification' in window)) return;
+        if (Notification.permission !== 'granted') return;
+        if (!document.hidden) return;
+        if (alert.classification !== 'CRITICAL') return;
+
+        var device = alert.device || 'Unknown device';
+        var mnemonic = alert.mnemonic || 'Alert';
+        var notif = new Notification('BSCCL NetWatch — CRITICAL', {
+            body: device + ': ' + mnemonic,
+            tag: 'netwatch-critical',
+            icon: '/static/favicon.ico',
+        });
+        notif.onclick = function () {
+            window.focus();
+            notif.close();
+        };
+    }
+
+    function _setBrowserNotifEnabled(enabled) {
+        _browserNotifEnabled = enabled;
+        localStorage.setItem('netwatch_browser_notif', enabled ? 'true' : 'false');
+        if (enabled) {
+            _requestNotificationPermission();
+        }
+    }
+
     // ── WebSocket alert events ────────────────────────────────────────────────
     document.addEventListener('netwatch:alert', function (e) {
         var alert = e.detail;
@@ -339,6 +378,9 @@
         if (window.NetwatchSounds) {
             window.NetwatchSounds.play(cls);
         }
+
+        // Browser notification for CRITICAL alerts when tab is hidden
+        _fireBrowserNotification(alert);
     });
 
     // ── Time filter / DB fetch ────────────────────────────────────────────────
@@ -951,5 +993,8 @@
         },
         setRepeatAlarm: function (enabled) { _setRepeatAlarm(enabled); },
         isRepeatAlarmEnabled: function () { return _repeatAlarmEnabled; },
+        setBrowserNotif: function (enabled) { _setBrowserNotifEnabled(enabled); },
+        isBrowserNotifEnabled: function () { return _browserNotifEnabled; },
+        requestNotificationPermission: function () { _requestNotificationPermission(); },
     };
 })();
