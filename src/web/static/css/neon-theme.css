@@ -550,6 +550,47 @@ button { cursor: pointer; }
 }
 .btn-icon:hover { color: var(--neon-red); border-color: var(--border-critical); }
 
+/* ── Filter Badge ─────────────────────────────────────────────────────── */
+.filter-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(0, 240, 255, 0.1);
+    border: 1px solid var(--neon-cyan);
+    color: var(--neon-cyan);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+    max-width: 200px;
+    cursor: default;
+    animation: slide-in-top 0.15s ease;
+}
+
+.filter-badge-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: transparent;
+    border: none;
+    color: var(--neon-cyan);
+    font-size: 0.65rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+    transition: background var(--transition-fast), color var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.filter-badge-close:hover {
+    background: rgba(0, 240, 255, 0.25);
+    color: var(--text-primary);
+}
+
 /* ── Alerts Container ──────────────────────────────────────────────────── */
 .alerts-container {
     max-height: calc(100vh - 380px);

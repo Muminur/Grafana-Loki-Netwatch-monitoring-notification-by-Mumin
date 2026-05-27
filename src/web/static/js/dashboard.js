@@ -298,6 +298,48 @@
         });
     }
 
+    // ── Filter Badge ─────────────────────────────────────────────────────────
+    var _deviceFilter = '';  // set when topology node is clicked
+
+    function _updateFilterBadge() {
+        var badge = _el('filterBadge');
+        if (!badge) return;
+
+        var label = '';
+        if (_deviceFilter) {
+            label = 'Device: ' + _deviceFilter;
+        } else if (_searchQuery) {
+            label = 'Filtered: ' + _searchQuery;
+        }
+
+        if (!label) {
+            badge.style.display = 'none';
+            badge.innerHTML = '';
+            return;
+        }
+
+        // Truncate display text to 20 chars
+        var displayText = label.length > 20 ? label.slice(0, 20) + '…' : label;
+
+        badge.innerHTML = '<span class="filter-badge-text">'
+            + _esc(displayText)
+            + '</span>'
+            + '<button class="filter-badge-close" aria-label="Clear filter" title="Clear filter">×</button>';
+        badge.style.display = 'inline-flex';
+
+        var closeBtn = badge.querySelector('.filter-badge-close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', function () {
+                var searchInput = _el('alertSearch');
+                if (searchInput) searchInput.value = '';
+                _searchQuery = '';
+                _deviceFilter = '';
+                _updateFilterBadge();
+                _renderAlerts();
+            });
+        }
+    }
+
     // ── Search ────────────────────────────────────────────────────────────────
     function _initSearch() {
         var searchInput = _el('alertSearch');
@@ -308,6 +350,9 @@
             clearTimeout(timer);
             timer = setTimeout(function () {
                 _searchQuery = searchInput.value.trim();
+                // If user manually edits search, clear device-filter context
+                if (!_searchQuery || (_deviceFilter && _searchQuery !== _deviceFilter)) _deviceFilter = '';
+                _updateFilterBadge();
                 _renderAlerts();
             }, 200);
         });
@@ -338,6 +383,11 @@
             _alerts = [];
             _ackedIds = {};
             _counters = { CRITICAL: 0, WARNING: 0, INFO: 0, NOISE: 0, USER_LOGIN: 0 };
+            _searchQuery = '';
+            _deviceFilter = '';
+            var searchInput = _el('alertSearch');
+            if (searchInput) searchInput.value = '';
+            _updateFilterBadge();
             _updateCounters();
             _renderAlerts();
 
@@ -1067,6 +1117,8 @@
         if (searchInput) {
             searchInput.value = device;
             _searchQuery = device;
+            _deviceFilter = device;
+            _updateFilterBadge();
             _renderAlerts();
             searchInput.focus();
         }
