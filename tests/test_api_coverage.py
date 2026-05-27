@@ -1378,6 +1378,186 @@ async def test_heatmap_in_memory_fallback(
     assert body["max_count"] == 5
 
 
+# ---------------------------------------------------------------------------
+# /api/alerts/export — CSV export endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_export_csv_returns_200_with_csv_content_type(
+    client: AsyncClient, clean_stores: None
+) -> None:
+    """GET /api/alerts/export returns 200 with text/csv media type."""
+    routes_mod._db_engine = None  # noqa: SLF001
+    async with client as c:
+        resp = await c.get(
+            "/api/alerts/export",
+            params={"period": "today", "format": "csv"},
+        )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+
+
+@pytest.mark.asyncio
+async def test_export_csv_header_row(client: AsyncClient, clean_stores: None) -> None:
+    """CSV export contains the expected header columns."""
+    routes_mod._db_engine = None  # noqa: SLF001
+    async with client as c:
+        resp = await c.get(
+            "/api/alerts/export",
+            params={"period": "today", "format": "csv"},
+        )
+    assert resp.status_code == 200
+    lines = resp.text.strip().split("\n")
+    header = lines[0]
+    expected_cols = [
+        "timestamp",
+        "device",
+        "mnemonic",
+        "classification",
+        "message",
+        "interface",
+        "client",
+        "as_name",
+        "incident_id",
+    ]
+    for col in expected_cols:
+        assert col in header, f"Missing column '{col}' in CSV header"
+
+
+@pytest.mark.asyncio
+async def test_export_csv_empty_db_returns_header_only(
+    client: AsyncClient, clean_stores: None
+) -> None:
+    """With an empty DB, the CSV contains only the header row (no data rows)."""
+    routes_mod._db_engine = None  # noqa: SLF001
+    async with client as c:
+        resp = await c.get(
+            "/api/alerts/export",
+            params={"period": "today", "format": "csv"},
+        )
+    assert resp.status_code == 200
+    lines = resp.text.strip().split("\n")
+    # Only the header row
+    assert len(lines) == 1
+
+
+@pytest.mark.asyncio
+async def test_export_csv_content_disposition_filename(
+    client: AsyncClient, clean_stores: None
+) -> None:
+    """Content-Disposition header has the correct filename format."""
+    routes_mod._db_engine = None  # noqa: SLF001
+    async with client as c:
+        resp = await c.get(
+            "/api/alerts/export",
+            params={"period": "today", "format": "csv"},
+        )
+    assert resp.status_code == 200
+    cd = resp.headers.get("content-disposition", "")
+    assert "attachment" in cd
+    assert "netwatch-alerts-" in cd
+    assert ".csv" in cd
+
+
+@pytest.mark.asyncio
+async def test_export_csv_with_in_memory_data(
+    client: AsyncClient, clean_stores: None
+) -> None:
+    """In-memory fallback path populates CSV rows from the alerts store."""
+    routes_mod._db_engine = None  # noqa: SLF001
+    routes_mod._alerts_store.append(  # noqa: SLF001
+        {
+            "id": 1,
+            "timestamp": "2026-05-23T12:00:00",
+            "device": "EQ-RTR-01",
+            "mnemonic": "ADJCHANGE",
+            "classification": "CRITICAL",
+            "message": "neighbor X Down",
+            "interface": "TenGigE0/0/0/0",
+            "client": "TestClient",
+            "as_name": "BSCCL",
+            "incident_id": "INC-1",
+        }
+    )
+    async with client as c:
+        resp = await c.get(
+            "/api/alerts/export",
+            params={"period": "today", "format": "csv"},
+        )
+    assert resp.status_code == 200
+    lines = resp.text.strip().split("\n")
+    assert len(lines) == 2  # header + 1 data row
+    assert "EQ-RTR-01" in lines[1]
+    assert "ADJCHANGE" in lines[1]
+
+
+@pytest.mark.asyncio
+async def test_export_csv_db_backed(
+    client: AsyncClient, clean_stores: None, async_db: Any
+) -> None:
+    """DB-backed path returns alert data in the CSV."""
+    routes_mod._db_engine = async_db  # noqa: SLF001
+    async with AsyncSession(async_db) as session:
+        session.add(
+            AlertLog(
+                timestamp=datetime(2026, 5, 23, 12, 0, 0),
+                source_ip="192.168.203.1",
+                device_name="EQ-RTR-01",
+                hostname="BSCCL-EQ-RTR-01",
+                facility="ROUTING",
+                severity_level=5,
+                mnemonic="ADJCHANGE",
+                message="neighbor X Down",
+                raw="raw",
+                classification="CRITICAL",
+                interface_name="TenGigE0/0/0/0",
+                client_name="TestClient",
+                as_name="BSCCL",
+                incident_id="INC-1",
+            )
+        )
+        await session.commit()
+
+    async with client as c:
+        resp = await c.get(
+            "/api/alerts/export",
+            params={"period": "all", "format": "csv"},
+        )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    lines = resp.text.strip().split("\n")
+    assert len(lines) == 2  # header + 1 data row
+    assert "EQ-RTR-01" in lines[1]
+    assert "CRITICAL" in lines[1]
+
+
+@pytest.mark.asyncio
+async def test_export_csv_invalid_period(
+    client: AsyncClient, clean_stores: None
+) -> None:
+    """Invalid period returns 400."""
+    async with client as c:
+        resp = await c.get(
+            "/api/alerts/export",
+            params={"period": "bogus", "format": "csv"},
+        )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_export_csv_invalid_format(
+    client: AsyncClient, clean_stores: None
+) -> None:
+    """Invalid format returns 400."""
+    async with client as c:
+        resp = await c.get(
+            "/api/alerts/export",
+            params={"period": "today", "format": "json"},
+        )
+    assert resp.status_code == 400
+
+
 def test_add_alert_to_store_skips_incident_for_noise_reclassified(
     clean_stores: None,
 ) -> None:

@@ -473,6 +473,38 @@
         if (bar) bar.remove();
     }
 
+    // ── CSV Export button ──────────────────────────────────────────────────
+    function _initExportButton() {
+        var btn = _el('exportCsvBtn');
+        if (!btn) return;
+        btn.addEventListener('click', function () {
+            var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
+            var periodEl = document.getElementById('periodFilter');
+            var period = periodEl ? periodEl.value : 'today';
+            var url = apiBase + '/alerts/export?period=' + encodeURIComponent(period) + '&format=csv';
+
+            // Use fetch + blob for better error handling
+            fetch(url)
+                .then(function (r) {
+                    if (!r.ok) throw new Error('Export failed: ' + r.status);
+                    return r.blob();
+                })
+                .then(function (blob) {
+                    var a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = 'netwatch-alerts.csv';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(a.href);
+                })
+                .catch(function (err) {
+                    console.error('[NetWatch] CSV export failed:', err);
+                    _showToast('CSV export failed — check connection', true);
+                });
+        });
+    }
+
     // ── Client-side dedup (safety net) ──────────────────────────────────────
     var _recentKeys = {};
     var _DEDUP_WINDOW_MS = 300000; // 5 minutes
@@ -1248,6 +1280,7 @@
         _initTabs();
         _initSearch();
         _initClearButton();
+        _initExportButton();
         _updateCounters();
         _renderAlerts();
         _loadIncidents();

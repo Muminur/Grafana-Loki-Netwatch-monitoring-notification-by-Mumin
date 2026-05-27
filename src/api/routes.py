@@ -4,6 +4,7 @@ Milestone 6: minimal health endpoint.
 Milestone 7: expanded alert, incident, device, topology, stats, BGP endpoints.
 Milestone 6/7 audit: monthly/yearly stats, maintenance window endpoints.
 Milestone 8: DB-backed /api/alerts with period filter; /api/alerts/count.
+Milestone 8+: CSV export endpoint for post-incident reports.
 
 Note: slowapi's ``@limiter.limit()`` / ``@limiter.exempt`` decorators require
 a ``request: Request`` parameter on each handler even when the body does not
@@ -15,6 +16,8 @@ reference it directly.  ARG001 is file-level suppressed for this reason.
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import itertools
 import re
 import time
@@ -965,6 +968,139 @@ async def get_alerts_count(
         "counts": counts,
         "total": sum(counts.values()),
     }
+
+
+_CSV_EXPORT_LIMIT = 50_000
+_CSV_COLUMNS = [
+    "timestamp",
+    "device",
+    "mnemonic",
+    "classification",
+    "message",
+    "interface",
+    "client",
+    "as_name",
+    "incident_id",
+]
+
+
+@router.get(
+    "/api/alerts/export",
+    dependencies=[Depends(require_api_key)],
+)
+async def export_alerts_csv(
+    period: str | None = Query(
+        default="today",
+        description="Time filter: today, yesterday, 7d, 30d, 1y, all",
+    ),
+    format: str = Query(  # noqa: A002
+        default="csv",
+        description="Export format (currently only csv)",
+    ),
+) -> Response:
+    """Export alerts as a CSV file for post-incident reporting.
+
+    Returns a downloadable CSV containing up to 50,000 alert rows for the
+    requested period.  The ``Content-Disposition`` header triggers a browser
+    download with a date-stamped filename.
+
+    Parameters
+    ----------
+    period:
+        Time filter: today (default), yesterday, 7d, 30d, 1y, all.
+    format:
+        Export format.  Only ``csv`` is supported.
+
+    Raises
+    ------
+    HTTPException
+        400 if ``period`` or ``format`` is invalid.
+    """
+    if period is not None and period not in _VALID_PERIODS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid period '{period}'. "
+                f"Must be one of: {', '.join(sorted(_VALID_PERIODS))}"
+            ),
+        )
+    if format != "csv":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid format '{format}'. Only 'csv' is supported.",
+        )
+
+    # ── Fetch rows ────────────────────────────────────────────────────────
+    rows: list[dict[str, Any]] = []
+
+    if _db_engine is not None:
+        from sqlalchemy import desc, select  # noqa: PLC0415
+        from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+        from src.database.models import AlertLog  # noqa: PLC0415
+
+        start, end = _period_to_time_range(period)
+        async with AsyncSession(_db_engine) as session:
+            stmt = (
+                select(AlertLog)
+                .order_by(desc(AlertLog.timestamp))
+                .limit(_CSV_EXPORT_LIMIT)
+            )
+            if start is not None:
+                stmt = stmt.where(AlertLog.timestamp >= start)
+            if end is not None:
+                stmt = stmt.where(AlertLog.timestamp < end)
+            result = await session.execute(stmt)
+            db_rows = result.scalars().all()
+
+        for row in db_rows:
+            rows.append(
+                {
+                    "timestamp": row.timestamp.isoformat() if row.timestamp else "",
+                    "device": row.device_name,
+                    "mnemonic": row.mnemonic,
+                    "classification": row.classification,
+                    "message": row.message,
+                    "interface": row.interface_name,
+                    "client": row.client_name,
+                    "as_name": row.as_name,
+                    "incident_id": row.incident_id or "",
+                }
+            )
+    else:
+        # Fallback: in-memory store (no period filter on this path)
+        for alert in list(_alerts_store)[:_CSV_EXPORT_LIMIT]:
+            rows.append(
+                {
+                    "timestamp": alert.get("timestamp", ""),
+                    "device": alert.get("device", ""),
+                    "mnemonic": alert.get("mnemonic", ""),
+                    "classification": alert.get("classification", ""),
+                    "message": alert.get("message", ""),
+                    "interface": alert.get(
+                        "interface", alert.get("interface_name", "")
+                    ),
+                    "client": alert.get("client", alert.get("client_name", "")),
+                    "as_name": alert.get("as_name", ""),
+                    "incident_id": alert.get("incident_id", ""),
+                }
+            )
+
+    # ── Build CSV ─────────────────────────────────────────────────────────
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=_CSV_COLUMNS)
+    writer.writeheader()
+    writer.writerows(rows)
+    csv_content = buf.getvalue()
+
+    today_str = datetime.now(UTC).strftime("%Y-%m-%d")
+    filename = f"netwatch-alerts-{today_str}.csv"
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/api/alerts/{alert_id}")
