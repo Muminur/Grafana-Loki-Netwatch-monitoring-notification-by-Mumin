@@ -570,9 +570,7 @@ async def _self_monitor(receiver: SyslogReceiver) -> None:
                             f"https://api.telegram.org"
                             f"/bot{settings.telegram_bot_token}/sendMessage"
                         )
-                        tg_text = (
-                            "*NetWatch Self-Monitor*" f"\n{message}"
-                        )
+                        tg_text = f"*NetWatch Self-Monitor*\n{message}"
                         tg_payload = {
                             "chat_id": settings.telegram_chat_id,
                             "text": tg_text,

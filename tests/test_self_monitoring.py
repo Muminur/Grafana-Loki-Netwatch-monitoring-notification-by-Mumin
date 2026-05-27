@@ -134,6 +134,7 @@ async def test_health_degraded_when_stale() -> None:
     fake_receiver = SyslogReceiver(settings, AsyncMock())
     # Simulate: connected but last message was 15 minutes ago
     fake_receiver._running = True  # noqa: SLF001
+    fake_receiver._is_connected = True  # noqa: SLF001
     fake_receiver._active_mode = "http"  # noqa: SLF001
     fake_receiver._last_message_at = datetime.now(UTC) - timedelta(  # noqa: SLF001
         minutes=15
@@ -170,6 +171,7 @@ async def test_health_ok_when_recent_data() -> None:
     fake_receiver = SyslogReceiver(settings, AsyncMock())
     # Simulate: connected and last message was 2 minutes ago
     fake_receiver._running = True  # noqa: SLF001
+    fake_receiver._is_connected = True  # noqa: SLF001
     fake_receiver._active_mode = "ws"  # noqa: SLF001
     fake_receiver._last_message_at = datetime.now(UTC) - timedelta(  # noqa: SLF001
         minutes=2
