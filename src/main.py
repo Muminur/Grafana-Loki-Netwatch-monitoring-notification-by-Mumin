@@ -54,7 +54,7 @@ from src.core.dedup import DedupEngine
 from src.core.enricher import enrich
 from src.core.parser import parse_syslog
 from src.core.syslog_receiver import SyslogReceiver
-from src.database.crud import insert_alert
+from src.database.crud import insert_alert, prune_old_alerts, prune_old_stats, vacuum_db
 from src.database.migrations import create_tables, get_engine
 from src.database.models import AlertLog
 from src.logging_config import configure_logging
@@ -433,6 +433,66 @@ async def _hourly_aggregator(engine: object) -> None:
             _log.error("Hourly aggregator error: %s", exc)
 
 
+async def _retention_cleanup(engine: object) -> None:
+    """Background task: prune old alerts/stats and VACUUM once per day at 03:00 UTC.
+
+    Checks the current UTC hour every 60 seconds.  When the hour is 03 and
+    the cleanup has not yet run today, prunes AlertLog rows older than the
+    configured ``retention_days``, HourlyStats older than 365 days, then runs
+    ``VACUUM`` to reclaim disk space.
+
+    Parameters
+    ----------
+    engine:
+        The SQLAlchemy async engine used to open a session for the cleanup.
+    """
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+    last_run_date: str = ""
+    settings = get_settings()
+
+    while True:
+        try:
+            await asyncio.sleep(60)
+            now = datetime.now(UTC)
+            today = now.strftime("%Y-%m-%d")
+            if now.hour == 3 and last_run_date != today:  # noqa: PLR2004
+                _log.info("Starting daily retention cleanup for %s", today)
+
+                # Prune old alerts
+                async with AsyncSession(engine) as session:  # type: ignore[arg-type]
+                    alert_count = await prune_old_alerts(
+                        session, settings.retention_days
+                    )
+                    await session.commit()
+                if alert_count:
+                    _log.info(
+                        "Pruned %d alerts older than %d days",
+                        alert_count,
+                        settings.retention_days,
+                    )
+
+                # Prune old hourly stats
+                async with AsyncSession(engine) as session:  # type: ignore[arg-type]
+                    stats_count = await prune_old_stats(session, 365)
+                    await session.commit()
+                if stats_count:
+                    _log.info("Pruned %d hourly stats older than 365 days", stats_count)
+
+                # VACUUM to reclaim disk space
+                await vacuum_db(engine)  # type: ignore[arg-type]
+                _log.info("VACUUM completed")
+
+                last_run_date = today
+                _log.info("Retention cleanup finished for %s", today)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:  # noqa: BLE001
+            _log.error("Retention cleanup error: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     """Application lifespan: startup and shutdown logic.
@@ -702,12 +762,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     hourly_task = asyncio.create_task(_hourly_aggregator(engine))
     _log.info("Hourly stats aggregator started (5-minute interval)")
 
+    # ── Retention cleanup ──────────────────────────────────────────────────
+    retention_task = asyncio.create_task(_retention_cleanup(engine))
+    _log.info(
+        "Retention cleanup started (fires at 03:00 UTC / 09:00 BDT, "
+        "retention=%d days)",
+        settings.retention_days,
+    )
+
     # ── Register task handles for /health liveness reporting ───────────────
     set_background_tasks(
         {
             "digest": digest_task,
             "escalation": escalation_task,
             "aggregator": hourly_task,
+            "retention": retention_task,
         }
     )
 
@@ -721,12 +790,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     digest_task.cancel()
     escalation_task.cancel()
     hourly_task.cancel()
+    retention_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await digest_task
     with contextlib.suppress(asyncio.CancelledError):
         await escalation_task
     with contextlib.suppress(asyncio.CancelledError):
         await hourly_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await retention_task
 
     _log.info("Disposing DB engine…")
     await engine.dispose()

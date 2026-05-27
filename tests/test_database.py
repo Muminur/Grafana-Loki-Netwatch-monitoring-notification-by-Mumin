@@ -19,6 +19,9 @@ from src.database.crud import (
     get_alerts_by_severity,
     insert_alert,
     insert_alerts_batch,
+    prune_old_alerts,
+    prune_old_stats,
+    vacuum_db,
 )
 from src.database.migrations import create_tables, get_engine
 
@@ -26,6 +29,7 @@ from src.database.migrations import create_tables, get_engine
 from src.database.models import (
     AlertLog,
     ASCache,
+    HourlyStats,
     Incident,
     UserLogin,
 )
@@ -327,3 +331,149 @@ async def test_wal_mode_enabled(tmp_path):
 
     await _engine.dispose()
     assert mode == "wal", f"Expected WAL mode on file DB, got: {mode}"
+
+
+# ---------------------------------------------------------------------------
+# 11. test_prune_old_alerts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prune_old_alerts(session: AsyncSession):
+    """prune_old_alerts deletes rows older than retention_days and keeps newer ones."""
+    # Use naive datetimes — SQLite stores timestamps as naive BDT face values.
+    now = datetime.now(UTC).replace(tzinfo=None)
+    old_alert = _make_alert(
+        timestamp=now - timedelta(days=100),
+        mnemonic="OLD_EVENT",
+    )
+    recent_alert = _make_alert(
+        timestamp=now - timedelta(days=10),
+        mnemonic="RECENT_EVENT",
+    )
+    await insert_alerts_batch(session, [old_alert, recent_alert])
+    await session.commit()
+
+    deleted = await prune_old_alerts(session, retention_days=90)
+    await session.commit()
+
+    assert deleted == 1, f"Expected 1 deleted row, got {deleted}"
+
+    remaining = await get_alerts_by_severity(session, "CRITICAL")
+    assert len(remaining) == 1
+    assert remaining[0].mnemonic == "RECENT_EVENT"
+
+
+# ---------------------------------------------------------------------------
+# 12. test_prune_old_alerts_preserves_all_when_none_expired
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prune_old_alerts_preserves_all_when_none_expired(
+    session: AsyncSession,
+):
+    """prune_old_alerts returns 0 and deletes nothing when all rows are recent."""
+    now = datetime.now(UTC).replace(tzinfo=None)
+    alerts = [
+        _make_alert(timestamp=now - timedelta(days=i), mnemonic=f"EVT{i}")
+        for i in range(5)
+    ]
+    await insert_alerts_batch(session, alerts)
+    await session.commit()
+
+    deleted = await prune_old_alerts(session, retention_days=90)
+    await session.commit()
+
+    assert deleted == 0
+
+
+# ---------------------------------------------------------------------------
+# 13. test_prune_old_stats
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prune_old_stats(session: AsyncSession):
+    """prune_old_stats deletes HourlyStats older than max_age_days."""
+    now = datetime.now(UTC).replace(tzinfo=None)
+    old_stat = HourlyStats(
+        hour=now - timedelta(days=400),
+        critical_count=5,
+        warning_count=3,
+        device_name="BSCCL-EQ-RTR-01",
+    )
+    recent_stat = HourlyStats(
+        hour=now - timedelta(days=30),
+        critical_count=2,
+        warning_count=1,
+        device_name="BSCCL-EQ-RTR-01",
+    )
+    session.add_all([old_stat, recent_stat])
+    await session.commit()
+
+    deleted = await prune_old_stats(session, max_age_days=365)
+    await session.commit()
+
+    assert deleted == 1, f"Expected 1 deleted stat row, got {deleted}"
+
+    from sqlalchemy import select as sa_select
+
+    result = await session.execute(sa_select(HourlyStats))
+    remaining = list(result.scalars().all())
+    assert len(remaining) == 1
+    assert remaining[0].critical_count == 2
+
+
+# ---------------------------------------------------------------------------
+# 14. test_vacuum_db
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_vacuum_db(engine):
+    """vacuum_db completes without error on an in-memory SQLite database."""
+    # Insert and delete some data so VACUUM has work to do
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_session() as session:
+        alerts = [
+            _make_alert(mnemonic=f"VACUUM_TEST_{i}") for i in range(10)
+        ]
+        await insert_alerts_batch(session, alerts)
+        await session.commit()
+
+    async with async_session() as session:
+        deleted = await prune_old_alerts(session, retention_days=0)
+        await session.commit()
+        assert deleted == 10
+
+    # Should not raise
+    await vacuum_db(engine)
+
+
+# ---------------------------------------------------------------------------
+# 15. test_retention_config_default
+# ---------------------------------------------------------------------------
+
+
+def test_retention_config_default():
+    """Settings.retention_days defaults to 90."""
+    from src.config import Settings
+
+    s = Settings()
+    assert s.retention_days == 90
+
+
+# ---------------------------------------------------------------------------
+# 16. test_retention_config_env_override
+# ---------------------------------------------------------------------------
+
+
+def test_retention_config_env_override(monkeypatch):
+    """RETENTION_DAYS env var overrides the default."""
+    monkeypatch.setenv("RETENTION_DAYS", "30")
+
+    from src.config import Settings
+
+    s = Settings()
+    assert s.retention_days == 30
