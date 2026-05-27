@@ -550,6 +550,35 @@ button { cursor: pointer; }
 }
 .btn-icon:hover { color: var(--neon-red); border-color: var(--border-critical); }
 
+.btn-export {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.4rem 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--neon-cyan);
+    background: rgba(0, 229, 255, 0.08);
+    border: 1px solid rgba(0, 229, 255, 0.3);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn-export:hover {
+    background: rgba(0, 229, 255, 0.15);
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 8px rgba(0, 229, 255, 0.2);
+}
+
+.page-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
 /* ── Filter Badge ─────────────────────────────────────────────────────── */
 .filter-badge {
     display: inline-flex;
@@ -2191,4 +2220,28 @@ body.has-active-incidents .panel-incidents .panel-header {
     color: var(--text-muted);
     min-width: 2.5em;
     text-align: right;
+}
+
+/* ── Settings save toast ────────────────────────────────────────────────── */
+.settings-toast {
+    position: fixed;
+    bottom: 1.5rem;
+    right: 1.5rem;
+    padding: 0.6rem 1.2rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--neon-cyan);
+    background: rgba(0, 229, 255, 0.1);
+    border: 1px solid rgba(0, 229, 255, 0.3);
+    border-radius: var(--radius-sm);
+    opacity: 0;
+    transform: translateY(10px);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    z-index: 10000;
+    pointer-events: none;
+}
+
+.settings-toast.show {
+    opacity: 1;
+    transform: translateY(0);
 }

@@ -9,6 +9,9 @@
         <span class="page-icon" role="img" aria-label="Statistics">◎</span> NETWORK STATISTICS
     </h1>
     <p class="page-subtitle">Performance metrics and alert analytics for BSCCL backbone</p>
+    <div class="page-actions">
+        <button class="btn btn-export" id="statsExportCsvBtn" title="Export statistics as CSV" aria-label="Export statistics as CSV"><span role="img" aria-hidden="true">&#8615;</span> Export Report</button>
+    </div>
 </div>
 
 <!-- Period Sub-tabs -->
@@ -193,6 +196,36 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     });
+
+    // Statistics export button
+    var statsExportBtn = document.getElementById('statsExportCsvBtn');
+    if (statsExportBtn) {
+        statsExportBtn.addEventListener('click', function() {
+            var periodEl = document.querySelector('.subtab.active');
+            var period = periodEl ? periodEl.dataset.period : 'today';
+            var periodMap = { 'today': 'today', 'week': '7d', 'month': '30d', 'year': '1y' };
+            var apiPeriod = periodMap[period] || 'today';
+            var url = '/api/alerts/export?period=' + encodeURIComponent(apiPeriod) + '&format=csv';
+            fetch(url)
+                .then(function(r) {
+                    if (!r.ok) throw new Error('Export failed: ' + r.status);
+                    return r.blob();
+                })
+                .then(function(blob) {
+                    var a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = 'netwatch-report-' + apiPeriod + '.csv';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(a.href);
+                })
+                .catch(function(err) {
+                    console.error('[NetWatch] CSV export failed:', err);
+                    alert('Export failed — check connection');
+                });
+        });
+    }
 });
 </script>
 {% endblock %}

@@ -19,6 +19,7 @@ import asyncio  # noqa: TC003 — used at runtime (get_running_loop)
 import csv
 import io
 import itertools
+import logging
 import re
 import time
 from collections import deque
@@ -43,6 +44,8 @@ if TYPE_CHECKING:
     from src.core.syslog_receiver import SyslogReceiver
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 # Application start time (module-level; set when the module is first imported)
 _APP_START: float = time.monotonic()
@@ -344,6 +347,11 @@ async def load_persisted_state(engine: AsyncEngine) -> None:
                     else:
                         object.__setattr__(_s, _attr, _val.lower() == "true")
                     _load_log.info("Loaded %s=%s from DB", _key, _val)
+
+            val = await get_app_setting(session, "notify_severity")
+            if val is not None:
+                object.__setattr__(_s, "notify_severity", val)
+                _load_log.info("Loaded notify_severity=%s from DB", val)
 
             # ── Resolve stale noise-eligible alerts ───────────────────────
             if _hardware_defects_as_noise:
@@ -1982,8 +1990,8 @@ async def set_hardware_noise_setting(
                     "true" if enabled else "false",
                 )
                 await session.commit()
-        except Exception:  # noqa: BLE001, S110
-            pass  # In-memory value already updated; DB failure is non-fatal
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to persist setting to DB", exc_info=True)
     return {"hardware_defects_as_noise": _hardware_defects_as_noise}
 
 
@@ -2001,7 +2009,7 @@ async def get_notification_settings() -> dict[str, Any]:
     return {
         "discord_enabled": s.discord_enabled,
         "telegram_enabled": s.telegram_enabled,
-        "notify_severity": "CRITICAL",
+        "notify_severity": getattr(s, "notify_severity", "CRITICAL"),
         "dedup_window": s.dedup_window_seconds,
     }
 
@@ -2016,6 +2024,7 @@ async def set_notification_settings(
     discord_enabled: bool | None = None,
     telegram_enabled: bool | None = None,
     dedup_window: int | None = None,
+    notify_severity: str | None = None,
 ) -> dict[str, Any]:
     """Update notification preferences at runtime.
 
@@ -2031,6 +2040,12 @@ async def set_notification_settings(
         object.__setattr__(s, "telegram_enabled", telegram_enabled)
     if dedup_window is not None and 30 <= dedup_window <= 3600:
         object.__setattr__(s, "dedup_window_seconds", dedup_window)
+    if notify_severity is not None and notify_severity in (
+        "CRITICAL",
+        "WARNING",
+        "INFO",
+    ):
+        object.__setattr__(s, "notify_severity", notify_severity)
 
     if _db_engine is not None:
         try:
@@ -2053,14 +2068,21 @@ async def set_notification_settings(
                     await set_app_setting(
                         session, "dedup_window_seconds", str(s.dedup_window_seconds)
                     )
+                if notify_severity is not None:
+                    await set_app_setting(
+                        session,
+                        "notify_severity",
+                        getattr(s, "notify_severity", "CRITICAL"),
+                    )
                 await session.commit()
-        except Exception:  # noqa: BLE001, S110
-            pass
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to persist setting to DB", exc_info=True)
 
     return {
         "discord_enabled": s.discord_enabled,
         "telegram_enabled": s.telegram_enabled,
         "dedup_window": s.dedup_window_seconds,
+        "notify_severity": getattr(s, "notify_severity", "CRITICAL"),
     }
 
 

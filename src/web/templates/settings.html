@@ -45,7 +45,7 @@
                 <label class="form-label" for="notifySeverity">Minimum Alert Severity</label>
                 <select class="form-select" id="notifySeverity" name="notify_severity">
                     <option value="CRITICAL">CRITICAL only</option>
-                    <option value="WARNING" selected>WARNING and above</option>
+                    <option value="WARNING">WARNING and above</option>
                     <option value="INFO">INFO and above</option>
                 </select>
             </div>
@@ -263,6 +263,20 @@ window.NETWATCH_CONFIG.apiBase = '/api';
 document.addEventListener('DOMContentLoaded', function() {
     var api = window.NETWATCH_CONFIG.apiBase;
 
+    function showSaveToast(msg) {
+        var existing = document.querySelector('.settings-toast');
+        if (existing) existing.remove();
+        var toast = document.createElement('div');
+        toast.className = 'settings-toast';
+        toast.textContent = msg || 'Setting saved';
+        document.body.appendChild(toast);
+        setTimeout(function() { toast.classList.add('show'); }, 10);
+        setTimeout(function() {
+            toast.classList.remove('show');
+            setTimeout(function() { toast.remove(); }, 300);
+        }, 2000);
+    }
+
     // ── Sound toggles (localStorage-backed, client-side only) ────────────
     var soundEnabled = document.getElementById('soundEnabled');
     var criticalSound = document.getElementById('criticalSoundEnabled');
@@ -303,6 +317,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 recovery: prefs.recovery,
             });
         }
+        showSaveToast('Sound preference saved');
     }
 
     loadSoundPrefs();
@@ -316,6 +331,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (window.NetwatchDashboard) {
                 window.NetwatchDashboard.setRepeatAlarm(repeatAlarm.checked);
             }
+            showSaveToast('Sound preference saved');
         });
     }
 
@@ -357,6 +373,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             // Re-check permission status after a brief delay (permission prompt is async)
             setTimeout(updateBrowserNotifStatus, 500);
+            showSaveToast('Notification preference saved');
         });
     }
 
@@ -372,18 +389,29 @@ document.addEventListener('DOMContentLoaded', function() {
             if (discordToggle) discordToggle.checked = data.discord_enabled;
             if (telegramToggle) telegramToggle.checked = data.telegram_enabled;
             if (dedupInput) dedupInput.value = data.dedup_window || 300;
+            if (severitySelect && data.notify_severity) {
+                severitySelect.value = data.notify_severity;
+            }
         })
         .catch(function() {});
 
     function saveNotifSetting(params) {
         fetch(api + '/settings/notifications?' + params, { method: 'POST' })
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                if (!r.ok) throw new Error('Save failed: ' + r.status);
+                return r.json();
+            })
             .then(function(data) {
                 if (discordToggle) discordToggle.checked = data.discord_enabled;
                 if (telegramToggle) telegramToggle.checked = data.telegram_enabled;
                 if (dedupInput) dedupInput.value = data.dedup_window;
+                if (severitySelect && data.notify_severity) severitySelect.value = data.notify_severity;
+                showSaveToast('Setting saved');
             })
-            .catch(function() {});
+            .catch(function(err) {
+                console.error('[Settings] Save failed:', err);
+                showSaveToast('Save failed — check connection');
+            });
     }
 
     if (discordToggle) {
@@ -408,6 +436,11 @@ document.addEventListener('DOMContentLoaded', function() {
             }, 500);
         });
     }
+    if (severitySelect) {
+        severitySelect.addEventListener('change', function() {
+            saveNotifSetting('notify_severity=' + encodeURIComponent(severitySelect.value));
+        });
+    }
 
     // ── Hardware Defects as Noise toggle ─────────────────────────────────
     var hwToggle = document.getElementById('hwDefectsNoise');
@@ -418,9 +451,18 @@ document.addEventListener('DOMContentLoaded', function() {
             .catch(function() {});
         hwToggle.addEventListener('change', function() {
             fetch(api + '/settings/hardware-noise?enabled=' + hwToggle.checked, { method: 'POST' })
-                .then(function(r) { return r.json(); })
-                .then(function(data) { hwToggle.checked = data.hardware_defects_as_noise; })
-                .catch(function() {});
+                .then(function(r) {
+                    if (!r.ok) throw new Error('Save failed: ' + r.status);
+                    return r.json();
+                })
+                .then(function(data) {
+                    hwToggle.checked = data.hardware_defects_as_noise;
+                    showSaveToast('Setting saved');
+                })
+                .catch(function(err) {
+                    console.error('[Settings] HW noise save failed:', err);
+                    showSaveToast('Save failed — check connection');
+                });
         });
     }
 

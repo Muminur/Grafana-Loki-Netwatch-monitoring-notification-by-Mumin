@@ -280,7 +280,9 @@ Three shifts aligned to BSCCL NOC operations (BDT timezone):
 **Notification Preferences** (server-side, persisted in DB):
 - **Discord Notifications** — enable/disable Discord webhook alerts at runtime
 - **Telegram Notifications** — enable/disable Telegram bot alerts at runtime
+- **Minimum Alert Severity** — set the notification threshold (CRITICAL only, WARNING+, or INFO+)
 - **Deduplication Window** — adjust the dedup suppression window (30–3600 seconds)
+- All server-side settings save instantly with visual toast feedback and persist across page navigation and server restarts
 
 **Alert Classification:**
 - **Hardware Defects as Noise** toggle (default ON) — classifies persistent
@@ -489,7 +491,7 @@ Production-hardening applied across the stack:
 | `/api/stats/heatmap` | GET | 7×24 alert heatmap (day-of-week × hour-of-day) |
 | `/api/alerts/export` | GET | CSV export with period filter (max 50K rows) |
 | `/api/settings/hardware-noise` | GET / POST | Read or toggle "Hardware Defects as Noise" |
-| `/api/settings/notifications` | GET / POST | Read or update notification preferences (Discord, Telegram, dedup window) |
+| `/api/settings/notifications` | GET / POST | Read or update notification preferences (Discord, Telegram, severity threshold, dedup window) |
 | `/api/maintenance` | GET / POST | List or create maintenance windows |
 | `/api/maintenance/{id}` | DELETE | Delete a maintenance window |
 | `/api/devices` | GET | All 34 devices with status |
@@ -520,7 +522,7 @@ Per-client metrics: **uptime %**, **MTBF** (hours), **MTTR** (minutes), **incide
 7×24 grid (day-of-week × hour-of-day) visualizing when alerts occur over configurable periods (7d, 30d, 1y). Green → yellow → red color interpolation highlights temporal patterns for staffing decisions.
 
 ### CSV Export
-`GET /api/alerts/export?period=today&format=csv` — download alerts as CSV for post-incident reports (up to 50,000 rows). Export button on the dashboard.
+`GET /api/alerts/export?period=today&format=csv` — download alerts as CSV for post-incident reports (up to 50,000 rows). Export buttons on both the Dashboard ("Export CSV") and Statistics page ("Export Report"), with period-aware downloads matching the active time filter.
 
 ### BGP Prefix Prediction
 Monitors prefix counts against configured maximums. Warns at **80%** and **90%** thresholds with estimated days until exhaustion.
