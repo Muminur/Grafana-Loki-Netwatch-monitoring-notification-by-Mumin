@@ -436,9 +436,7 @@ async def test_vacuum_db(engine):
     # Insert and delete some data so VACUUM has work to do
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with async_session() as session:
-        alerts = [
-            _make_alert(mnemonic=f"VACUUM_TEST_{i}") for i in range(10)
-        ]
+        alerts = [_make_alert(mnemonic=f"VACUUM_TEST_{i}") for i in range(10)]
         await insert_alerts_batch(session, alerts)
         await session.commit()
 

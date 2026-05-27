@@ -15,7 +15,7 @@ reference it directly.  ARG001 is file-level suppressed for this reason.
 
 from __future__ import annotations
 
-import asyncio
+import asyncio  # noqa: TC003 — used at runtime (get_running_loop)
 import csv
 import io
 import itertools
@@ -2054,7 +2054,7 @@ async def set_notification_settings(
                         session, "dedup_window_seconds", str(s.dedup_window_seconds)
                     )
                 await session.commit()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110
             pass
 
     return {

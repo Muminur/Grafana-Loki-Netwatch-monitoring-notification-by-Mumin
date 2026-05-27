@@ -267,7 +267,7 @@ async def prune_old_alerts(session: AsyncSession, retention_days: int) -> int:
         .execution_options(synchronize_session=False)
     )
     result = await session.execute(stmt)
-    return result.rowcount  # type: ignore[return-value]
+    return result.rowcount  # type: ignore[attr-defined,no-any-return]
 
 
 async def prune_old_stats(session: AsyncSession, max_age_days: int = 365) -> int:
@@ -292,7 +292,7 @@ async def prune_old_stats(session: AsyncSession, max_age_days: int = 365) -> int
         .execution_options(synchronize_session=False)
     )
     result = await session.execute(stmt)
-    return result.rowcount  # type: ignore[return-value]
+    return result.rowcount  # type: ignore[attr-defined,no-any-return]
 
 
 async def vacuum_db(engine: AsyncEngine) -> None:
