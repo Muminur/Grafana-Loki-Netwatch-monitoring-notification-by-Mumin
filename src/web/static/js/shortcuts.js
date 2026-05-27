@@ -28,6 +28,23 @@
         '5': 'USER_LOGIN',
     };
 
+    var TAB_LABELS = {
+        'all': 'ALL',
+        'CRITICAL': 'CRITICAL',
+        'WARNING': 'WARNING',
+        'INFO': 'INFO',
+        'NOISE': 'NOISE',
+        'USER_LOGIN': 'LOGIN',
+    };
+
+    var TOAST_DURATION = 1500;
+
+    function _toast(msg) {
+        if (window.NetwatchDashboard && window.NetwatchDashboard.showToast) {
+            window.NetwatchDashboard.showToast(msg, TOAST_DURATION);
+        }
+    }
+
     function _isTyping() {
         var active = document.activeElement;
         if (!active) return false;
@@ -42,9 +59,11 @@
         // Tab switching: 0-5
         if (TAB_KEYS[e.key] !== undefined) {
             e.preventDefault();
+            var tabId = TAB_KEYS[e.key];
             if (window.NetwatchDashboard) {
-                window.NetwatchDashboard.setTab(TAB_KEYS[e.key]);
+                window.NetwatchDashboard.setTab(tabId);
             }
+            _toast('Tab: ' + TAB_LABELS[tabId]);
             return;
         }
 
@@ -56,11 +75,13 @@
                     if (window.NetwatchDashboard) {
                         window.NetwatchDashboard.bulkAcknowledgeIncidents();
                     }
+                    _toast('Bulk acknowledge...');
                 } else {
                     // a: Acknowledge top non-acknowledged alert
                     if (window.NetwatchDashboard) {
                         window.NetwatchDashboard.acknowledgeSelected();
                     }
+                    _toast('Alert acknowledged');
                 }
                 break;
 
@@ -68,8 +89,9 @@
                 // Toggle sound mute
                 e.preventDefault();
                 if (window.NetwatchSounds) {
-                    var enabled = window.NetwatchSounds.isEnabled();
-                    window.NetwatchSounds.setEnabled(!enabled);
+                    var wasEnabled = window.NetwatchSounds.isEnabled();
+                    window.NetwatchSounds.setEnabled(!wasEnabled);
+                    _toast('Sound: ' + (wasEnabled ? 'OFF' : 'ON'));
                 }
                 break;
 
@@ -79,6 +101,7 @@
                 if (window.NetwatchDashboard) {
                     window.NetwatchDashboard.focusSearch();
                 }
+                _toast('Search focused');
                 break;
 
             case 'escape':
