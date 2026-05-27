@@ -16,8 +16,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-944_passing-00ff88?style=flat-square" alt="Tests"/>
-  <img src="https://img.shields.io/badge/coverage-94%25-00ff88?style=flat-square" alt="Coverage"/>
+  <img src="https://img.shields.io/badge/tests-995_passing-00ff88?style=flat-square" alt="Tests"/>
+  <img src="https://img.shields.io/badge/coverage-96%25-00ff88?style=flat-square" alt="Coverage"/>
   <img src="https://img.shields.io/badge/ruff-clean-00f0ff?style=flat-square" alt="Ruff"/>
   <img src="https://img.shields.io/badge/mypy-strict-8b5cf6?style=flat-square" alt="Mypy"/>
   <img src="https://img.shields.io/badge/license-proprietary-555570?style=flat-square" alt="License"/>
@@ -106,7 +106,7 @@ The correlation engine uses the **network dependency tree** to automatically det
 | Classification rules | **26** (14 CRITICAL, 3 WARNING, 6 INFO, 3 LOGIN) |
 | Syslog formats parsed | **4** (IOS-XR +06, BDT, ADMIN, bare) |
 | Dedup windows | **5 min** standard, **2 min** BGP flap, **30 sec** bundle |
-| Test suite | **902 tests**, 96% coverage |
+| Test suite | **995 tests**, 96% coverage |
 
 ---
 
@@ -198,6 +198,9 @@ ASN_API_KEY=...
 # endpoints require a matching X-API-Key header.
 API_KEY=
 
+# Data retention — alerts older than this are auto-pruned daily at 03:00 UTC
+RETENTION_DAYS=90
+
 # Logging — "text" (default) or "json" for structured logs; standard level names
 LOG_FORMAT=text
 LOG_LEVEL=INFO
@@ -266,9 +269,12 @@ Three shifts aligned to BSCCL NOC operations (BDT timezone):
 - **Deduplication enforced** — DB storage, WebSocket broadcast, and in-memory store all respect the 5-minute dedup window
 - **Client-side dedup safety net** — 5-minute sliding-window check in the browser
 - **Web Audio API** sound alerts (critical alarm, warning chime, recovery arpeggio)
-- **Browser notifications** for CRITICAL events
-- **Keyboard shortcuts** — `1-5` switch tabs, `A` acknowledge alert, `Shift+A` bulk-acknowledge incidents, `N` mute, `/` search
-- **SVG network topology** with live device status colors and click debouncing
+- **Browser notifications** for CRITICAL events when the tab is in background (Web Notification API with permission management and dedup via `tag`)
+- **Relative timestamps** — every alert card shows "5s ago", "2m ago" alongside the absolute timestamp, updated every 10 seconds without re-rendering the DOM
+- **Keyboard shortcuts** — `1-5` switch tabs, `A` acknowledge alert, `Shift+A` bulk-acknowledge incidents, `N` mute, `/` search — with **toast feedback** on each shortcut activation
+- **Search filter badge** — persistent visual indicator showing "Filtered: BGP ×" when search is active, with one-click clear
+- **Clear alerts undo** — confirmation dialog + 5-second undo bar prevents accidental data loss during live incidents
+- **SVG network topology** with live device status colors, click debouncing, and **device detail modal** — click any node to see device name, location, status, and last 10 alerts
 ### Settings Page (All Toggles Functional)
 
 **Notification Preferences** (server-side, persisted in DB):
@@ -445,7 +451,11 @@ Production-hardening applied across the stack:
 - **Database** — `incident_id` and silent-fault-resolution indexes, an idempotent index migration, and connection pre-ping.
 - **AS-cache** — tight timeout, bounded retry, timezone-correct TTL, and URL/key redaction in logs.
 - **Supply chain & image** — CI runs `pip-audit`; all dependencies pinned with upper bounds; Docker image is pinned and non-root with a `.dockerignore`, resource limits, and `no-new-privileges`.
-- **Authentication (opt-in)** — set `API_KEY` to require an `X-API-Key` header (constant-time check, `WWW-Authenticate` challenge on 401) for mutating endpoints; empty = disabled, so existing deployments are unaffected.
+- **Authentication (opt-in)** — set `API_KEY` to require an `X-API-Key` header (constant-time check, `WWW-Authenticate` challenge on 401) for mutating endpoints; empty = disabled, so existing deployments are unaffected. **WebSocket endpoints** (`/ws`, `/ws/filtered`) also enforce auth via `?token=` query parameter when `API_KEY` is set.
+- **REST API rate limiting** — per-IP rate limits via `slowapi`: 30 req/min for mutating endpoints, 200 req/min for reads. `/health` and `/metrics` are exempt.
+- **Startup resilience** — server starts successfully even when Loki is unreachable, with automatic reconnection via exponential backoff (1s → 60s). The dashboard serves cached data until Loki comes up.
+- **Self-monitoring** — `/health` endpoint reports `loki_connected` and `last_alert_received_at`; a background task sends Discord/Telegram alerts if no syslog data arrives for 10+ minutes (with startup grace period).
+- **Database retention** — automated cleanup task prunes alerts older than `RETENTION_DAYS` (default 90) and runs SQLite VACUUM at 03:00 UTC daily.
 - **State survives restart** — maintenance windows, the Hardware-Defects-as-Noise toggle, and in-flight CRITICAL escalation tracking are persisted to SQLite and restored on startup; the incident-ID counter is seeded from the DB so IDs never collide across a restart.
 - **Observability** — optional structured JSON logs (`LOG_FORMAT=json`) with a per-request `X-Request-ID`, Prometheus `/metrics` endpoint (alerts processed, dedup suppressed, notifications sent, live WebSocket connections), and `/health` endpoint with background task liveness.
 - **Dedup correctness** — the window uses `max(event-time, monotonic)` elapsed so replayed/historical logs and backward clock steps are handled without mis-suppressing real alerts. Eviction logging tracks purged entries for operational visibility.
@@ -456,11 +466,11 @@ Production-hardening applied across the stack:
 
 ## API Reference
 
-> Mutating endpoints (`POST`/`DELETE`) require an `X-API-Key` header **when `API_KEY` is set**; all `GET` endpoints, `/health`, `/metrics`, and the WebSocket stay open.
+> Mutating endpoints (`POST`/`DELETE`) require an `X-API-Key` header **when `API_KEY` is set**. GET endpoints, `/health`, and `/metrics` are open. WebSocket endpoints require `?token=` when `API_KEY` is set. Rate limits: 30 req/min for mutating, 200 req/min for reads.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Health check — uptime, alert count, DB connectivity, and background task liveness (`background_tasks: {digest, escalation, aggregator}`; `status: degraded` when the DB check fails) |
+| `/health` | GET | Health check — uptime, alert count, DB connectivity, Loki connection status (`loki_connected`, `last_alert_received_at`, `stale_data`), and background task liveness; `status: degraded` when data is stale or DB check fails |
 | `/metrics` | GET | Prometheus metrics (alerts processed, dedup suppressed, notifications sent, WebSocket connections) |
 | `/api/alerts` | GET | Paginated alerts with severity/device/time filters |
 | `/api/alerts/count` | GET | Alert counts by classification for a period |
@@ -476,6 +486,8 @@ Production-hardening applied across the stack:
 | `/api/stats/weekly` | GET | 7-day statistics |
 | `/api/stats/monthly` | GET | 30-day statistics |
 | `/api/stats/yearly` | GET | 12-month statistics |
+| `/api/stats/heatmap` | GET | 7×24 alert heatmap (day-of-week × hour-of-day) |
+| `/api/alerts/export` | GET | CSV export with period filter (max 50K rows) |
 | `/api/settings/hardware-noise` | GET / POST | Read or toggle "Hardware Defects as Noise" |
 | `/api/settings/notifications` | GET / POST | Read or update notification preferences (Discord, Telegram, dedup window) |
 | `/api/maintenance` | GET / POST | List or create maintenance windows |
@@ -503,6 +515,12 @@ Production-hardening applied across the stack:
 
 ### Client SLA Tracking
 Per-client metrics: **uptime %**, **MTBF** (hours), **MTTR** (minutes), **incident count** over configurable periods.
+
+### Alert Heatmap
+7×24 grid (day-of-week × hour-of-day) visualizing when alerts occur over configurable periods (7d, 30d, 1y). Green → yellow → red color interpolation highlights temporal patterns for staffing decisions.
+
+### CSV Export
+`GET /api/alerts/export?period=today&format=csv` — download alerts as CSV for post-incident reports (up to 50,000 rows). Export button on the dashboard.
 
 ### BGP Prefix Prediction
 Monitors prefix counts against configured maximums. Warns at **80%** and **90%** thresholds with estimated days until exhaustion.
@@ -547,14 +565,14 @@ bsccl-netwatch/
 │   │   ├── sla.py                 # Client SLA tracking
 │   │   └── predictions.py         # Prefix exhaustion forecast
 │   ├── api/
-│   │   ├── routes.py              # 19 REST endpoints
+│   │   ├── routes.py              # 21 REST endpoints (incl. heatmap + CSV export)
 │   │   └── websocket.py           # Live push to browsers
 │   └── web/
 │       ├── templates/             # Jinja2 (base, dashboard, stats, settings)
 │       └── static/
 │           ├── css/neon-theme.css  # Full neon design system
 │           └── js/                # WebSocket, charts, topology, sounds, shortcuts
-├── tests/                         # 902 tests (unit + integration + e2e)
+├── tests/                         # 995 tests (unit + integration + e2e)
 ├── Dockerfile                     # Multi-stage, non-root, pinned, healthcheck
 ├── docker-compose.yml             # Production deployment (limits, no-new-privileges)
 └── .github/workflows/ci.yml       # CI: ruff + black + mypy + pytest + coverage + pip-audit

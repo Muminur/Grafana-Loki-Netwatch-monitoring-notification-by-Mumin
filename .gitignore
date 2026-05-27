@@ -24,6 +24,10 @@ PLAN.md
 secrets/
 tokens/
 
+# ── RCA Ninja (local RCA corpus) ─────────────────────────────────
+rca/
+.claude-rca.json
+
 # ── Databases / runtime data ─────────────────────────────────────
 *.db
 *.sqlite
