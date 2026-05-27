@@ -24,9 +24,19 @@
 
     function _getWsUrl() {
         var cfg = window.NETWATCH_CONFIG || {};
-        if (cfg.wsUrl) return cfg.wsUrl;
-        var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        return proto + '//' + window.location.host + '/ws';
+        var base;
+        if (cfg.wsUrl) {
+            base = cfg.wsUrl;
+        } else {
+            var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            base = proto + '//' + window.location.host + '/ws';
+        }
+        // Append API token for WebSocket authentication when configured
+        if (cfg.apiToken) {
+            var sep = base.indexOf('?') === -1 ? '?' : '&';
+            base += sep + 'token=' + encodeURIComponent(cfg.apiToken);
+        }
+        return base;
     }
 
     function _setLiveState(connected, statusText) {

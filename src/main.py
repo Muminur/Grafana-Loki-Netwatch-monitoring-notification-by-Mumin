@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -675,11 +676,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     _log.info("Hourly stats aggregator started (5-minute interval)")
 
     # ── Register task handles for /health liveness reporting ───────────────
-    set_background_tasks({
-        "digest": digest_task,
-        "escalation": escalation_task,
-        "aggregator": hourly_task,
-    })
+    set_background_tasks(
+        {
+            "digest": digest_task,
+            "escalation": escalation_task,
+            "aggregator": hourly_task,
+        }
+    )
 
     yield  # application runs here
 
@@ -802,10 +805,39 @@ async def settings_page(request: Request) -> HTMLResponse:
 # ── WebSocket endpoints ──────────────────────────────────────────────────────
 
 
+async def _ws_authenticate(websocket: WebSocket) -> bool:
+    """Authenticate a WebSocket connection using a query-param token.
+
+    When ``API_KEY`` is configured, the client must pass ``?token=<key>``
+    as a query parameter.  If the token is missing or incorrect the
+    connection is accepted and then immediately closed with code **4001**
+    ("Unauthorized") so the client receives a clear rejection.
+
+    Returns ``True`` if the connection is authorised (or auth is disabled),
+    ``False`` if it was rejected and closed.
+    """
+    settings = get_settings()
+    configured_key = settings.api_key.strip()
+    if not configured_key:
+        # Auth disabled — backward-compatible; allow all connections.
+        return True
+    token = websocket.query_params.get("token", "")
+    if secrets.compare_digest(token.encode(), configured_key.encode()):
+        return True
+    # Reject: accept first (required by ASGI) then close with 4001.
+    await websocket.accept()
+    await websocket.close(code=4001, reason="Unauthorized")
+    _log.warning("WebSocket connection rejected — invalid or missing token")
+    return False
+
+
 @app.websocket("/ws")
 async def ws_all(websocket: WebSocket) -> None:
     """Live WebSocket — broadcasts all classified alerts."""
     from starlette.websockets import WebSocketDisconnect  # noqa: PLC0415
+
+    if not await _ws_authenticate(websocket):
+        return
 
     await _ws_manager.connect(websocket)
     try:
@@ -824,6 +856,9 @@ async def ws_all(websocket: WebSocket) -> None:
 async def ws_filtered(websocket: WebSocket) -> None:
     """Filtered WebSocket — client sends its classification filter as first message."""
     from starlette.websockets import WebSocketDisconnect  # noqa: PLC0415
+
+    if not await _ws_authenticate(websocket):
+        return
 
     await _ws_manager.connect(websocket)
     try:
