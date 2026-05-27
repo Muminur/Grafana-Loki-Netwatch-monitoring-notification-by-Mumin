@@ -1099,14 +1099,14 @@
         });
     }
 
-    function _showToast(message, isError) {
+    function _showToast(message, isError, duration) {
         var existing = document.querySelector('.netwatch-toast');
         if (existing) existing.remove();
         var toast = document.createElement('div');
         toast.className = 'netwatch-toast' + (isError ? ' toast-error' : '');
         toast.textContent = message;
         document.body.appendChild(toast);
-        setTimeout(function () { toast.remove(); }, 3000);
+        setTimeout(function () { toast.remove(); }, duration || 3000);
     }
 
     // ── Topology node click → populate search ──────────────────────────────
@@ -1192,6 +1192,7 @@
         },
         setRepeatAlarm: function (enabled) { _setRepeatAlarm(enabled); },
         isRepeatAlarmEnabled: function () { return _repeatAlarmEnabled; },
+        showToast: function (msg, duration) { _showToast(msg, false, duration); },
         setBrowserNotif: function (enabled) { _setBrowserNotifEnabled(enabled); },
         isBrowserNotifEnabled: function () { return _browserNotifEnabled; },
         requestNotificationPermission: function () { _requestNotificationPermission(); },
