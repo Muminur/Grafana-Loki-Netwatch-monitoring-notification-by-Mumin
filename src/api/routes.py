@@ -4,7 +4,13 @@ Milestone 6: minimal health endpoint.
 Milestone 7: expanded alert, incident, device, topology, stats, BGP endpoints.
 Milestone 6/7 audit: monthly/yearly stats, maintenance window endpoints.
 Milestone 8: DB-backed /api/alerts with period filter; /api/alerts/count.
+
+Note: slowapi's ``@limiter.limit()`` / ``@limiter.exempt`` decorators require
+a ``request: Request`` parameter on each handler even when the body does not
+reference it directly.  ARG001 is file-level suppressed for this reason.
 """
+
+# ruff: noqa: ARG001
 
 from __future__ import annotations
 
@@ -16,7 +22,7 @@ from collections import deque
 from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, model_validator
 
@@ -24,6 +30,7 @@ from src.auth import require_api_key
 from src.data.bgp_bundle_map import lookup_bundle_for_bgp_peer
 from src.data.device_map import DEVICE_MAP
 from src.data.topology import NETWORK_TOPOLOGY
+from src.rate_limit import RATE_LIMIT_MUTATING, RATE_LIMIT_READ, limiter
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
@@ -661,7 +668,8 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
 
 
 @router.get("/health")
-async def health() -> dict[str, Any]:
+@limiter.exempt  # type: ignore[untyped-decorator]
+async def health(request: Request) -> dict[str, Any]:
     """Health check endpoint.
 
     Returns
@@ -706,7 +714,8 @@ async def health() -> dict[str, Any]:
 
 
 @router.get("/metrics", include_in_schema=False)
-async def metrics_endpoint() -> Response:
+@limiter.exempt  # type: ignore[untyped-decorator]
+async def metrics_endpoint(request: Request) -> Response:
     """Prometheus metrics exposition endpoint.
 
     Returns the current metric values in the Prometheus text exposition
@@ -763,7 +772,9 @@ def _period_to_time_range(
 
 
 @router.get("/api/alerts")
+@limiter.limit(RATE_LIMIT_READ)
 async def get_alerts(
+    request: Request,
     severity: str | None = Query(default=None, description="Filter by severity"),
     device: str | None = Query(default=None, description="Filter by device name"),
     period: str | None = Query(
@@ -878,7 +889,9 @@ async def get_alerts(
 
 
 @router.get("/api/alerts/count")
+@limiter.limit(RATE_LIMIT_READ)
 async def get_alerts_count(
+    request: Request,
     period: str | None = Query(default="today"),
 ) -> dict[str, Any]:
     """Return alert counts grouped by classification for the given period.
@@ -1148,7 +1161,9 @@ async def get_incident(incident_id: str) -> dict[str, Any]:
     "/api/incidents/{incident_id}/acknowledge",
     dependencies=[Depends(require_api_key)],
 )
+@limiter.limit(RATE_LIMIT_MUTATING)
 async def acknowledge_incident(
+    request: Request,
     incident_id: str,
     body: IncidentAckRequest | None = None,
 ) -> dict[str, Any]:
@@ -1380,7 +1395,10 @@ async def get_shift_handoffs(
     "/api/shift/handoff",
     dependencies=[Depends(require_api_key)],
 )
-async def create_shift_handoff(body: ShiftHandoffCreate) -> dict[str, Any]:
+@limiter.limit(RATE_LIMIT_MUTATING)
+async def create_shift_handoff(
+    request: Request, body: ShiftHandoffCreate
+) -> dict[str, Any]:
     """Create a shift handoff note.
 
     Protected when ``API_KEY`` is configured; open when ``API_KEY`` is unset.
@@ -1525,7 +1543,8 @@ async def _stats_by_period(period_name: str, period_key: str) -> dict[str, Any]:
 
 
 @router.get("/api/stats/daily")
-async def get_stats_daily() -> dict[str, Any]:
+@limiter.limit(RATE_LIMIT_READ)
+async def get_stats_daily(request: Request) -> dict[str, Any]:
     """Return daily aggregated statistics.
 
     Returns a dict with alert counts by classification for today.
@@ -1535,7 +1554,8 @@ async def get_stats_daily() -> dict[str, Any]:
 
 
 @router.get("/api/stats/weekly")
-async def get_stats_weekly() -> dict[str, Any]:
+@limiter.limit(RATE_LIMIT_READ)
+async def get_stats_weekly(request: Request) -> dict[str, Any]:
     """Return weekly aggregated statistics.
 
     Returns a dict with alert counts by classification for the past 7 days.
@@ -1544,8 +1564,105 @@ async def get_stats_weekly() -> dict[str, Any]:
     return await _stats_by_period("weekly", "7d")
 
 
+@router.get("/api/stats/heatmap")
+async def get_stats_heatmap(
+    period: str = Query(default="30d", description="Time period: 7d, 30d, 1y, all"),
+) -> dict[str, Any]:
+    """Return a 7x24 alert heatmap grouped by day-of-week and hour-of-day.
+
+    Each cell ``data[day][hour]`` contains the number of alerts that occurred
+    during that (day, hour) combination over the requested period.
+
+    Day indices: 0=Monday, 1=Tuesday, ..., 6=Sunday.
+    Hour indices: 0-23 (BDT, UTC+6).
+
+    Parameters
+    ----------
+    period:
+        Time filter: 7d, 30d (default), 1y, all.
+
+    Returns
+    -------
+    dict
+        ``data`` — 7x24 integer matrix, ``max_count`` — highest cell value,
+        ``period`` — echo of the requested period.
+
+    Raises
+    ------
+    HTTPException
+        400 if ``period`` is not in the allowed set.
+    """
+    allowed = frozenset({"7d", "30d", "1y", "all"})
+    if period not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid period '{period}'. "
+                f"Must be one of: {', '.join(sorted(allowed))}"
+            ),
+        )
+
+    # Initialise 7 x 24 zero matrix (Mon=0 .. Sun=6, hours 0-23)
+    data: list[list[int]] = [[0] * 24 for _ in range(7)]
+
+    if _db_engine is not None:
+        from sqlalchemy import func, select  # noqa: PLC0415
+        from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+        from src.database.models import AlertLog  # noqa: PLC0415
+
+        start, _ = _period_to_time_range(period)
+        async with AsyncSession(_db_engine) as session:
+            # SQLite strftime('%w') returns 0=Sunday..6=Saturday.
+            dow_col = func.cast(
+                func.strftime("%w", AlertLog.timestamp), type_=AlertLog.id.type
+            )
+            hour_col = func.cast(
+                func.strftime("%H", AlertLog.timestamp), type_=AlertLog.id.type
+            )
+            stmt = select(
+                dow_col.label("dow"),
+                hour_col.label("hour"),
+                func.count(AlertLog.id).label("cnt"),
+            ).group_by("dow", "hour")
+
+            if start is not None:
+                stmt = stmt.where(AlertLog.timestamp >= start)
+
+            result = await session.execute(stmt)
+            rows = result.all()
+
+        for sqlite_dow, hour, cnt in rows:
+            # SQLite: 0=Sun,1=Mon..6=Sat → Python: Mon=0..Sun=6
+            py_dow = (int(sqlite_dow) - 1) % 7
+            data[py_dow][int(hour)] = int(cnt)
+    else:
+        # Fallback: count from in-memory store
+        start, _ = _period_to_time_range(period)
+        for alert in _alerts_store:
+            raw_ts = alert.get("timestamp", "")
+            try:
+                ts = (
+                    datetime.fromisoformat(raw_ts)
+                    if isinstance(raw_ts, str)
+                    else raw_ts
+                )
+                if ts.tzinfo is not None:
+                    ts = ts.replace(tzinfo=None)
+                if start is not None and ts < start:
+                    continue
+            except (ValueError, AttributeError, TypeError):
+                continue
+            # weekday(): Monday=0 .. Sunday=6
+            data[ts.weekday()][ts.hour] += 1
+
+    max_count = max(max(row) for row in data)
+    return {"data": data, "max_count": max_count, "period": period}
+
+
 @router.get("/api/stats/monthly")
-async def get_stats_monthly() -> dict[str, Any]:
+@limiter.limit(RATE_LIMIT_READ)
+async def get_stats_monthly(request: Request) -> dict[str, Any]:
     """Return monthly aggregated statistics.
 
     Aggregates daily alert counts grouped by calendar month for all alerts
@@ -1587,7 +1704,8 @@ async def get_stats_monthly() -> dict[str, Any]:
 
 
 @router.get("/api/stats/yearly")
-async def get_stats_yearly() -> dict[str, Any]:
+@limiter.limit(RATE_LIMIT_READ)
+async def get_stats_yearly(request: Request) -> dict[str, Any]:
     """Return yearly aggregated statistics.
 
     Aggregates monthly counts into per-year totals.
@@ -1642,7 +1760,10 @@ async def get_hardware_noise_setting() -> dict[str, bool]:
     "/api/settings/hardware-noise",
     dependencies=[Depends(require_api_key)],
 )
-async def set_hardware_noise_setting(enabled: bool = True) -> dict[str, bool]:
+@limiter.limit(RATE_LIMIT_MUTATING)
+async def set_hardware_noise_setting(
+    request: Request, enabled: bool = True
+) -> dict[str, bool]:
     """Toggle the hardware-defects-as-noise setting.
 
     Protected when ``API_KEY`` is configured; open when ``API_KEY`` is unset.
@@ -1708,7 +1829,9 @@ async def get_notification_settings() -> dict[str, Any]:
     "/api/settings/notifications",
     dependencies=[Depends(require_api_key)],
 )
+@limiter.limit(RATE_LIMIT_MUTATING)
 async def set_notification_settings(
+    request: Request,
     discord_enabled: bool | None = None,
     telegram_enabled: bool | None = None,
     dedup_window: int | None = None,
@@ -1800,7 +1923,9 @@ async def get_maintenance_windows() -> list[dict[str, Any]]:
     status_code=201,
     dependencies=[Depends(require_api_key)],
 )
+@limiter.limit(RATE_LIMIT_MUTATING)
 async def create_maintenance_window(
+    request: Request,
     body: MaintenanceWindowCreate,
 ) -> dict[str, Any]:
     """Create a new maintenance window.
@@ -1876,7 +2001,8 @@ async def create_maintenance_window(
     status_code=200,
     dependencies=[Depends(require_api_key)],
 )
-async def delete_maintenance_window(window_id: int) -> dict[str, Any]:
+@limiter.limit(RATE_LIMIT_MUTATING)
+async def delete_maintenance_window(request: Request, window_id: int) -> dict[str, Any]:
     """Delete a maintenance window by ID.
 
     Protected when ``API_KEY`` is configured; open when ``API_KEY`` is unset.

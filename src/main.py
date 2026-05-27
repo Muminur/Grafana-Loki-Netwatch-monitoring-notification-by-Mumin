@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -30,9 +31,10 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -64,6 +66,7 @@ from src.metrics import (
 from src.notifications.discord import send_discord_alert, send_discord_escalation
 from src.notifications.escalation import EscalationEngine
 from src.notifications.telegram import send_telegram_alert, send_telegram_escalation
+from src.rate_limit import limiter
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -149,6 +152,23 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
             request_id,
         )
         return response
+
+
+# ---------------------------------------------------------------------------
+# Rate limiter
+# ---------------------------------------------------------------------------
+
+
+def _rate_limit_exceeded_handler(
+    request: Request, exc: RateLimitExceeded  # noqa: ARG001
+) -> JSONResponse:
+    """Return a 429 JSON response when a client exceeds a rate limit."""
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": f"Rate limit exceeded: {exc.detail}",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -659,8 +679,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         _log.warning("Could not read last alert timestamp: %s", exc)
 
     receiver = SyslogReceiver(settings, _on_syslog_line, resume_from_ns=resume_ns)
-    await receiver.start()
-    _log.info("SyslogReceiver started (mode: %s)", settings.syslog_mode)
+    try:
+        await receiver.start()
+        _log.info("SyslogReceiver started (mode: %s)", settings.syslog_mode)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "SyslogReceiver initial start failed (%s); "
+            "dashboard will serve cached data. "
+            "Receiver background task will retry automatically.",
+            exc,
+        )
 
     # ── Daily digest scheduler ─────────────────────────────────────────────
     digest_task = asyncio.create_task(_digest_scheduler(engine))
@@ -675,11 +703,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     _log.info("Hourly stats aggregator started (5-minute interval)")
 
     # ── Register task handles for /health liveness reporting ───────────────
-    set_background_tasks({
-        "digest": digest_task,
-        "escalation": escalation_task,
-        "aggregator": hourly_task,
-    })
+    set_background_tasks(
+        {
+            "digest": digest_task,
+            "escalation": escalation_task,
+            "aggregator": hourly_task,
+        }
+    )
 
     yield  # application runs here
 
@@ -712,6 +742,10 @@ app = FastAPI(
     description="Network Syslog Classification & Alerting Dashboard",
     lifespan=lifespan,
 )
+
+# ── Rate limiter ─────────────────────────────────────────────────────────────
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 # Origins are loaded from CORS_ORIGINS env var via Settings.cors_origins.
@@ -802,10 +836,39 @@ async def settings_page(request: Request) -> HTMLResponse:
 # ── WebSocket endpoints ──────────────────────────────────────────────────────
 
 
+async def _ws_authenticate(websocket: WebSocket) -> bool:
+    """Authenticate a WebSocket connection using a query-param token.
+
+    When ``API_KEY`` is configured, the client must pass ``?token=<key>``
+    as a query parameter.  If the token is missing or incorrect the
+    connection is accepted and then immediately closed with code **4001**
+    ("Unauthorized") so the client receives a clear rejection.
+
+    Returns ``True`` if the connection is authorised (or auth is disabled),
+    ``False`` if it was rejected and closed.
+    """
+    settings = get_settings()
+    configured_key = settings.api_key.strip()
+    if not configured_key:
+        # Auth disabled — backward-compatible; allow all connections.
+        return True
+    token = websocket.query_params.get("token", "")
+    if secrets.compare_digest(token.encode(), configured_key.encode()):
+        return True
+    # Reject: accept first (required by ASGI) then close with 4001.
+    await websocket.accept()
+    await websocket.close(code=4001, reason="Unauthorized")
+    _log.warning("WebSocket connection rejected — invalid or missing token")
+    return False
+
+
 @app.websocket("/ws")
 async def ws_all(websocket: WebSocket) -> None:
     """Live WebSocket — broadcasts all classified alerts."""
     from starlette.websockets import WebSocketDisconnect  # noqa: PLC0415
+
+    if not await _ws_authenticate(websocket):
+        return
 
     await _ws_manager.connect(websocket)
     try:
@@ -824,6 +887,9 @@ async def ws_all(websocket: WebSocket) -> None:
 async def ws_filtered(websocket: WebSocket) -> None:
     """Filtered WebSocket — client sends its classification filter as first message."""
     from starlette.websockets import WebSocketDisconnect  # noqa: PLC0415
+
+    if not await _ws_authenticate(websocket):
+        return
 
     await _ws_manager.connect(websocket)
     try:

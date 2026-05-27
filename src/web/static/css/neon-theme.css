@@ -550,6 +550,47 @@ button { cursor: pointer; }
 }
 .btn-icon:hover { color: var(--neon-red); border-color: var(--border-critical); }
 
+/* ── Filter Badge ─────────────────────────────────────────────────────── */
+.filter-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(0, 240, 255, 0.1);
+    border: 1px solid var(--neon-cyan);
+    color: var(--neon-cyan);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+    max-width: 200px;
+    cursor: default;
+    animation: slide-in-top 0.15s ease;
+}
+
+.filter-badge-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: transparent;
+    border: none;
+    color: var(--neon-cyan);
+    font-size: 0.65rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+    transition: background var(--transition-fast), color var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.filter-badge-close:hover {
+    background: rgba(0, 240, 255, 0.25);
+    color: var(--text-primary);
+}
+
 /* ── Alerts Container ──────────────────────────────────────────────────── */
 .alerts-container {
     max-height: calc(100vh - 380px);
@@ -633,6 +674,14 @@ button { cursor: pointer; }
     font-family: var(--font-mono);
     font-size: 0.78rem;
     color: var(--text-primary);
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+.alert-relative-time {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-muted);
     flex-shrink: 0;
     white-space: nowrap;
 }
@@ -1045,6 +1094,92 @@ button { cursor: pointer; }
 .summary-critical .summary-value { color: var(--neon-red); text-shadow: 0 0 8px var(--neon-red-glow); }
 .summary-warning  .summary-value { color: var(--neon-yellow); text-shadow: 0 0 8px var(--neon-yellow-glow); }
 
+/* ── Heatmap ──────────────────────────────────────────────────────────── */
+.stats-heatmap { grid-column: span 2; }
+
+.heatmap-wrapper {
+    padding: 1rem;
+    overflow-x: auto;
+}
+
+.heatmap-hour-labels {
+    display: grid;
+    grid-template-columns: 48px repeat(24, 1fr);
+    gap: 2px;
+    margin-bottom: 2px;
+}
+
+.heatmap-corner {
+    /* Empty top-left corner cell */
+}
+
+.heatmap-hour-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+    text-align: center;
+    line-height: 1;
+}
+
+.heatmap-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.heatmap-row {
+    display: grid;
+    grid-template-columns: 48px repeat(24, 1fr);
+    gap: 2px;
+    align-items: center;
+}
+
+.heatmap-day-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+    text-align: right;
+    padding-right: 6px;
+    white-space: nowrap;
+}
+
+.heatmap-cell {
+    aspect-ratio: 1;
+    min-width: 20px;
+    min-height: 20px;
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.03);
+    cursor: default;
+    transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.heatmap-cell:hover {
+    transform: scale(1.3);
+    z-index: 1;
+    outline: 1px solid var(--neon-cyan);
+    outline-offset: 1px;
+}
+
+.heatmap-legend {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    margin-top: 0.75rem;
+}
+
+.heatmap-legend-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+}
+
+.heatmap-legend-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 2px;
+}
+
 /* ── Settings Page ─────────────────────────────────────────────────────── */
 .settings-layout {
     display: grid;
@@ -1439,7 +1574,7 @@ kbd {
 @media (max-width: 900px) {
     .severity-bar { grid-template-columns: repeat(2, 1fr); }
     .stats-layout { grid-template-columns: 1fr; }
-    .stats-health, .stats-timeline, .stats-donut, .stats-devices, .stats-summary {
+    .stats-health, .stats-timeline, .stats-donut, .stats-devices, .stats-summary, .stats-heatmap {
         grid-column: 1;
     }
     .settings-layout { grid-template-columns: 1fr; }
@@ -1481,7 +1616,8 @@ kbd {
        Offset 280px = nav(60) + severity(~100) + panel-header(~55) + filter(~30) + tabs(~35). */
     .alerts-container { max-height: calc(100vh - 280px); }
     .alert-row { min-height: 36px; gap: 0.65rem; padding: 0.3rem 0.9rem; }
-    .alert-timestamp { font-size: 0.95rem; }
+    .alert-timestamp      { font-size: 0.95rem; }
+    .alert-relative-time  { font-size: 0.8rem; }
     .alert-device    { font-size: 0.9rem; }
     .alert-mnemonic  { font-size: 0.9rem; }
     .alert-message   { font-size: 0.95rem; }
@@ -2009,4 +2145,50 @@ body.has-active-incidents .panel-incidents .panel-header {
     font-size: var(--text-xs);
     text-align: center;
     padding: 0.75rem 0;
+}
+
+/* ── Clear-Alerts Undo Bar ───────────────────────────────────────────── */
+.clear-undo-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 1rem;
+    background: rgba(255, 221, 0, 0.08);
+    border: 1px solid var(--neon-yellow-dim);
+    border-radius: var(--radius-sm);
+    margin-bottom: 0.4rem;
+    animation: slide-in-top 0.2s ease;
+}
+
+.clear-undo-bar .undo-message {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--neon-yellow);
+    flex: 1;
+}
+
+.clear-undo-bar .btn-undo {
+    font-family: var(--font-display);
+    font-size: var(--text-2xs);
+    letter-spacing: 0.12em;
+    padding: 0.25rem 0.7rem;
+    background: rgba(255, 221, 0, 0.12);
+    border: 1px solid var(--neon-yellow);
+    color: var(--neon-yellow);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.clear-undo-bar .btn-undo:hover {
+    background: rgba(255, 221, 0, 0.22);
+    box-shadow: 0 0 8px var(--neon-yellow-glow);
+}
+
+.clear-undo-bar .undo-timer {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+    min-width: 2.5em;
+    text-align: right;
 }

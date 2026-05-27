@@ -1,4 +1,4 @@
-"""Tests for API input validation and health detail hardening.
+"""Tests for API input validation, health detail hardening, and rate limiting.
 
 Covers:
   - /api/alerts severity allowlist validation (HTTP 400 on bad value)
@@ -8,6 +8,7 @@ Covers:
   - /health includes database_ok field and degrades when engine missing
   - _maintenance_store is capped (bounded deque)
   - Global state is always restored in fixtures
+  - Rate limiting: 429 on excessive requests, /health exempt
 """
 
 # ruff: noqa: SLF001, ARG001
@@ -399,3 +400,98 @@ def test_valid_periods_set() -> None:
     """_VALID_PERIODS contains exactly the expected values."""
     expected = frozenset({"today", "yesterday", "7d", "30d", "1y", "all"})
     assert expected == routes_mod._VALID_PERIODS
+
+
+# ---------------------------------------------------------------------------
+# 8. Rate limiting — slowapi integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _reset_limiter() -> Iterator[None]:
+    """Reset the slowapi limiter storage between tests.
+
+    slowapi uses an in-memory storage backend by default.  Without a reset,
+    request counts from earlier tests would carry over and cause flaky
+    failures.
+    """
+    from src.rate_limit import limiter as _limiter
+
+    _limiter.reset()
+    yield
+    _limiter.reset()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_reset_limiter")
+async def test_rate_limit_returns_429_on_excessive_requests(
+    client: AsyncClient,
+    clean_stores: None,
+) -> None:
+    """Sending more than 30 POST requests/minute to a mutating endpoint returns 429."""
+    routes_mod._db_engine = None
+    got_429 = False
+    async with client as c:
+        for _ in range(35):
+            resp = await c.post(
+                "/api/settings/hardware-noise",
+                params={"enabled": "true"},
+            )
+            if resp.status_code == 429:
+                got_429 = True
+                body = resp.json()
+                assert "rate limit" in body["detail"].lower()
+                break
+    assert got_429, "Expected 429 after exceeding rate limit, but never received one"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_reset_limiter")
+async def test_health_endpoint_is_not_rate_limited(
+    client: AsyncClient,
+    clean_stores: None,
+) -> None:
+    """/health is exempt from rate limiting — 250 rapid requests all return 200."""
+    routes_mod._db_engine = None
+    async with client as c:
+        for i in range(250):
+            resp = await c.get("/health")
+            assert (
+                resp.status_code == 200
+            ), f"Request #{i + 1} to /health returned {resp.status_code}, expected 200"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_reset_limiter")
+async def test_normal_read_usage_within_limits(
+    client: AsyncClient,
+    clean_stores: None,
+) -> None:
+    """A moderate number of read requests stays within the 200/minute limit."""
+    routes_mod._db_engine = None
+    async with client as c:
+        for _ in range(50):
+            resp = await c.get("/api/alerts")
+            assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_reset_limiter")
+async def test_rate_limit_response_format(
+    client: AsyncClient,
+    clean_stores: None,
+) -> None:
+    """The 429 response body contains a 'detail' key with a rate-limit message."""
+    routes_mod._db_engine = None
+    async with client as c:
+        for _ in range(35):
+            resp = await c.post(
+                "/api/settings/hardware-noise",
+                params={"enabled": "true"},
+            )
+            if resp.status_code == 429:
+                body = resp.json()
+                assert "detail" in body
+                assert "rate limit" in body["detail"].lower()
+                return
+    pytest.fail("Never hit 429 — rate limit may not be applied")

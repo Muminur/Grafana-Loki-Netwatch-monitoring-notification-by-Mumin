@@ -385,6 +385,71 @@
         _setChartAccessibility('topDevicesChart');
     }
 
+    // ── Heatmap renderer ────────────────────────────────────────────────────
+    var DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+    function _heatmapColor(count, maxCount) {
+        if (maxCount === 0 || count === 0) return 'rgba(255,255,255,0.03)';
+        var ratio = count / maxCount;
+        // green → yellow → red
+        if (ratio < 0.5) {
+            // green to yellow
+            var t = ratio / 0.5;
+            var r = Math.round(0 + t * 255);
+            var g = Math.round(255 - t * 34);  // 255 → 221
+            var b = Math.round(136 - t * 136);  // 136 → 0
+            return 'rgb(' + r + ',' + g + ',' + b + ')';
+        }
+        // yellow to red
+        var t2 = (ratio - 0.5) / 0.5;
+        var r2 = 255;
+        var g2 = Math.round(221 - t2 * 221);  // 221 → 0
+        var b2 = Math.round(t2 * 64);          // 0 → 64
+        return 'rgb(' + r2 + ',' + g2 + ',' + b2 + ')';
+    }
+
+    function renderHeatmap(data, maxCount) {
+        var body = document.getElementById('heatmapBody');
+        if (!body) return;
+        body.innerHTML = '';
+        for (var day = 0; day < 7; day++) {
+            var row = document.createElement('div');
+            row.className = 'heatmap-row';
+            var label = document.createElement('span');
+            label.className = 'heatmap-day-label';
+            label.textContent = DAY_LABELS[day];
+            row.appendChild(label);
+            for (var hour = 0; hour < 24; hour++) {
+                var count = (data[day] && data[day][hour]) || 0;
+                var cell = document.createElement('span');
+                cell.className = 'heatmap-cell';
+                cell.style.backgroundColor = _heatmapColor(count, maxCount);
+                if (count > 0) {
+                    cell.style.boxShadow = '0 0 4px ' + _heatmapColor(count, maxCount);
+                }
+                cell.setAttribute('data-day', DAY_LABELS[day]);
+                cell.setAttribute('data-hour', String(hour).padStart(2, '0') + ':00');
+                cell.setAttribute('data-count', String(count));
+                cell.title = DAY_LABELS[day] + ' ' + String(hour).padStart(2, '0') + ':00 — ' + count + ' alerts';
+                row.appendChild(cell);
+            }
+            body.appendChild(row);
+        }
+    }
+
+    function fetchAndRenderHeatmap(period) {
+        var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
+        var p = period || '30d';
+        fetch(apiBase + '/stats/heatmap?period=' + encodeURIComponent(p))
+            .then(function (r) { return r.json(); })
+            .then(function (resp) {
+                if (resp && resp.data) {
+                    renderHeatmap(resp.data, resp.max_count || 0);
+                }
+            })
+            .catch(function () { /* non-fatal */ });
+    }
+
     // ── Init statistics page charts ───────────────────────────────────────────
     function initStats() {
         _isLargeDisplay = _evaluateDisplaySize();
@@ -405,6 +470,9 @@
 
         // Populate incident and device count cells
         _fetchIncidentAndDeviceCounts(apiBase);
+
+        // Render alert heatmap
+        fetchAndRenderHeatmap('30d');
 
         fetch(apiBase + '/stats/daily')
             .then(function (r) { return r.json(); })
@@ -441,6 +509,14 @@
         year:  '/stats/yearly',
     };
 
+    // Map sub-tab periods to heatmap API periods
+    var HEATMAP_PERIODS = {
+        today: '7d',
+        week:  '7d',
+        month: '30d',
+        year:  '1y',
+    };
+
     function loadPeriod(period) {
         var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
         var endpoint = PERIOD_ENDPOINTS[period] || '/stats/daily';
@@ -452,6 +528,9 @@
                 }
             })
             .catch(function () { /* non-fatal */ });
+
+        // Refresh heatmap for the selected period
+        fetchAndRenderHeatmap(HEATMAP_PERIODS[period] || '30d');
 
         // Populate incident and device count cells
         _fetchIncidentAndDeviceCounts(apiBase);
@@ -531,5 +610,7 @@
         initStats: initStats,
         loadPeriod: loadPeriod,
         updateHealthGauge: _updateHealthGauge,
+        renderHeatmap: renderHeatmap,
+        fetchAndRenderHeatmap: fetchAndRenderHeatmap,
     };
 })();

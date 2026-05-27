@@ -21,6 +21,9 @@
         USER_LOGIN: 0,
     };
 
+    // ── Browser Notification state ───────────────────────────────────────────
+    var _browserNotifEnabled = localStorage.getItem('netwatch_browser_notif') === 'true';
+
     // Race-condition guard: queue WebSocket alerts while a fetch is in-flight
     var _isFetching = false;
     var _alertQueue = [];
@@ -75,6 +78,7 @@
         if (alert._acked || _ackedIds[alert.id]) card.classList.add('acknowledged');
         card.dataset.id = alert.id || '';
         card.dataset.classification = alert.classification || '';
+        if (alert.timestamp) card.dataset.timestamp = alert.timestamp;
 
         var sevLabel = SEV_LABEL[alert.classification] || alert.classification || 'INFO';
         var ts = alert.timestamp ? _formatTimestamp(alert.timestamp) : '';
@@ -118,9 +122,11 @@
         // data-severity attribute drives the CSS critical pulse animation
         card.dataset.severity = alert.classification || 'INFO';
 
+        var relTime = alert.timestamp ? _relativeTime(alert.timestamp) : '';
         card.innerHTML = '<div class="alert-row">'
             + '<span class="alert-sev-dot"></span>'
             + (ts ? '<span class="alert-timestamp">' + _esc(ts) + '</span>' : '')
+            + (relTime ? '<span class="alert-relative-time">' + _esc(relTime) + '</span>' : '')
             + (device ? '<span class="alert-device">' + _esc(device) + '</span>' : '')
             + (mnemonic ? '<span class="alert-mnemonic">' + _esc(mnemonic) + '</span>' : '')
             + '<span class="alert-message">' + _esc(message) + '</span>'
@@ -183,6 +189,49 @@
         } catch (e) {
             return String(iso);
         }
+    }
+
+    /**
+     * Compute a human-readable relative time string from an ISO timestamp.
+     * Returns "just now" for < 3 s, "Xs ago" / "Xm ago" / "Xh ago" / "Xd ago".
+     */
+    function _relativeTime(isoString) {
+        try {
+            var d = new Date(isoString);
+            if (isNaN(d.getTime())) { return ''; }
+            var diffSec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+            if (diffSec < 3) return 'just now';
+            if (diffSec < 60) return diffSec + 's ago';
+            var diffMin = Math.floor(diffSec / 60);
+            if (diffMin < 60) return diffMin + 'm ago';
+            var diffHr = Math.floor(diffMin / 60);
+            if (diffHr < 24) return diffHr + 'h ago';
+            var diffDay = Math.floor(diffHr / 24);
+            return diffDay + 'd ago';
+        } catch (e) {
+            return '';
+        }
+    }
+
+    /**
+     * Update all visible .alert-relative-time spans by re-computing from
+     * data-timestamp on the parent card (alerts) or on the span itself
+     * (incidents). Runs on a 10-second interval, no DOM re-render needed.
+     */
+    function _updateRelativeTimes() {
+        // Alert cards: timestamp lives on the card's data-timestamp
+        var alertCards = document.querySelectorAll('.alert-card[data-timestamp]');
+        alertCards.forEach(function (card) {
+            var span = card.querySelector('.alert-relative-time');
+            if (span) {
+                span.textContent = _relativeTime(card.dataset.timestamp);
+            }
+        });
+        // Incident spans: timestamp lives on the span's own data-timestamp
+        var incSpans = document.querySelectorAll('.incident-meta .alert-relative-time[data-timestamp]');
+        incSpans.forEach(function (span) {
+            span.textContent = _relativeTime(span.dataset.timestamp);
+        });
     }
 
     // ── Filter + render ──────────────────────────────────────────────────────
@@ -249,6 +298,48 @@
         });
     }
 
+    // ── Filter Badge ─────────────────────────────────────────────────────────
+    var _deviceFilter = '';  // set when topology node is clicked
+
+    function _updateFilterBadge() {
+        var badge = _el('filterBadge');
+        if (!badge) return;
+
+        var label = '';
+        if (_deviceFilter) {
+            label = 'Device: ' + _deviceFilter;
+        } else if (_searchQuery) {
+            label = 'Filtered: ' + _searchQuery;
+        }
+
+        if (!label) {
+            badge.style.display = 'none';
+            badge.innerHTML = '';
+            return;
+        }
+
+        // Truncate display text to 20 chars
+        var displayText = label.length > 20 ? label.slice(0, 20) + '…' : label;
+
+        badge.innerHTML = '<span class="filter-badge-text">'
+            + _esc(displayText)
+            + '</span>'
+            + '<button class="filter-badge-close" aria-label="Clear filter" title="Clear filter">×</button>';
+        badge.style.display = 'inline-flex';
+
+        var closeBtn = badge.querySelector('.filter-badge-close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', function () {
+                var searchInput = _el('alertSearch');
+                if (searchInput) searchInput.value = '';
+                _searchQuery = '';
+                _deviceFilter = '';
+                _updateFilterBadge();
+                _renderAlerts();
+            });
+        }
+    }
+
     // ── Search ────────────────────────────────────────────────────────────────
     function _initSearch() {
         var searchInput = _el('alertSearch');
@@ -259,22 +350,127 @@
             clearTimeout(timer);
             timer = setTimeout(function () {
                 _searchQuery = searchInput.value.trim();
+                // If user manually edits search, clear device-filter context
+                if (!_searchQuery || (_deviceFilter && _searchQuery !== _deviceFilter)) _deviceFilter = '';
+                _updateFilterBadge();
                 _renderAlerts();
             }, 200);
         });
     }
 
-    // ── Clear button ──────────────────────────────────────────────────────────
+    // ── Clear button (with confirmation + undo) ────────────────────────────────
+    var _clearedBackup = null;
+    var _undoTimer = null;
+    var _undoCountdown = null;
+
     function _initClearButton() {
         var btn = _el('clearAlertsBtn');
         if (!btn) return;
         btn.addEventListener('click', function () {
+            var total = _alerts.length;
+            if (total === 0) return;
+
+            if (!confirm('Clear all alerts? This can be undone within 5 seconds.')) return;
+
+            // Stash current state for undo
+            _clearedBackup = {
+                alerts: _alerts.slice(),
+                ackedIds: Object.assign({}, _ackedIds),
+                counters: Object.assign({}, _counters),
+            };
+
+            // Clear alerts and counters
             _alerts = [];
             _ackedIds = {};
             _counters = { CRITICAL: 0, WARNING: 0, INFO: 0, NOISE: 0, USER_LOGIN: 0 };
+            _searchQuery = '';
+            _deviceFilter = '';
+            var searchInput = _el('alertSearch');
+            if (searchInput) searchInput.value = '';
+            _updateFilterBadge();
             _updateCounters();
             _renderAlerts();
+
+            // Show undo bar
+            _showUndoBar(total);
         });
+    }
+
+    function _showUndoBar(count) {
+        _dismissUndoBar();
+
+        var UNDO_SECONDS = 5;
+        var remaining = UNDO_SECONDS;
+
+        var bar = document.createElement('div');
+        bar.id = 'clearUndoBar';
+        bar.className = 'clear-undo-bar';
+
+        var msgSpan = document.createElement('span');
+        msgSpan.className = 'undo-message';
+        msgSpan.textContent = 'Cleared ' + count + ' alert' + (count !== 1 ? 's' : '');
+
+        var undoBtn = document.createElement('button');
+        undoBtn.className = 'btn-undo';
+        undoBtn.textContent = 'UNDO';
+
+        var timerSpan = document.createElement('span');
+        timerSpan.className = 'undo-timer';
+        timerSpan.textContent = '(' + remaining + 's)';
+
+        bar.appendChild(msgSpan);
+        bar.appendChild(undoBtn);
+        bar.appendChild(timerSpan);
+
+        // Insert at the top of the alert stream container
+        var container = _el('alertsContainer');
+        if (container) {
+            container.insertBefore(bar, container.firstChild);
+        } else {
+            document.body.appendChild(bar);
+        }
+
+        // Countdown timer
+        _undoCountdown = setInterval(function () {
+            remaining--;
+            if (remaining <= 0) {
+                _expireUndo();
+            } else {
+                timerSpan.textContent = '(' + remaining + 's)';
+            }
+        }, 1000);
+
+        // Expiry timeout (authoritative — ensures cleanup even if interval drifts)
+        _undoTimer = setTimeout(function () {
+            _expireUndo();
+        }, UNDO_SECONDS * 1000 + 100);
+
+        // UNDO click handler
+        undoBtn.addEventListener('click', function () {
+            if (!_clearedBackup) return;
+            _alerts = _clearedBackup.alerts;
+            _ackedIds = _clearedBackup.ackedIds;
+            _counters = _clearedBackup.counters;
+            _clearedBackup = null;
+            _updateCounters();
+            _renderAlerts();
+            _dismissUndoBar();
+            _showToast('Alerts restored');
+        });
+    }
+
+    function _expireUndo() {
+        _clearedBackup = null;
+        _dismissUndoBar();
+    }
+
+    function _dismissUndoBar() {
+        clearTimeout(_undoTimer);
+        _undoTimer = null;
+        clearInterval(_undoCountdown);
+        _undoCountdown = null;
+        var bar = document.getElementById('clearUndoBar');
+        if (bar) bar.remove();
     }
 
     // ── Client-side dedup (safety net) ──────────────────────────────────────
@@ -300,6 +496,42 @@
         }
         _recentKeys[key] = now;
         return false;
+    }
+
+    // ── Browser Notifications ────────────────────────────────────────────────
+    function _requestNotificationPermission() {
+        if (!('Notification' in window)) return;
+        if (Notification.permission === 'granted') return;
+        if (Notification.permission === 'denied') return;
+        Notification.requestPermission();
+    }
+
+    function _fireBrowserNotification(alert) {
+        if (!_browserNotifEnabled) return;
+        if (!('Notification' in window)) return;
+        if (Notification.permission !== 'granted') return;
+        if (!document.hidden) return;
+        if (alert.classification !== 'CRITICAL') return;
+
+        var device = alert.device || 'Unknown device';
+        var mnemonic = alert.mnemonic || 'Alert';
+        var notif = new Notification('BSCCL NetWatch — CRITICAL', {
+            body: device + ': ' + mnemonic,
+            tag: 'netwatch-critical',
+            icon: '/static/favicon.ico',
+        });
+        notif.onclick = function () {
+            window.focus();
+            notif.close();
+        };
+    }
+
+    function _setBrowserNotifEnabled(enabled) {
+        _browserNotifEnabled = enabled;
+        localStorage.setItem('netwatch_browser_notif', enabled ? 'true' : 'false');
+        if (enabled) {
+            _requestNotificationPermission();
+        }
     }
 
     // ── WebSocket alert events ────────────────────────────────────────────────
@@ -339,6 +571,9 @@
         if (window.NetwatchSounds) {
             window.NetwatchSounds.play(cls);
         }
+
+        // Browser notification for CRITICAL alerts when tab is hidden
+        _fireBrowserNotification(alert);
     });
 
     // ── Time filter / DB fetch ────────────────────────────────────────────────
@@ -707,6 +942,7 @@
                 + '<div class="incident-meta">'
                 + (inc.device ? _esc(inc.device) + ' · ' : '')
                 + (inc.started_at ? _esc(_formatTimestamp(inc.started_at)) : '')
+                + (inc.started_at ? ' <span class="alert-relative-time" data-timestamp="' + _esc(inc.started_at) + '">' + _esc(_relativeTime(inc.started_at)) + '</span>' : '')
                 + '</div>'
                 + (inc.client ? '<div class="incident-client">' + _esc(inc.client) + '</div>' : '')
                 + ackInfo
@@ -881,6 +1117,8 @@
         if (searchInput) {
             searchInput.value = device;
             _searchQuery = device;
+            _deviceFilter = device;
+            _updateFilterBadge();
             _renderAlerts();
             searchInput.focus();
         }
@@ -1024,6 +1262,9 @@
         _loadHandoffNotes();
         setInterval(_loadShiftInfo, 60000);
 
+        // Refresh relative timestamps every 10 seconds without re-rendering
+        setInterval(_updateRelativeTimes, 10000);
+
         var handoffBtn = _el('btnHandoff');
         if (handoffBtn) {
             handoffBtn.addEventListener('click', function () {
@@ -1070,5 +1311,8 @@
         },
         setRepeatAlarm: function (enabled) { _setRepeatAlarm(enabled); },
         isRepeatAlarmEnabled: function () { return _repeatAlarmEnabled; },
+        setBrowserNotif: function (enabled) { _setBrowserNotifEnabled(enabled); },
+        isBrowserNotifEnabled: function () { return _browserNotifEnabled; },
+        requestNotificationPermission: function () { _requestNotificationPermission(); },
     };
 })();

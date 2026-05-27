@@ -143,6 +143,20 @@
                 <span class="form-hint" id="repeatAlarm-hint">When disabled, the alarm plays once when an incident is first detected but does not repeat. The pulsing red border remains visible either way.</span>
             </div>
             <div class="form-group">
+                <label class="form-label" for="browserNotifEnabled">Browser Notifications</label>
+                <div class="toggle-row">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="browserNotifEnabled" name="browser_notif_enabled"
+                               aria-describedby="browserNotif-hint">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="toggle-desc">Show desktop notifications for CRITICAL alerts when tab is in background</span>
+                </div>
+                <span class="form-hint" id="browserNotif-hint">
+                    Permission status: <span id="browserNotifStatus">Checking...</span>
+                </span>
+            </div>
+            <div class="form-group">
                 <div class="sound-test-buttons">
                     <button type="button" class="btn btn-test btn-test-critical"
                             onclick="if(window.NetwatchSounds) window.NetwatchSounds.testCritical()">
@@ -302,6 +316,47 @@ document.addEventListener('DOMContentLoaded', function() {
             if (window.NetwatchDashboard) {
                 window.NetwatchDashboard.setRepeatAlarm(repeatAlarm.checked);
             }
+        });
+    }
+
+    // ── Browser Notifications toggle (localStorage-backed) ────────────────
+    var browserNotifToggle = document.getElementById('browserNotifEnabled');
+    var browserNotifStatus = document.getElementById('browserNotifStatus');
+
+    function updateBrowserNotifStatus() {
+        if (!browserNotifStatus) return;
+        if (!('Notification' in window)) {
+            browserNotifStatus.textContent = 'Not supported';
+            return;
+        }
+        var perm = Notification.permission;
+        if (perm === 'granted') {
+            browserNotifStatus.textContent = 'Granted';
+        } else if (perm === 'denied') {
+            browserNotifStatus.textContent = 'Denied';
+        } else {
+            browserNotifStatus.textContent = 'Not asked';
+        }
+    }
+
+    updateBrowserNotifStatus();
+
+    if (browserNotifToggle) {
+        browserNotifToggle.checked = localStorage.getItem('netwatch_browser_notif') === 'true';
+        browserNotifToggle.addEventListener('change', function() {
+            var enabled = browserNotifToggle.checked;
+            if (window.NetwatchDashboard) {
+                window.NetwatchDashboard.setBrowserNotif(enabled);
+            } else {
+                localStorage.setItem('netwatch_browser_notif', enabled ? 'true' : 'false');
+                if (enabled && 'Notification' in window && Notification.permission === 'default') {
+                    Notification.requestPermission().then(function() {
+                        updateBrowserNotifStatus();
+                    });
+                }
+            }
+            // Re-check permission status after a brief delay (permission prompt is async)
+            setTimeout(updateBrowserNotifStatus, 500);
         });
     }
 

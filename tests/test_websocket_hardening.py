@@ -445,3 +445,149 @@ async def test_broadcast_uses_module_timeout_via_wait_for() -> None:
 
     assert captured_timeout, "wait_for was never called with a timeout"
     assert captured_timeout[0] == SEND_TIMEOUT_SECONDS
+
+
+# ---------------------------------------------------------------------------
+# 8. WebSocket authentication — rejection tests
+# ---------------------------------------------------------------------------
+
+
+async def test_ws_auth_rejects_missing_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When API_KEY is set, a WS connection with no token is closed with 4001."""
+    from src.config import get_settings
+    from src.main import _ws_authenticate
+
+    monkeypatch.setenv("API_KEY", "secret-ws-key")
+    if hasattr(get_settings, "cache_clear"):
+        get_settings.cache_clear()
+
+    ws = _make_ws()
+    ws.query_params = {}
+
+    try:
+        result = await _ws_authenticate(ws)
+        assert result is False
+        ws.accept.assert_awaited_once()
+        ws.close.assert_awaited_once()
+        close_kw = ws.close.call_args[1]
+        assert close_kw.get("code") == 4001
+        assert close_kw.get("reason") == "Unauthorized"
+    finally:
+        monkeypatch.delenv("API_KEY", raising=False)
+        if hasattr(get_settings, "cache_clear"):
+            get_settings.cache_clear()
+
+
+async def test_ws_auth_rejects_wrong_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Incorrect token is closed with 4001 when API_KEY is configured."""
+    from src.config import get_settings
+    from src.main import _ws_authenticate
+
+    monkeypatch.setenv("API_KEY", "correct-key-123")
+    if hasattr(get_settings, "cache_clear"):
+        get_settings.cache_clear()
+
+    ws = _make_ws()
+    ws.query_params = {"token": "wrong-key-456"}
+
+    try:
+        result = await _ws_authenticate(ws)
+        assert result is False
+        ws.accept.assert_awaited_once()
+        ws.close.assert_awaited_once()
+        close_kw = ws.close.call_args[1]
+        assert close_kw.get("code") == 4001
+    finally:
+        monkeypatch.delenv("API_KEY", raising=False)
+        if hasattr(get_settings, "cache_clear"):
+            get_settings.cache_clear()
+
+
+async def test_ws_auth_rejects_empty_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicitly empty token is rejected when API_KEY is set."""
+    from src.config import get_settings
+    from src.main import _ws_authenticate
+
+    monkeypatch.setenv("API_KEY", "non-empty-key")
+    if hasattr(get_settings, "cache_clear"):
+        get_settings.cache_clear()
+
+    ws = _make_ws()
+    ws.query_params = {"token": ""}
+
+    try:
+        result = await _ws_authenticate(ws)
+        assert result is False
+        ws.accept.assert_awaited_once()
+        ws.close.assert_awaited_once()
+    finally:
+        monkeypatch.delenv("API_KEY", raising=False)
+        if hasattr(get_settings, "cache_clear"):
+            get_settings.cache_clear()
+
+
+async def test_ws_auth_rejected_connection_not_added_to_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rejected WS client must NOT appear in the connection pool."""
+    from src.config import get_settings
+    from src.main import _ws_authenticate
+
+    monkeypatch.setenv("API_KEY", "pool-test-key")
+    if hasattr(get_settings, "cache_clear"):
+        get_settings.cache_clear()
+
+    manager = WebSocketManager()
+    ws = _make_ws()
+    ws.query_params = {"token": "bad-token"}
+
+    try:
+        rejected = await _ws_authenticate(ws)
+        assert rejected is False
+        # Simulate: the endpoint returns early, never calls connect
+        assert manager.active_connections == 0
+    finally:
+        monkeypatch.delenv("API_KEY", raising=False)
+        if hasattr(get_settings, "cache_clear"):
+            get_settings.cache_clear()
+
+
+async def test_ws_auth_uses_constant_time_comparison(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_ws_authenticate must use secrets.compare_digest (not ==) for token check."""
+    import secrets as secrets_mod
+
+    from src.config import get_settings
+    from src.main import _ws_authenticate
+
+    monkeypatch.setenv("API_KEY", "timing-safe-key")
+    if hasattr(get_settings, "cache_clear"):
+        get_settings.cache_clear()
+
+    ws = _make_ws()
+    ws.query_params = {"token": "timing-safe-key"}
+
+    called_with: list[tuple[bytes, bytes]] = []
+    original_compare = secrets_mod.compare_digest
+
+    def spy_compare(a: bytes, b: bytes) -> bool:
+        called_with.append((a, b))
+        return original_compare(a, b)
+
+    monkeypatch.setattr(secrets_mod, "compare_digest", spy_compare)
+
+    try:
+        result = await _ws_authenticate(ws)
+        assert result is True
+        assert called_with, "secrets.compare_digest was not called"
+    finally:
+        monkeypatch.delenv("API_KEY", raising=False)
+        if hasattr(get_settings, "cache_clear"):
+            get_settings.cache_clear()
