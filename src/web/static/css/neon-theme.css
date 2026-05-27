@@ -637,6 +637,14 @@ button { cursor: pointer; }
     white-space: nowrap;
 }
 
+.alert-relative-time {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
 .alert-device {
     font-family: var(--font-mono);
     font-size: 0.7rem;
@@ -1481,7 +1489,8 @@ kbd {
        Offset 280px = nav(60) + severity(~100) + panel-header(~55) + filter(~30) + tabs(~35). */
     .alerts-container { max-height: calc(100vh - 280px); }
     .alert-row { min-height: 36px; gap: 0.65rem; padding: 0.3rem 0.9rem; }
-    .alert-timestamp { font-size: 0.95rem; }
+    .alert-timestamp      { font-size: 0.95rem; }
+    .alert-relative-time  { font-size: 0.8rem; }
     .alert-device    { font-size: 0.9rem; }
     .alert-mnemonic  { font-size: 0.9rem; }
     .alert-message   { font-size: 0.95rem; }

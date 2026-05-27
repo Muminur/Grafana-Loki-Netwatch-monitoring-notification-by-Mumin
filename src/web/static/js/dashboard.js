@@ -75,6 +75,7 @@
         if (alert._acked || _ackedIds[alert.id]) card.classList.add('acknowledged');
         card.dataset.id = alert.id || '';
         card.dataset.classification = alert.classification || '';
+        if (alert.timestamp) card.dataset.timestamp = alert.timestamp;
 
         var sevLabel = SEV_LABEL[alert.classification] || alert.classification || 'INFO';
         var ts = alert.timestamp ? _formatTimestamp(alert.timestamp) : '';
@@ -118,9 +119,11 @@
         // data-severity attribute drives the CSS critical pulse animation
         card.dataset.severity = alert.classification || 'INFO';
 
+        var relTime = alert.timestamp ? _relativeTime(alert.timestamp) : '';
         card.innerHTML = '<div class="alert-row">'
             + '<span class="alert-sev-dot"></span>'
             + (ts ? '<span class="alert-timestamp">' + _esc(ts) + '</span>' : '')
+            + (relTime ? '<span class="alert-relative-time">' + _esc(relTime) + '</span>' : '')
             + (device ? '<span class="alert-device">' + _esc(device) + '</span>' : '')
             + (mnemonic ? '<span class="alert-mnemonic">' + _esc(mnemonic) + '</span>' : '')
             + '<span class="alert-message">' + _esc(message) + '</span>'
@@ -183,6 +186,49 @@
         } catch (e) {
             return String(iso);
         }
+    }
+
+    /**
+     * Compute a human-readable relative time string from an ISO timestamp.
+     * Returns "just now" for < 3 s, "Xs ago" / "Xm ago" / "Xh ago" / "Xd ago".
+     */
+    function _relativeTime(isoString) {
+        try {
+            var d = new Date(isoString);
+            if (isNaN(d.getTime())) { return ''; }
+            var diffSec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+            if (diffSec < 3) return 'just now';
+            if (diffSec < 60) return diffSec + 's ago';
+            var diffMin = Math.floor(diffSec / 60);
+            if (diffMin < 60) return diffMin + 'm ago';
+            var diffHr = Math.floor(diffMin / 60);
+            if (diffHr < 24) return diffHr + 'h ago';
+            var diffDay = Math.floor(diffHr / 24);
+            return diffDay + 'd ago';
+        } catch (e) {
+            return '';
+        }
+    }
+
+    /**
+     * Update all visible .alert-relative-time spans by re-computing from
+     * data-timestamp on the parent card (alerts) or on the span itself
+     * (incidents). Runs on a 10-second interval, no DOM re-render needed.
+     */
+    function _updateRelativeTimes() {
+        // Alert cards: timestamp lives on the card's data-timestamp
+        var alertCards = document.querySelectorAll('.alert-card[data-timestamp]');
+        alertCards.forEach(function (card) {
+            var span = card.querySelector('.alert-relative-time');
+            if (span) {
+                span.textContent = _relativeTime(card.dataset.timestamp);
+            }
+        });
+        // Incident spans: timestamp lives on the span's own data-timestamp
+        var incSpans = document.querySelectorAll('.incident-meta .alert-relative-time[data-timestamp]');
+        incSpans.forEach(function (span) {
+            span.textContent = _relativeTime(span.dataset.timestamp);
+        });
     }
 
     // ── Filter + render ──────────────────────────────────────────────────────
@@ -707,6 +753,7 @@
                 + '<div class="incident-meta">'
                 + (inc.device ? _esc(inc.device) + ' · ' : '')
                 + (inc.started_at ? _esc(_formatTimestamp(inc.started_at)) : '')
+                + (inc.started_at ? ' <span class="alert-relative-time" data-timestamp="' + _esc(inc.started_at) + '">' + _esc(_relativeTime(inc.started_at)) + '</span>' : '')
                 + '</div>'
                 + (inc.client ? '<div class="incident-client">' + _esc(inc.client) + '</div>' : '')
                 + ackInfo
@@ -904,6 +951,9 @@
         _loadShiftInfo();
         _loadHandoffNotes();
         setInterval(_loadShiftInfo, 60000);
+
+        // Refresh relative timestamps every 10 seconds without re-rendering
+        setInterval(_updateRelativeTimes, 10000);
 
         var handoffBtn = _el('btnHandoff');
         if (handoffBtn) {
