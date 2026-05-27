@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 
     from src.core.correlator import CorrelatedEvent
     from src.core.enricher import EnrichedLog
+    from src.core.syslog_receiver import SyslogReceiver
 
 router = APIRouter()
 
@@ -59,6 +60,9 @@ _alert_id_counter: itertools.count[int] = itertools.count(1)
 
 # DB engine — set during lifespan startup via set_db_engine()
 _db_engine: AsyncEngine | None = None
+
+# Syslog receiver — set during lifespan startup via set_receiver()
+_receiver: SyslogReceiver | None = None
 
 # Background task references — set during lifespan startup via set_background_tasks()
 _background_tasks: dict[str, asyncio.Task[None]] = {}
@@ -236,6 +240,15 @@ def set_db_engine(engine: AsyncEngine) -> None:
     """
     global _db_engine  # noqa: PLW0603
     _db_engine = engine
+
+
+def set_receiver(receiver: SyslogReceiver) -> None:
+    """Register the syslog receiver for Loki health reporting.
+
+    Called from ``main.py`` lifespan after the receiver is created.
+    """
+    global _receiver  # noqa: PLW0603
+    _receiver = receiver
 
 
 def set_background_tasks(tasks: dict[str, asyncio.Task[None]]) -> None:
@@ -670,6 +683,9 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
 # ---------------------------------------------------------------------------
 
 
+_STALE_DATA_THRESHOLD_SECONDS = 600  # 10 minutes
+
+
 @router.get("/health")
 @limiter.exempt  # type: ignore[untyped-decorator]
 async def health(request: Request) -> dict[str, Any]:
@@ -679,8 +695,11 @@ async def health(request: Request) -> dict[str, Any]:
     -------
     dict
         ``status``, ``version``, ``uptime_seconds``, ``alerts_processed``,
-        ``active_connections``, ``database_ok``, and ``background_tasks``.
-        ``status`` is ``"degraded"`` when the DB check fails.
+        ``active_connections``, ``database_ok``, ``background_tasks``,
+        ``loki_connected``, ``last_alert_received_at``, ``stale_data``.
+
+        ``status`` is ``"degraded"`` when the DB check fails or when
+        syslog data is stale (no message received in the last 10 minutes).
         ``background_tasks`` maps task names to ``True`` (running) or
         ``False`` (stopped/crashed).
     """
@@ -699,7 +718,30 @@ async def health(request: Request) -> dict[str, Any]:
 
     bg_status = {name: not task.done() for name, task in _background_tasks.items()}
 
-    status = "ok" if database_ok or _db_engine is None else "degraded"
+    # Loki / syslog receiver health
+    loki_connected = False
+    last_alert_received_at: str | None = None
+    stale_data = False
+
+    if _receiver is not None:
+        loki_connected = _receiver.is_connected
+        last_msg = _receiver.last_message_at
+        if last_msg is not None:
+            last_alert_received_at = last_msg.isoformat()
+            elapsed = (datetime.now(UTC) - last_msg).total_seconds()
+            stale_data = elapsed > _STALE_DATA_THRESHOLD_SECONDS
+        else:
+            # No message ever received — consider stale if receiver has
+            # been running for longer than the threshold.
+            stale_data = uptime > _STALE_DATA_THRESHOLD_SECONDS
+
+    degraded = False
+    if _db_engine is not None and not database_ok:
+        degraded = True
+    if stale_data:
+        degraded = True
+
+    status = "degraded" if degraded else "ok"
     return {
         "status": status,
         "version": "0.1.0",
@@ -707,6 +749,9 @@ async def health(request: Request) -> dict[str, Any]:
         "alerts_processed": _alerts_processed,
         "active_connections": _active_connections,
         "database_ok": database_ok,
+        "loki_connected": loki_connected,
+        "last_alert_received_at": last_alert_received_at,
+        "stale_data": stale_data,
         "background_tasks": bg_status,
     }
 
