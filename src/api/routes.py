@@ -1544,6 +1544,102 @@ async def get_stats_weekly() -> dict[str, Any]:
     return await _stats_by_period("weekly", "7d")
 
 
+@router.get("/api/stats/heatmap")
+async def get_stats_heatmap(
+    period: str = Query(default="30d", description="Time period: 7d, 30d, 1y, all"),
+) -> dict[str, Any]:
+    """Return a 7x24 alert heatmap grouped by day-of-week and hour-of-day.
+
+    Each cell ``data[day][hour]`` contains the number of alerts that occurred
+    during that (day, hour) combination over the requested period.
+
+    Day indices: 0=Monday, 1=Tuesday, ..., 6=Sunday.
+    Hour indices: 0-23 (BDT, UTC+6).
+
+    Parameters
+    ----------
+    period:
+        Time filter: 7d, 30d (default), 1y, all.
+
+    Returns
+    -------
+    dict
+        ``data`` — 7x24 integer matrix, ``max_count`` — highest cell value,
+        ``period`` — echo of the requested period.
+
+    Raises
+    ------
+    HTTPException
+        400 if ``period`` is not in the allowed set.
+    """
+    allowed = frozenset({"7d", "30d", "1y", "all"})
+    if period not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid period '{period}'. "
+                f"Must be one of: {', '.join(sorted(allowed))}"
+            ),
+        )
+
+    # Initialise 7 x 24 zero matrix (Mon=0 .. Sun=6, hours 0-23)
+    data: list[list[int]] = [[0] * 24 for _ in range(7)]
+
+    if _db_engine is not None:
+        from sqlalchemy import func, select  # noqa: PLC0415
+        from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+        from src.database.models import AlertLog  # noqa: PLC0415
+
+        start, _ = _period_to_time_range(period)
+        async with AsyncSession(_db_engine) as session:
+            # SQLite strftime('%w') returns 0=Sunday..6=Saturday.
+            dow_col = func.cast(
+                func.strftime("%w", AlertLog.timestamp), type_=AlertLog.id.type
+            )
+            hour_col = func.cast(
+                func.strftime("%H", AlertLog.timestamp), type_=AlertLog.id.type
+            )
+            stmt = select(
+                dow_col.label("dow"),
+                hour_col.label("hour"),
+                func.count(AlertLog.id).label("cnt"),
+            ).group_by("dow", "hour")
+
+            if start is not None:
+                stmt = stmt.where(AlertLog.timestamp >= start)
+
+            result = await session.execute(stmt)
+            rows = result.all()
+
+        for sqlite_dow, hour, cnt in rows:
+            # SQLite: 0=Sun,1=Mon..6=Sat → Python: Mon=0..Sun=6
+            py_dow = (int(sqlite_dow) - 1) % 7
+            data[py_dow][int(hour)] = int(cnt)
+    else:
+        # Fallback: count from in-memory store
+        start, _ = _period_to_time_range(period)
+        for alert in _alerts_store:
+            raw_ts = alert.get("timestamp", "")
+            try:
+                ts = (
+                    datetime.fromisoformat(raw_ts)
+                    if isinstance(raw_ts, str)
+                    else raw_ts
+                )
+                if ts.tzinfo is not None:
+                    ts = ts.replace(tzinfo=None)
+                if start is not None and ts < start:
+                    continue
+            except (ValueError, AttributeError, TypeError):
+                continue
+            # weekday(): Monday=0 .. Sunday=6
+            data[ts.weekday()][ts.hour] += 1
+
+    max_count = max(max(row) for row in data)
+    return {"data": data, "max_count": max_count, "period": period}
+
+
 @router.get("/api/stats/monthly")
 async def get_stats_monthly() -> dict[str, Any]:
     """Return monthly aggregated statistics.

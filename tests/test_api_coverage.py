@@ -1259,6 +1259,125 @@ async def test_noise_toggle_purges_existing_incidents(
     )
 
 
+# ---------------------------------------------------------------------------
+# /api/stats/heatmap (7x24 alert matrix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_heatmap_returns_7x24_matrix(
+    client: AsyncClient, clean_stores: None
+) -> None:
+    """GET /api/stats/heatmap returns a 7x24 matrix with max_count and period."""
+    routes_mod._db_engine = None  # noqa: SLF001
+    async with client as c:
+        resp = await c.get("/api/stats/heatmap")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["period"] == "30d"
+    assert len(body["data"]) == 7
+    for row in body["data"]:
+        assert len(row) == 24
+    assert body["max_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_heatmap_empty_db_returns_zeros(
+    client: AsyncClient, clean_stores: None, async_db: Any
+) -> None:
+    """Heatmap with empty DB returns all-zero 7x24 matrix."""
+    routes_mod._db_engine = async_db  # noqa: SLF001
+    async with client as c:
+        resp = await c.get("/api/stats/heatmap", params={"period": "30d"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["data"]) == 7
+    for row in body["data"]:
+        assert all(v == 0 for v in row)
+    assert body["max_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_heatmap_with_db_data(
+    client: AsyncClient, clean_stores: None, async_db: Any
+) -> None:
+    """Heatmap reflects DB rows grouped by (day_of_week, hour)."""
+    routes_mod._db_engine = async_db  # noqa: SLF001
+    # Wednesday 2026-05-27 14:00 BDT (but timestamps stored as naive).
+    # datetime(2026, 5, 27, 14, 0) is a Wednesday → weekday()=2.
+    ts = datetime(2026, 5, 27, 14, 30, 0)
+    async with AsyncSession(async_db) as session:
+        for _ in range(3):
+            session.add(
+                AlertLog(
+                    timestamp=ts,
+                    source_ip="192.168.203.1",
+                    device_name="EQ-RTR-01",
+                    hostname="h",
+                    facility="ROUTING",
+                    severity_level=5,
+                    mnemonic="ADJCHANGE",
+                    message="m",
+                    raw="r",
+                    classification="CRITICAL",
+                )
+            )
+        await session.commit()
+
+    async with client as c:
+        resp = await c.get("/api/stats/heatmap", params={"period": "all"})
+    assert resp.status_code == 200
+    body = resp.json()
+    # Wednesday = day index 2 (strftime %w: Wed=3, mapped to (3-1)%7=2)
+    assert body["data"][2][14] == 3
+    assert body["max_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_heatmap_with_period_param(
+    client: AsyncClient, clean_stores: None
+) -> None:
+    """Heatmap accepts 7d, 30d, 1y, all period parameters."""
+    routes_mod._db_engine = None  # noqa: SLF001
+    async with client as c:
+        for period in ("7d", "30d", "1y", "all"):
+            resp = await c.get("/api/stats/heatmap", params={"period": period})
+            assert resp.status_code == 200
+            assert resp.json()["period"] == period
+
+
+@pytest.mark.asyncio
+async def test_heatmap_invalid_period_returns_400(
+    client: AsyncClient, clean_stores: None
+) -> None:
+    """Invalid period returns 400."""
+    routes_mod._db_engine = None  # noqa: SLF001
+    async with client as c:
+        resp = await c.get("/api/stats/heatmap", params={"period": "bogus"})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_heatmap_in_memory_fallback(
+    client: AsyncClient, clean_stores: None
+) -> None:
+    """Heatmap counts correctly from in-memory store when no DB engine."""
+    routes_mod._db_engine = None  # noqa: SLF001
+    # Thursday 2026-05-28 09:15 → weekday()=3, hour=9
+    ts = datetime(2026, 5, 28, 9, 15, 0)
+    for _ in range(5):
+        routes_mod._alerts_store.append(  # noqa: SLF001
+            {"classification": "WARNING", "timestamp": ts.isoformat()}
+        )
+    async with client as c:
+        resp = await c.get("/api/stats/heatmap", params={"period": "all"})
+    assert resp.status_code == 200
+    body = resp.json()
+    # Thursday = day index 3, hour 9
+    assert body["data"][3][9] == 5
+    assert body["max_count"] == 5
+
+
 def test_add_alert_to_store_skips_incident_for_noise_reclassified(
     clean_stores: None,
 ) -> None:
