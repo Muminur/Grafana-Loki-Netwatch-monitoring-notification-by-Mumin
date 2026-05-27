@@ -264,17 +264,114 @@
         });
     }
 
-    // ── Clear button ──────────────────────────────────────────────────────────
+    // ── Clear button (with confirmation + undo) ────────────────────────────────
+    var _clearedBackup = null;
+    var _undoTimer = null;
+    var _undoCountdown = null;
+
     function _initClearButton() {
         var btn = _el('clearAlertsBtn');
         if (!btn) return;
         btn.addEventListener('click', function () {
+            var total = _alerts.length;
+            if (total === 0) return;
+
+            if (!confirm('Clear all alerts? This can be undone within 5 seconds.')) return;
+
+            // Stash current state for undo
+            _clearedBackup = {
+                alerts: _alerts.slice(),
+                ackedIds: Object.assign({}, _ackedIds),
+                counters: Object.assign({}, _counters),
+            };
+
+            // Clear alerts and counters
             _alerts = [];
             _ackedIds = {};
             _counters = { CRITICAL: 0, WARNING: 0, INFO: 0, NOISE: 0, USER_LOGIN: 0 };
             _updateCounters();
             _renderAlerts();
+
+            // Show undo bar
+            _showUndoBar(total);
         });
+    }
+
+    function _showUndoBar(count) {
+        _dismissUndoBar();
+
+        var UNDO_SECONDS = 5;
+        var remaining = UNDO_SECONDS;
+
+        var bar = document.createElement('div');
+        bar.id = 'clearUndoBar';
+        bar.className = 'clear-undo-bar';
+
+        var msgSpan = document.createElement('span');
+        msgSpan.className = 'undo-message';
+        msgSpan.textContent = 'Cleared ' + count + ' alert' + (count !== 1 ? 's' : '');
+
+        var undoBtn = document.createElement('button');
+        undoBtn.className = 'btn-undo';
+        undoBtn.textContent = 'UNDO';
+
+        var timerSpan = document.createElement('span');
+        timerSpan.className = 'undo-timer';
+        timerSpan.textContent = '(' + remaining + 's)';
+
+        bar.appendChild(msgSpan);
+        bar.appendChild(undoBtn);
+        bar.appendChild(timerSpan);
+
+        // Insert at the top of the alert stream container
+        var container = _el('alertsContainer');
+        if (container) {
+            container.insertBefore(bar, container.firstChild);
+        } else {
+            document.body.appendChild(bar);
+        }
+
+        // Countdown timer
+        _undoCountdown = setInterval(function () {
+            remaining--;
+            if (remaining <= 0) {
+                _expireUndo();
+            } else {
+                timerSpan.textContent = '(' + remaining + 's)';
+            }
+        }, 1000);
+
+        // Expiry timeout (authoritative — ensures cleanup even if interval drifts)
+        _undoTimer = setTimeout(function () {
+            _expireUndo();
+        }, UNDO_SECONDS * 1000 + 100);
+
+        // UNDO click handler
+        undoBtn.addEventListener('click', function () {
+            if (!_clearedBackup) return;
+            _alerts = _clearedBackup.alerts;
+            _ackedIds = _clearedBackup.ackedIds;
+            _counters = _clearedBackup.counters;
+            _clearedBackup = null;
+            _updateCounters();
+            _renderAlerts();
+            _dismissUndoBar();
+            _showToast('Alerts restored');
+        });
+    }
+
+    function _expireUndo() {
+        _clearedBackup = null;
+        _dismissUndoBar();
+    }
+
+    function _dismissUndoBar() {
+        clearTimeout(_undoTimer);
+        _undoTimer = null;
+        clearInterval(_undoCountdown);
+        _undoCountdown = null;
+        var bar = document.getElementById('clearUndoBar');
+        if (bar) bar.remove();
     }
 
     // ── Client-side dedup (safety net) ──────────────────────────────────────

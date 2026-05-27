@@ -1853,3 +1853,49 @@ body.has-active-incidents .panel-incidents .panel-header {
     from { opacity: 0; transform: translateX(-50%) translateY(10px); }
     to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
+
+/* ── Clear-Alerts Undo Bar ───────────────────────────────────────────── */
+.clear-undo-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 1rem;
+    background: rgba(255, 221, 0, 0.08);
+    border: 1px solid var(--neon-yellow-dim);
+    border-radius: var(--radius-sm);
+    margin-bottom: 0.4rem;
+    animation: slide-in-top 0.2s ease;
+}
+
+.clear-undo-bar .undo-message {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--neon-yellow);
+    flex: 1;
+}
+
+.clear-undo-bar .btn-undo {
+    font-family: var(--font-display);
+    font-size: var(--text-2xs);
+    letter-spacing: 0.12em;
+    padding: 0.25rem 0.7rem;
+    background: rgba(255, 221, 0, 0.12);
+    border: 1px solid var(--neon-yellow);
+    color: var(--neon-yellow);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.clear-undo-bar .btn-undo:hover {
+    background: rgba(255, 221, 0, 0.22);
+    box-shadow: 0 0 8px var(--neon-yellow-glow);
+}
+
+.clear-undo-bar .undo-timer {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    color: var(--text-muted);
+    min-width: 2.5em;
+    text-align: right;
+}
