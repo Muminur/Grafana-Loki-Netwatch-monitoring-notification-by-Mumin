@@ -479,15 +479,33 @@ document.addEventListener('DOMContentLoaded', function() {
                     maintList.innerHTML = '<div class="empty-state">No maintenance windows scheduled</div>';
                     return;
                 }
-                maintList.innerHTML = windows.map(function(w) {
-                    return '<div class="maintenance-item">'
-                        + '<span class="maint-device">' + (w.device_name || 'All') + '</span>'
-                        + '<span class="maint-time">' + (w.start_time || '').replace('T', ' ').slice(0,16)
-                        + ' — ' + (w.end_time || '').replace('T', ' ').slice(0,16) + '</span>'
-                        + (w.reason ? '<span class="maint-reason">' + w.reason + '</span>' : '')
-                        + '<button class="btn-delete-maint" data-id="' + w.id + '" title="Delete">✕</button>'
-                        + '</div>';
-                }).join('');
+                maintList.innerHTML = '';
+                windows.forEach(function(w) {
+                    var item = document.createElement('div');
+                    item.className = 'maintenance-item';
+                    var dev = document.createElement('span');
+                    dev.className = 'maint-device';
+                    dev.textContent = w.device_name || 'All';
+                    item.appendChild(dev);
+                    var time = document.createElement('span');
+                    time.className = 'maint-time';
+                    time.textContent = (w.start_time || '').replace('T', ' ').slice(0,16)
+                        + ' — ' + (w.end_time || '').replace('T', ' ').slice(0,16);
+                    item.appendChild(time);
+                    if (w.reason) {
+                        var reason = document.createElement('span');
+                        reason.className = 'maint-reason';
+                        reason.textContent = w.reason;
+                        item.appendChild(reason);
+                    }
+                    var btn = document.createElement('button');
+                    btn.className = 'btn-delete-maint';
+                    btn.dataset.id = String(w.id);
+                    btn.title = 'Delete';
+                    btn.textContent = '✕';
+                    item.appendChild(btn);
+                    maintList.appendChild(item);
+                });
                 maintList.querySelectorAll('.btn-delete-maint').forEach(function(btn) {
                     btn.addEventListener('click', function() {
                         fetch(api + '/maintenance/' + btn.dataset.id, { method: 'DELETE' })

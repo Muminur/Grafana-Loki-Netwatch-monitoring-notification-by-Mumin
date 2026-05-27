@@ -349,7 +349,7 @@ async def load_persisted_state(engine: AsyncEngine) -> None:
                     _load_log.info("Loaded %s=%s from DB", _key, _val)
 
             val = await get_app_setting(session, "notify_severity")
-            if val is not None:
+            if val is not None and val in ("CRITICAL", "WARNING", "INFO"):
                 object.__setattr__(_s, "notify_severity", val)
                 _load_log.info("Loaded notify_severity=%s from DB", val)
 

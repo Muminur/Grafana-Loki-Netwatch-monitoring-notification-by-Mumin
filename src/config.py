@@ -238,6 +238,9 @@ class Settings:
     log_level: str = field(
         default_factory=lambda: _validate_log_level(os.environ.get("LOG_LEVEL", "INFO"))
     )
+    notify_severity: str = field(
+        default_factory=lambda: os.environ.get("NOTIFY_SEVERITY", "CRITICAL")
+    )
     retention_days: int = field(
         default_factory=lambda: _safe_int("RETENTION_DAYS", "90")
     )
