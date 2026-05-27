@@ -1124,6 +1124,125 @@
         }
     });
 
+    // ── Device detail modal (topology node click) ────────────────────────
+    var _deviceDetailDevice = '';
+
+    function _openDeviceDetailModal(detail) {
+        var modal = _el('deviceDetailModal');
+        if (!modal) return;
+
+        _deviceDetailDevice = detail.device || '';
+        var title = _el('deviceDetailTitle');
+        var body = _el('deviceDetailBody');
+        if (title) title.textContent = _deviceDetailDevice;
+        if (body) body.innerHTML = '<div class="device-detail-loading">Loading device data...</div>';
+        modal.style.display = '';
+
+        // Build device metadata section
+        var metaHtml = '<div class="device-detail-meta">';
+        if (detail.location) {
+            metaHtml += '<div class="device-detail-field">'
+                + '<span class="device-detail-key">Location</span>'
+                + '<span class="device-detail-val">' + _esc(detail.location) + '</span>'
+                + '</div>';
+        }
+        if (detail.platform) {
+            metaHtml += '<div class="device-detail-field">'
+                + '<span class="device-detail-key">Platform</span>'
+                + '<span class="device-detail-val">' + _esc(detail.platform) + '</span>'
+                + '</div>';
+        }
+        if (detail.ip) {
+            metaHtml += '<div class="device-detail-field">'
+                + '<span class="device-detail-key">IP</span>'
+                + '<span class="device-detail-val">' + _esc(detail.ip) + '</span>'
+                + '</div>';
+        }
+        if (detail.status) {
+            var statusClass = 'device-status-' + (detail.status || 'unknown');
+            metaHtml += '<div class="device-detail-field">'
+                + '<span class="device-detail-key">Status</span>'
+                + '<span class="device-detail-val ' + statusClass + '">'
+                + _esc((detail.status || 'unknown').toUpperCase()) + '</span>'
+                + '</div>';
+        }
+        metaHtml += '</div>';
+
+        // Fetch recent alerts for this device
+        var apiBase = (window.NETWATCH_CONFIG || {}).apiBase || '/api';
+        fetch(apiBase + '/alerts?device=' + encodeURIComponent(_deviceDetailDevice) + '&limit=10')
+            .then(function (r) { return r.json(); })
+            .then(function (alerts) {
+                if (!body) return;
+                var alertsHtml = '';
+                if (Array.isArray(alerts) && alerts.length > 0) {
+                    alertsHtml = '<div class="device-detail-section-title">Recent Alerts</div>'
+                        + '<div class="device-detail-alerts">';
+                    alerts.forEach(function (a) {
+                        var sevClass = 'device-alert-sev-' + (a.classification || 'INFO');
+                        alertsHtml += '<div class="device-detail-alert ' + sevClass + '">'
+                            + '<span class="device-alert-dot"></span>'
+                            + '<span class="device-alert-ts">'
+                            + _esc(a.timestamp ? _formatTimestamp(a.timestamp) : '') + '</span>'
+                            + '<span class="device-alert-mnemonic">' + _esc(a.mnemonic || '') + '</span>'
+                            + '<span class="device-alert-cls">' + _esc(a.classification || '') + '</span>'
+                            + '</div>';
+                    });
+                    alertsHtml += '</div>';
+                } else {
+                    alertsHtml = '<div class="device-detail-section-title">Recent Alerts</div>'
+                        + '<div class="device-detail-empty">No recent alerts for this device</div>';
+                }
+                body.innerHTML = metaHtml + alertsHtml;
+            })
+            .catch(function () {
+                if (body) {
+                    body.innerHTML = metaHtml
+                        + '<div class="device-detail-section-title">Recent Alerts</div>'
+                        + '<div class="device-detail-empty">Failed to load alerts</div>';
+                }
+            });
+    }
+
+    function _closeDeviceDetailModal() {
+        var modal = _el('deviceDetailModal');
+        if (modal) modal.style.display = 'none';
+        _deviceDetailDevice = '';
+    }
+
+    document.addEventListener('netwatch:device-detail', function (e) {
+        if (e.detail) _openDeviceDetailModal(e.detail);
+    });
+
+    // Close modal: X button, overlay click, Escape key
+    document.addEventListener('click', function (e) {
+        if (e.target && e.target.id === 'deviceDetailClose') {
+            _closeDeviceDetailModal();
+        }
+        if (e.target && e.target.id === 'deviceDetailModal') {
+            _closeDeviceDetailModal();
+        }
+        if (e.target && e.target.id === 'deviceDetailFilterBtn') {
+            // Apply the device name as a search filter and close
+            var searchInput = _el('alertSearch');
+            if (searchInput && _deviceDetailDevice) {
+                searchInput.value = _deviceDetailDevice;
+                _searchQuery = _deviceDetailDevice;
+                _renderAlerts();
+                searchInput.focus();
+            }
+            _closeDeviceDetailModal();
+        }
+    });
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') {
+            var modal = _el('deviceDetailModal');
+            if (modal && modal.style.display !== 'none') {
+                _closeDeviceDetailModal();
+            }
+        }
+    });
+
     // ── Init ──────────────────────────────────────────────────────────────────
     document.addEventListener('DOMContentLoaded', function () {
         _initTabs();
