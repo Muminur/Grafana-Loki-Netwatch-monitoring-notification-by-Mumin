@@ -31,9 +31,10 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -65,6 +66,7 @@ from src.metrics import (
 from src.notifications.discord import send_discord_alert, send_discord_escalation
 from src.notifications.escalation import EscalationEngine
 from src.notifications.telegram import send_telegram_alert, send_telegram_escalation
+from src.rate_limit import limiter
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -150,6 +152,23 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
             request_id,
         )
         return response
+
+
+# ---------------------------------------------------------------------------
+# Rate limiter
+# ---------------------------------------------------------------------------
+
+
+def _rate_limit_exceeded_handler(
+    request: Request, exc: RateLimitExceeded  # noqa: ARG001
+) -> JSONResponse:
+    """Return a 429 JSON response when a client exceeds a rate limit."""
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": f"Rate limit exceeded: {exc.detail}",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -715,6 +734,10 @@ app = FastAPI(
     description="Network Syslog Classification & Alerting Dashboard",
     lifespan=lifespan,
 )
+
+# ── Rate limiter ─────────────────────────────────────────────────────────────
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 # Origins are loaded from CORS_ORIGINS env var via Settings.cors_origins.

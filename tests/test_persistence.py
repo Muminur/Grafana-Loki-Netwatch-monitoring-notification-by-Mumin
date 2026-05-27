@@ -670,6 +670,7 @@ async def test_e2e_correlator_seeded_above_db_max(
 
 
 async def test_delete_db_failure_warns_and_still_returns_deleted(
+    http_client: AsyncClient,
     clean_stores: None,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -693,9 +694,12 @@ async def test_delete_db_failure_warns_and_still_returns_deleted(
     monkeypatch.setattr("src.database.crud.delete_maintenance_window", _boom)
 
     with caplog.at_level("WARNING"):
-        result = await routes_mod.delete_maintenance_window(4242)
+        async with http_client as c:
+            resp = await c.delete("/api/maintenance/4242")
+        result = resp.json()
 
     await engine.dispose()
+    assert resp.status_code == 200
     assert result == {"status": "deleted", "id": 4242}
     assert any(
         "may reappear after a restart" in rec.getMessage() for rec in caplog.records
