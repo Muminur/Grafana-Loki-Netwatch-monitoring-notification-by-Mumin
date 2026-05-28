@@ -12,7 +12,13 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, select
 
-from src.database.models import AlertLog, AppSetting, HourlyStats, MaintenanceWindow
+from src.database.models import (
+    AlertLog,
+    AppSetting,
+    HourlyStats,
+    Incident,
+    MaintenanceWindow,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
@@ -104,6 +110,161 @@ async def get_alerts_by_device(
     stmt = (
         select(AlertLog)
         .where(AlertLog.device_name == device_name)
+        .order_by(AlertLog.timestamp.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# Incident CRUD
+# ---------------------------------------------------------------------------
+
+
+async def create_incident(
+    session: AsyncSession,
+    *,
+    id: str,  # noqa: A002
+    title: str,
+    root_cause: str,
+    affected_devices: str,
+    affected_clients: str,
+    alert_count: int,
+    status: str,
+    created_at: datetime,
+) -> Incident:
+    """Persist a new ``Incident`` and return the flushed instance.
+
+    All parameters are keyword-only to prevent accidental positional misuse.
+    The session is flushed so the row is immediately visible within the same
+    transaction.  The caller is responsible for committing.
+
+    Args:
+        session: An active async session.
+        id: Incident ID in ``INC-YYYYMMDD-NNN`` format.
+        title: Short human-readable incident summary.
+        root_cause: Description of the root cause (may be empty initially).
+        affected_devices: JSON-serialised list of device names.
+        affected_clients: JSON-serialised list of client names.
+        alert_count: Number of alerts grouped into this incident so far.
+        status: One of ``active`` / ``acknowledged`` / ``resolved``.
+        created_at: Timestamp when the incident was first created.
+
+    Returns:
+        The persisted ``Incident`` instance.
+    """
+    incident = Incident(
+        id=id,
+        title=title,
+        root_cause=root_cause,
+        affected_devices=affected_devices,
+        affected_clients=affected_clients,
+        alert_count=alert_count,
+        status=status,
+        created_at=created_at,
+    )
+    session.add(incident)
+    await session.flush()
+    await session.refresh(incident)
+    return incident
+
+
+async def get_incident(
+    session: AsyncSession,
+    incident_id: str,
+) -> Incident | None:
+    """Return an ``Incident`` by primary key, or ``None`` if not found.
+
+    Args:
+        session: An active async session.
+        incident_id: The ``INC-YYYYMMDD-NNN`` primary key.
+
+    Returns:
+        The matching ``Incident``, or ``None``.
+    """
+    stmt = select(Incident).where(Incident.id == incident_id)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def update_incident(
+    session: AsyncSession,
+    incident_id: str,
+    **kwargs: object,
+) -> Incident | None:
+    """Apply a partial update to an existing ``Incident``.
+
+    Only the columns present in *kwargs* are modified.  Unknown column names
+    are silently ignored (no ``AttributeError``).
+
+    Args:
+        session: An active async session.
+        incident_id: The ``INC-YYYYMMDD-NNN`` primary key to update.
+        **kwargs: Column-name → new-value pairs to apply.
+
+    Returns:
+        The updated ``Incident``, or ``None`` if not found.
+    """
+    incident = await get_incident(session, incident_id)
+    if incident is None:
+        return None
+    for key, value in kwargs.items():
+        if hasattr(incident, key):
+            setattr(incident, key, value)
+    await session.flush()
+    await session.refresh(incident)
+    return incident
+
+
+async def get_incidents_by_status(
+    session: AsyncSession,
+    status: str,
+    limit: int = 100,
+) -> list[Incident]:
+    """Return up to ``limit`` incidents matching ``status``, newest first.
+
+    Results are ordered by ``created_at`` descending so the most recent
+    incidents appear first.
+
+    Args:
+        session: An active async session.
+        status: One of ``active`` / ``acknowledged`` / ``resolved``.
+        limit: Maximum number of rows to return (default 100).
+
+    Returns:
+        A list of matching ``Incident`` instances.
+    """
+    stmt = (
+        select(Incident)
+        .where(Incident.status == status)
+        .order_by(Incident.created_at.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def get_alerts_by_incident(
+    session: AsyncSession,
+    incident_id: str,
+    limit: int = 500,
+) -> list[AlertLog]:
+    """Return up to ``limit`` alerts belonging to a specific incident.
+
+    Results are ordered by ``timestamp`` descending (newest first).
+
+    Args:
+        session: An active async session.
+        incident_id: The ``INC-YYYYMMDD-NNN`` incident identifier.
+        limit: Maximum number of rows to return (default 500).
+
+    Returns:
+        A list of ``AlertLog`` instances whose ``incident_id`` matches.
+    """
+    stmt = (
+        select(AlertLog)
+        .where(AlertLog.incident_id == incident_id)
         .order_by(AlertLog.timestamp.desc())
         .limit(limit)
     )

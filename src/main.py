@@ -56,7 +56,15 @@ from src.core.dedup import DedupEngine
 from src.core.enricher import enrich
 from src.core.parser import parse_syslog
 from src.core.syslog_receiver import SyslogReceiver
-from src.database.crud import insert_alert, prune_old_alerts, prune_old_stats, vacuum_db
+from src.database.crud import (
+    create_incident,
+    get_incident,
+    insert_alert,
+    prune_old_alerts,
+    prune_old_stats,
+    update_incident,
+    vacuum_db,
+)
 from src.database.migrations import create_tables, get_engine
 from src.database.models import AlertLog
 from src.logging_config import configure_logging
@@ -274,6 +282,43 @@ async def _on_syslog_line(raw_line: str) -> None:
                 await session.commit()
         except Exception as exc:  # noqa: BLE001
             _log.error("DB insert failed: %s", exc)
+
+    # ── Persist incident to DB ────────────────────────────────────────────
+    if correlated is not None and correlated.incident_id and _engine is not None:
+        try:
+            async with AsyncSession(_engine) as session:
+                if correlated.is_root_cause:
+                    # New incident — insert the row
+                    await create_incident(
+                        session,
+                        id=correlated.incident_id,
+                        title=(
+                            f"{enriched.device_name} " f"{enriched.parsed.mnemonic}"
+                        ),
+                        root_cause=enriched.parsed.message,
+                        affected_devices=f'["{enriched.device_name}"]',
+                        affected_clients=(
+                            f'["{enriched.client_name}"]'
+                            if enriched.client_name
+                            else "[]"
+                        ),
+                        alert_count=1,
+                        status="active",
+                        created_at=enriched.parsed.timestamp,
+                    )
+                elif correlated.is_symptom:
+                    # Symptom event — increment counts on existing incident
+                    existing = await get_incident(session, correlated.incident_id)
+                    if existing is not None:
+                        await update_incident(
+                            session,
+                            correlated.incident_id,
+                            alert_count=existing.alert_count + 1,
+                            symptom_count=existing.symptom_count + 1,
+                        )
+                await session.commit()
+        except Exception as exc:  # noqa: BLE001
+            _log.error("Incident DB persist failed: %s", exc)
 
     # ── Update in-memory API store ─────────────────────────────────────────
     # Recovery events and CRITICAL fault events always reach the incident
