@@ -64,7 +64,10 @@ async def generate_daily_digest(session: AsyncSession) -> str:
     active_incidents: int = active_result.scalar_one() or 0
 
     # Flapping peers: count distinct device+neighbor pairs with state='FLAPPING'
-    # within the current day.
+    # within the current day (UTC midnight boundary).
+    _utc_midnight = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     flap_stmt = (
         select(
             func.count(
@@ -74,10 +77,7 @@ async def generate_daily_digest(session: AsyncSession) -> str:
             )
         )
         .where(BGPPeerHistory.state == "FLAPPING")
-        .where(
-            BGPPeerHistory.timestamp
-            >= datetime(today.year, today.month, today.day, 0, 0, 0)  # noqa: DTZ001
-        )
+        .where(BGPPeerHistory.timestamp >= _utc_midnight)
     )
     flap_result = await session.execute(flap_stmt)
     flapping_peers: int = flap_result.scalar_one() or 0

@@ -32,14 +32,43 @@ def _make_mock_http_client(status_code: int = 200, ok: bool = True) -> AsyncMock
     return mock_client
 
 
-def _make_mock_session() -> AsyncMock:
-    """Build a minimal SQLAlchemy async session mock for digest tests."""
-    mock_result = MagicMock()
-    mock_result.scalar_one.return_value = 0
-    mock_result.all.return_value = []
+def _make_mock_session(
+    *, active_incidents: int = 0, flapping_peers: int = 0
+) -> AsyncMock:
+    """Build a minimal SQLAlchemy async session mock for digest tests.
+
+    Returns distinct mock results for each of the four queries executed by
+    ``generate_daily_digest``: daily stats, active incidents, flapping
+    peers, and top devices.
+    """
+    mock_daily_result = MagicMock()
+    mock_daily_result.scalar_one.return_value = 0
+    mock_daily_result.all.return_value = []
+
+    mock_active_result = MagicMock()
+    mock_active_result.scalar_one.return_value = active_incidents
+
+    mock_flap_result = MagicMock()
+    mock_flap_result.scalar_one.return_value = flapping_peers
+
+    mock_top_result = MagicMock()
+    mock_top_result.all.return_value = []
+
+    call_count = 0
+
+    async def _side_effect(_stmt: object) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return mock_daily_result  # get_daily_stats
+        if call_count == 2:
+            return mock_active_result  # active incidents count
+        if call_count == 3:
+            return mock_flap_result  # flapping peers count
+        return mock_top_result  # top devices
 
     mock_session = AsyncMock()
-    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.execute = AsyncMock(side_effect=_side_effect)
     return mock_session
 
 
@@ -147,9 +176,15 @@ class TestGenerateDailyDigest:
         from src.notifications.digest import generate_daily_digest
 
         # Simulate session returning one top-device row
-        mock_count_result = MagicMock()
-        mock_count_result.scalar_one.return_value = 0
-        mock_count_result.all.return_value = []
+        mock_daily_result = MagicMock()
+        mock_daily_result.scalar_one.return_value = 0
+        mock_daily_result.all.return_value = []
+
+        mock_active_result = MagicMock()
+        mock_active_result.scalar_one.return_value = 2  # distinct from flapping
+
+        mock_flap_result = MagicMock()
+        mock_flap_result.scalar_one.return_value = 3  # distinct from active
 
         mock_top_result = MagicMock()
         mock_top_result.all.return_value = [("EQ-RTR-01", 42)]
@@ -160,16 +195,12 @@ class TestGenerateDailyDigest:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                # First execute: daily stats per classification → empty
-                return mock_count_result
+                return mock_daily_result  # get_daily_stats
             if call_count == 2:
-                # Second execute: active incident count
-                return mock_count_result
+                return mock_active_result  # active incidents count
             if call_count == 3:
-                # Third execute: flapping peers count
-                return mock_count_result
-            # Fourth execute: top devices
-            return mock_top_result
+                return mock_flap_result  # flapping peers count
+            return mock_top_result  # top devices
 
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(side_effect=side_effect_execute)
@@ -186,6 +217,19 @@ class TestGenerateDailyDigest:
         session = _make_mock_session()
         text = await generate_daily_digest(session)
         assert "none" in text.lower() or "Top Active Devices" in text
+
+    @pytest.mark.asyncio
+    async def test_digest_flapping_peers_distinct_from_active_incidents(self) -> None:
+        """Flapping peers count is queried separately and fed to health score."""
+        from src.notifications.digest import generate_daily_digest
+
+        session = _make_mock_session(active_incidents=5, flapping_peers=7)
+        text = await generate_daily_digest(session)
+
+        # Confirm the session ran 4 queries
+        # (daily stats, active incidents, flapping peers, top devices).
+        assert session.execute.await_count == 4
+        assert "Active Incidents : 5" in text
 
 
 # ---------------------------------------------------------------------------
