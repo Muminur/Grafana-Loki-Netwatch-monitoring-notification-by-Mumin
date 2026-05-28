@@ -3,6 +3,8 @@
 from datetime import datetime
 from unittest.mock import patch
 
+import pytest
+
 from src.core.parser import _UTC6, ParsedLog, parse_syslog
 
 # ---------------------------------------------------------------------------
@@ -209,12 +211,27 @@ def test_parse_iosxr_admin_plane(sample_hw_event_log: str) -> None:
 
 # ---------------------------------------------------------------------------
 # Format 4 — IOS-XR without hostname, no TZ suffix, no fractional seconds
+# Parametrized across SFP alarm Set/Clear (same field structure, different
+# alarm state token in the message body)
 # ---------------------------------------------------------------------------
 
 
-def test_parse_iosxr_no_hostname_sfp_set(sample_sfp_alarm_set_log: str) -> None:
-    """Format 4: no hostname, no TZ — SFP low-rx-power alarm set."""
-    result = parse_syslog(sample_sfp_alarm_set_log)
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_message_fragment"),
+    [
+        ("sample_sfp_alarm_set_log", "Set|envmon_lc"),
+        ("sample_sfp_alarm_clear_log", "Clear|envmon_lc"),
+    ],
+    ids=["sfp-alarm-set", "sfp-alarm-clear"],
+)
+def test_parse_format4_sfp_alarm(
+    fixture_name: str,
+    expected_message_fragment: str,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Format 4 (no hostname, no TZ): SFP alarm log — shared field assertions."""
+    raw: str = request.getfixturevalue(fixture_name)
+    result = parse_syslog(raw)
     assert result is not None
     assert result.source_ip == "192.168.200.8"
     assert result.rp_location == "LC/0/0/CPU0"
@@ -222,20 +239,7 @@ def test_parse_iosxr_no_hostname_sfp_set(sample_sfp_alarm_set_log: str) -> None:
     assert result.subfacility == "SFP"
     assert result.severity_level == 2
     assert result.mnemonic == "LOW_RX_POWER_ALARM"
-    assert "Set|envmon_lc" in result.message
-
-
-def test_parse_sfp_alarm_clear(sample_sfp_alarm_clear_log: str) -> None:
-    """Format 4: no hostname, no TZ — SFP alarm clear."""
-    result = parse_syslog(sample_sfp_alarm_clear_log)
-    assert result is not None
-    assert result.source_ip == "192.168.200.8"
-    assert result.rp_location == "LC/0/0/CPU0"
-    assert result.facility == "PLATFORM"
-    assert result.subfacility == "SFP"
-    assert result.severity_level == 2
-    assert result.mnemonic == "LOW_RX_POWER_ALARM"
-    assert "Clear|envmon_lc" in result.message
+    assert expected_message_fragment in result.message
 
 
 def test_parse_duplicate_ipv6(sample_duplicate_ipv6_log: str) -> None:
@@ -263,68 +267,74 @@ def test_parse_eem_commit(sample_eem_commit_log: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Timestamp normalisation
+# Timestamp normalisation — parametrized across +06 and BDT formats
 # ---------------------------------------------------------------------------
 
 
-def test_timestamp_normalization_plus06(sample_bgp_down_log: str) -> None:
-    """Timestamp parsed from +06 log is a proper datetime instance."""
-    result = parse_syslog(sample_bgp_down_log)
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_month", "expected_day"),
+    [
+        ("sample_bgp_down_log", 5, 22),
+        ("sample_lacp_expired_log", 5, 22),
+    ],
+    ids=["timestamp-plus06", "timestamp-bdt"],
+)
+def test_timestamp_normalization(
+    fixture_name: str,
+    expected_month: int,
+    expected_day: int,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Timestamp parsed from a syslog line is a proper datetime with correct date."""
+    raw: str = request.getfixturevalue(fixture_name)
+    result = parse_syslog(raw)
     assert result is not None
     assert isinstance(result.timestamp, datetime)
-    # Month May = 5
-    assert result.timestamp.month == 5
-    assert result.timestamp.day == 22
+    assert result.timestamp.month == expected_month
+    assert result.timestamp.day == expected_day
 
 
-def test_timestamp_normalization_bdt(sample_lacp_expired_log: str) -> None:
-    """Timestamp parsed from BDT log is a proper datetime instance."""
-    result = parse_syslog(sample_lacp_expired_log)
+# ---------------------------------------------------------------------------
+# raw field preservation — parametrized across Format 1 and Format 4
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "sample_bgp_down_log",
+        "sample_sfp_alarm_set_log",
+    ],
+    ids=["raw-format1", "raw-format4"],
+)
+def test_parse_preserves_raw_line(
+    fixture_name: str,
+    request: pytest.FixtureRequest,
+) -> None:
+    """result.raw must equal the original input string exactly, for each format."""
+    raw: str = request.getfixturevalue(fixture_name)
+    result = parse_syslog(raw)
     assert result is not None
-    assert isinstance(result.timestamp, datetime)
-    assert result.timestamp.month == 5
-    assert result.timestamp.day == 22
+    assert result.raw == raw
 
 
 # ---------------------------------------------------------------------------
-# raw field preservation
+# Negative / edge-case tests — parametrized across invalid inputs
 # ---------------------------------------------------------------------------
 
 
-def test_parse_preserves_raw_line(sample_bgp_down_log: str) -> None:
-    """result.raw must equal the original input string exactly."""
-    result = parse_syslog(sample_bgp_down_log)
-    assert result is not None
-    assert result.raw == sample_bgp_down_log
-
-
-def test_parse_preserves_raw_line_format4(sample_sfp_alarm_set_log: str) -> None:
-    """result.raw preservation holds for Format 4 as well."""
-    result = parse_syslog(sample_sfp_alarm_set_log)
-    assert result is not None
-    assert result.raw == sample_sfp_alarm_set_log
-
-
-# ---------------------------------------------------------------------------
-# Negative / edge-case tests
-# ---------------------------------------------------------------------------
-
-
-def test_parse_returns_none_for_garbage() -> None:
-    """Completely unrecognised input returns None, not an exception."""
-    result = parse_syslog("random garbage string that matches nothing")
-    assert result is None
-
-
-def test_parse_returns_none_for_empty() -> None:
-    """Empty string returns None."""
-    result = parse_syslog("")
-    assert result is None
-
-
-def test_parse_returns_none_for_whitespace_only() -> None:
-    """Whitespace-only string returns None."""
-    result = parse_syslog("   \t\n  ")
+@pytest.mark.parametrize(
+    "bad_input",
+    [
+        "random garbage string that matches nothing",
+        "",
+        "   \t\n  ",
+    ],
+    ids=["garbage-string", "empty-string", "whitespace-only"],
+)
+def test_parse_returns_none_for_invalid_input(bad_input: str) -> None:
+    """Completely unrecognised / empty / whitespace-only input returns None."""
+    result = parse_syslog(bad_input)
     assert result is None
 
 
