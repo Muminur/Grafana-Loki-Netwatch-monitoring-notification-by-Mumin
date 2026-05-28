@@ -1018,6 +1018,161 @@ def test_add_alert_to_store_recovery_resolves_bgp_by_as(
     )
 
 
+def test_add_alert_to_store_recovery_resolves_bgp_without_as_number(
+    clean_stores: None,
+) -> None:
+    """BGP_UP recovery resolves ADJCHANGE incident even when AS number is 0.
+
+    Real IOS-XR BGP UP messages often omit the AS number:
+        neighbor 10.0.0.1 Up
+    The recovery matching must not require as_number to be truthy.
+    """
+    routes_mod._incidents_store.append(  # noqa: SLF001
+        {
+            "id": "ALERT-BGP-NO-AS",
+            "device": "KKT-Core-2",
+            "mnemonic": "ADJCHANGE",
+            "message": "neighbor 103.120.178.9 Down (Ceasing) (AS: 38553)",
+            "interface": "",
+            "neighbor": "103.120.178.9",
+            "as_number": 38553,
+        }
+    )
+    enriched = _make_enriched(
+        device_name="KKT-Core-2",
+        source_ip="192.168.202.130",
+        mnemonic="ADJCHANGE",
+        message="neighbor 103.120.178.9 Up",
+        bgp_neighbor="103.120.178.9",
+        as_number=0,
+        rule_id="BGP_UP",
+    )
+    routes_mod.add_alert_to_store(enriched, _make_correlated())
+    assert not any(
+        i["id"] == "ALERT-BGP-NO-AS"
+        for i in routes_mod._incidents_store  # noqa: SLF001
+    )
+
+
+def test_add_alert_to_store_recovery_resolves_bgp_via_neighbor_field(
+    clean_stores: None,
+) -> None:
+    """BGP recovery matches on stored neighbor field rather than message substring."""
+    routes_mod._incidents_store.append(  # noqa: SLF001
+        {
+            "id": "ALERT-BGP-NEIGHBOR",
+            "device": "COX-Core-1",
+            "mnemonic": "ADJCHANGE",
+            "message": "neighbor 10.45.22.1 Down",
+            "interface": "",
+            "neighbor": "10.45.22.1",
+            "as_number": 0,
+        }
+    )
+    enriched = _make_enriched(
+        device_name="COX-Core-1",
+        source_ip="192.168.200.8",
+        mnemonic="ADJCHANGE",
+        message="neighbor 10.45.22.1 Up",
+        bgp_neighbor="10.45.22.1",
+        as_number=0,
+        rule_id="BGP_UP",
+    )
+    routes_mod.add_alert_to_store(enriched, _make_correlated())
+    assert not any(
+        i["id"] == "ALERT-BGP-NEIGHBOR"
+        for i in routes_mod._incidents_store  # noqa: SLF001
+    )
+
+
+def test_add_alert_to_store_incident_stores_neighbor_and_as(
+    clean_stores: None,
+) -> None:
+    """Newly created incidents include neighbor and as_number fields."""
+    routes_mod._hardware_defects_as_noise = False  # noqa: SLF001
+    enriched = _make_enriched(
+        device_name="EQ-RTR-01",
+        source_ip="192.168.203.1",
+        mnemonic="ADJCHANGE",
+        message="neighbor 2001:de8:4::2:4482:1 Down",
+        bgp_neighbor="2001:de8:4::2:4482:1",
+        as_number=24482,
+        classification="CRITICAL",
+    )
+    correlated = _make_correlated(incident_id="INC-BGP-FIELDS")
+    routes_mod.add_alert_to_store(enriched, correlated)
+    incs = [
+        i for i in routes_mod._incidents_store if i["id"] == "INC-BGP-FIELDS"
+    ]  # noqa: SLF001
+    assert len(incs) == 1
+    assert incs[0]["neighbor"] == "2001:de8:4::2:4482:1"
+    assert incs[0]["as_number"] == 24482
+
+
+def test_prune_recovered_incidents_resolves_stale_bgp(
+    clean_stores: None,
+) -> None:
+    """The recovery cross-check prune removes BGP incidents superseded by UP alerts."""
+    routes_mod._last_recovery_prune = 0.0  # noqa: SLF001
+    routes_mod._incidents_store.append(  # noqa: SLF001
+        {
+            "id": "STALE-BGP-1",
+            "device": "KKT-Core-2",
+            "mnemonic": "ADJCHANGE",
+            "message": "neighbor 103.120.178.9 Down",
+            "interface": "",
+            "neighbor": "103.120.178.9",
+            "started_at": "2026-05-27T10:00:00",
+        }
+    )
+    routes_mod._alerts_store.append(  # noqa: SLF001
+        {
+            "device": "KKT-Core-2",
+            "mnemonic": "ADJCHANGE",
+            "message": "neighbor 103.120.178.9 Up",
+            "interface": "",
+            "neighbor": "103.120.178.9",
+            "timestamp": "2026-05-27T10:01:00",
+        }
+    )
+    routes_mod._prune_recovered_incidents()  # noqa: SLF001
+    assert not any(
+        i["id"] == "STALE-BGP-1" for i in routes_mod._incidents_store  # noqa: SLF001
+    )
+
+
+def test_prune_recovered_incidents_resolves_stale_interface(
+    clean_stores: None,
+) -> None:
+    """Recovery prune removes interface incidents superseded by UP."""
+    routes_mod._last_recovery_prune = 0.0  # noqa: SLF001
+    routes_mod._incidents_store.append(  # noqa: SLF001
+        {
+            "id": "STALE-INTF-1",
+            "device": "COX-Core-1",
+            "mnemonic": "UPDOWN",
+            "message": "Interface GigabitEthernet0/0/0/5, changed state to Down",
+            "interface": "GigabitEthernet0/0/0/5",
+            "neighbor": "",
+            "started_at": "2026-05-27T17:00:00",
+        }
+    )
+    routes_mod._alerts_store.append(  # noqa: SLF001
+        {
+            "device": "COX-Core-1",
+            "mnemonic": "UPDOWN",
+            "message": "Interface GigabitEthernet0/0/0/5, changed state to Up",
+            "interface": "GigabitEthernet0/0/0/5",
+            "neighbor": "",
+            "timestamp": "2026-05-27T17:01:00",
+        }
+    )
+    routes_mod._prune_recovered_incidents()  # noqa: SLF001
+    assert not any(
+        i["id"] == "STALE-INTF-1" for i in routes_mod._incidents_store  # noqa: SLF001
+    )
+
+
 def test_add_alert_to_store_creates_and_merges_critical_incident(
     clean_stores: None,
 ) -> None:

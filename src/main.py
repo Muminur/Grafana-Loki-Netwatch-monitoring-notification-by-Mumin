@@ -276,10 +276,12 @@ async def _on_syslog_line(raw_line: str) -> None:
             _log.error("DB insert failed: %s", exc)
 
     # ── Update in-memory API store ─────────────────────────────────────────
-    # Recovery events are always processed here regardless of dedup status so
-    # that the incident auto-resolution logic in add_alert_to_store() can
-    # remove matching DOWN incidents from _incidents_store.
-    if should_send or is_recovery:
+    # Recovery events and CRITICAL fault events always reach the incident
+    # tracker regardless of dedup.  Recovery events need it for incident
+    # auto-resolution; CRITICAL events need it so that a DOWN→UP→DOWN
+    # sequence within the dedup window still recreates the incident after
+    # the UP event resolved the first one.
+    if should_send or is_recovery or enriched.classification == "CRITICAL":
         if correlated is None:
             correlated = CorrelatedEvent(enriched=enriched)
         try:

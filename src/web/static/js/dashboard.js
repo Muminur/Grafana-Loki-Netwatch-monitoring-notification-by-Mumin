@@ -268,8 +268,8 @@
 
         if (emptyEl) emptyEl.style.display = 'none';
 
-        // Render newest 200 to avoid DOM bloat
-        var slice = filtered.slice(0, 200);
+        // Render up to 500 alerts (matches API limit)
+        var slice = filtered.slice(0, 500);
         var frag = document.createDocumentFragment();
         slice.forEach(function (alert) {
             frag.appendChild(_buildAlertCard(alert));
@@ -653,7 +653,7 @@
         _isFetching = true;
 
         // Fetch paginated alerts
-        fetch(apiBase + '/alerts?period=' + encodeURIComponent(period) + '&limit=500')
+        fetch(apiBase + '/alerts?period=' + encodeURIComponent(period) + '&limit=1000')
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 // Merge DB results with any live WebSocket alerts received

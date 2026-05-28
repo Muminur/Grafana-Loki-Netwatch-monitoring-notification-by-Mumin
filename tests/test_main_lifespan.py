@@ -520,7 +520,10 @@ async def test_on_syslog_line_notify_path(
 
 @pytest.mark.usefixtures("_reset_pipeline_globals")
 async def test_on_syslog_line_dedup_suppresses(sample_bgp_down_log: str) -> None:
-    """When dedup says no, should_send is False — DB/store/notify all skipped."""
+    """When dedup says no, should_send is False — DB skipped but CRITICAL
+    events still reach the incident store so DOWN→UP→DOWN within the dedup
+    window still recreates the incident after a recovery resolved the first.
+    """
     from unittest.mock import MagicMock
 
     dedup = MagicMock()
@@ -534,8 +537,8 @@ async def test_on_syslog_line_dedup_suppresses(sample_bgp_down_log: str) -> None
     with patch.object(main_mod, "add_alert_to_store") as add_store:
         await main_mod._on_syslog_line(sample_bgp_down_log)  # noqa: SLF001
 
-    # should_send False → in-memory store is never touched.
-    add_store.assert_not_called()
+    # CRITICAL events bypass dedup for incident tracking (store still called)
+    add_store.assert_called_once()
     dedup.should_notify.assert_called_once()
 
 

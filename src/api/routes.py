@@ -113,6 +113,10 @@ _SILENT_FAULT_MNEMONICS = frozenset({"RX_FAULT", "SIGNAL", "RFI"})
 # bundle members as NOISE rather than CRITICAL incidents. Default ON.
 _hardware_defects_as_noise: bool = True
 
+# Debounce for the recovery cross-check in get_incidents()
+_last_recovery_prune: float = 0.0
+_RECOVERY_PRUNE_INTERVAL_S: float = 30.0
+
 
 def _is_recovery_event(mnemonic: str, message: str, rule_id: str = "") -> bool:
     if rule_id and rule_id in _RECOVERY_RULE_IDS:
@@ -155,6 +159,65 @@ def _shorten_iface(name: str) -> str:
 def _extract_bundle_from_msg(message: str) -> str:
     m = re.search(r"Bundle-Ether(\d+)", message)
     return f"BE{m.group(1)}" if m else ""
+
+
+def _prune_recovered_incidents() -> None:
+    """Remove incidents from the in-memory store that have been superseded
+    by a recovery event in ``_alerts_store``.
+
+    Acts as a safety net: even if the real-time recovery matching in
+    ``add_alert_to_store()`` missed a match, this periodic sweep catches it.
+    Debounced to run at most once per ``_RECOVERY_PRUNE_INTERVAL_S`` seconds.
+    """
+    global _last_recovery_prune  # noqa: PLW0603
+    now = time.monotonic()
+    if now - _last_recovery_prune < _RECOVERY_PRUNE_INTERVAL_S:
+        return
+    _last_recovery_prune = now
+
+    if not _incidents_store or not _alerts_store:
+        return
+
+    resolve_ids: set[int] = set()
+    for i, inc in enumerate(_incidents_store):
+        inc_dev = inc.get("device", "")
+        inc_iface = inc.get("interface", "")
+        inc_neighbor = inc.get("neighbor", "")
+        inc_started = inc.get("started_at", "")
+
+        for alert in _alerts_store:
+            if alert.get("device") != inc_dev:
+                continue
+            a_mnemonic = alert.get("mnemonic", "")
+            a_message = alert.get("message", "")
+            if not _is_recovery_event(a_mnemonic, a_message):
+                continue
+            if alert.get("timestamp", "") <= inc_started:
+                continue
+            a_iface = alert.get("interface", "")
+            a_neighbor = alert.get("neighbor", "")
+            if inc_iface and a_iface and inc_iface == a_iface:
+                resolve_ids.add(i)
+                break
+            if inc_neighbor and a_neighbor and inc_neighbor == a_neighbor:
+                resolve_ids.add(i)
+                break
+            if inc.get("mnemonic") == a_mnemonic:
+                a_iface_msg = _extract_iface_from_msg(a_message)
+                inc_iface_msg = inc_iface or _extract_iface_from_msg(
+                    inc.get("message", "")
+                )
+                if a_iface_msg and inc_iface_msg and a_iface_msg == inc_iface_msg:
+                    resolve_ids.add(i)
+                    break
+
+    if resolve_ids:
+        kept = [
+            inc for idx, inc in enumerate(_incidents_store) if idx not in resolve_ids
+        ]
+        _incidents_store.clear()
+        _incidents_store.extend(kept)
+        logger.info("Recovery prune removed %d stale incident(s)", len(resolve_ids))
 
 
 def _extract_bgp_state(message: str) -> str:
@@ -397,6 +460,60 @@ async def resolve_silent_faults_in_db(
         return result.rowcount
 
 
+async def resolve_recovery_alerts_in_db(
+    engine: AsyncEngine,
+    device_name: str,
+    interface_name: str,
+    bgp_neighbor: str,
+    as_number: int | None,
+    mnemonic: str,
+) -> int:
+    """Mark matching unresolved CRITICAL alerts as resolved in the database.
+
+    Called when a recovery event (Interface UP, BGP UP, Bundle ACTIVE, etc.)
+    arrives.  Finds unresolved CRITICAL alerts for the same device and
+    interface/BGP-peer and sets ``resolved_at`` so they no longer appear as
+    active incidents after a server restart.
+
+    Only resolves alerts from the last 24 hours to bound blast radius.
+    Returns the number of rows updated.
+    """
+    from sqlalchemy import CursorResult, and_, or_, update  # noqa: PLC0415
+    from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+    from src.database.models import AlertLog  # noqa: PLC0415
+
+    _bdt_tz = timezone(timedelta(hours=6))
+    now = datetime.now(_bdt_tz).replace(tzinfo=None)
+    cutoff = now - timedelta(hours=24)
+
+    match_conditions = []
+    if interface_name:
+        match_conditions.append(AlertLog.interface_name == interface_name)
+    if bgp_neighbor and mnemonic == "ADJCHANGE":
+        bgp_parts = [AlertLog.bgp_neighbor == bgp_neighbor]
+        if as_number:
+            bgp_parts.append(AlertLog.as_number == as_number)
+        match_conditions.append(and_(AlertLog.mnemonic == "ADJCHANGE", or_(*bgp_parts)))
+
+    if not match_conditions:
+        return 0
+
+    async with AsyncSession(engine) as session:
+        stmt = (
+            update(AlertLog)
+            .where(AlertLog.device_name == device_name)
+            .where(AlertLog.classification == "CRITICAL")
+            .where(AlertLog.resolved_at.is_(None))
+            .where(AlertLog.timestamp >= cutoff)
+            .where(or_(*match_conditions))
+            .values(resolved_at=now, resolution_reason="recovery_event")
+        )
+        result = cast("CursorResult[Any]", await session.execute(stmt))
+        await session.commit()
+        return result.rowcount
+
+
 async def _resolve_noise_alerts_on_startup(engine: AsyncEngine) -> int:
     """Mark unresolved RX_FAULT/SIGNAL/RFI alerts as noise-resolved on startup.
 
@@ -571,16 +688,68 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
             )
             if iface and inc_iface == iface:
                 resolve_ids.add(i)
-            elif neighbor and as_num and inc.get("mnemonic") == "ADJCHANGE":
-                inc_msg = inc.get("message", "")
-                if str(as_num) in inc_msg or neighbor in inc_msg:
+            elif neighbor and inc.get("mnemonic") == "ADJCHANGE":
+                inc_neighbor = inc.get("neighbor", "")
+                if inc_neighbor and inc_neighbor == neighbor:
                     resolve_ids.add(i)
+                else:
+                    inc_msg = inc.get("message", "")
+                    if neighbor in inc_msg or (as_num and str(as_num) in inc_msg):
+                        resolve_ids.add(i)
         if resolve_ids:
             kept = [
                 inc for i, inc in enumerate(_incidents_store) if i not in resolve_ids
             ]
             _incidents_store.clear()
             _incidents_store.extend(kept)
+
+        # Persist resolution to DB so resolved incidents stay resolved
+        # across server restarts.  This runs for EVERY recovery event —
+        # even when _incidents_store was empty (e.g. right after restart)
+        # — so that stale DOWN alerts in the DB are correctly marked.
+        if _db_engine is not None:
+            import asyncio as _aio  # noqa: PLC0415
+
+            _r_dev = dev
+            _r_iface = iface
+            _r_neighbor = neighbor
+            _r_as_num = as_num
+            _r_mnemonic = enriched.parsed.mnemonic
+            _r_engine: AsyncEngine = _db_engine
+
+            async def _persist_recovery() -> None:
+                try:
+                    cnt = await resolve_recovery_alerts_in_db(
+                        _r_engine,
+                        _r_dev,
+                        _r_iface,
+                        _r_neighbor,
+                        _r_as_num,
+                        _r_mnemonic,
+                    )
+                    if cnt:
+                        logger.info(
+                            "Recovery resolved %d DB alerts for %s/%s",
+                            cnt,
+                            _r_dev,
+                            _r_iface or _r_neighbor,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Failed to persist recovery resolution for %s/%s",
+                        _r_dev,
+                        _r_iface or _r_neighbor,
+                    )
+
+            try:
+                loop = _aio.get_running_loop()
+                loop.create_task(_persist_recovery())
+            except RuntimeError:
+                logger.warning(
+                    "No event loop for recovery DB persist: %s/%s",
+                    _r_dev,
+                    _r_iface or _r_neighbor,
+                )
 
     # BGP-UP auto-resolution for silent hardware faults.
     # IOS-XR never sends clear messages for RX_FAULT/SIGNAL/RFI — but if a
@@ -682,6 +851,8 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
                     "interface": enriched.interface_name,
                     "client": enriched.client_name,
                     "as_name": enriched.as_name,
+                    "neighbor": enriched.bgp_neighbor,
+                    "as_number": enriched.as_number or 0,
                 }
             )
 
@@ -1232,6 +1403,7 @@ async def get_incidents() -> list[dict[str, Any]]:
     a restart.
     """
     if _incidents_store:
+        _prune_recovered_incidents()
         if _hardware_defects_as_noise:
             return [
                 inc
@@ -1249,7 +1421,13 @@ async def get_incidents() -> list[dict[str, Any]]:
     from src.database.models import AlertLog  # noqa: PLC0415
 
     _engine = _db_engine  # narrowed: not None (checked above)
+
+    _bdt_tz = timezone(timedelta(hours=6))
+    _now_bdt = datetime.now(_bdt_tz).replace(tzinfo=None)
+    _cutoff_24h = _now_bdt - timedelta(hours=24)
+
     async with AsyncSession(_engine) as session:
+        # 1. Unresolved CRITICAL alerts (potential active incidents)
         stmt = (
             select(AlertLog)
             .where(AlertLog.classification == "CRITICAL")
@@ -1260,16 +1438,39 @@ async def get_incidents() -> list[dict[str, Any]]:
         if _hardware_defects_as_noise:
             stmt = stmt.where(~AlertLog.mnemonic.in_(sorted(_SILENT_FAULT_MNEMONICS)))
         result = await session.execute(stmt)
-        rows = result.scalars().all()
+        critical_rows = list(result.scalars().all())
+
+        # 2. Recent recovery events (UP/ACTIVE) — needed to determine if
+        #    a CRITICAL alert has been superseded by a later recovery,
+        #    even when resolved_at was never set (pre-fix DB records).
+        _recovery_mnemonics = sorted(
+            _RECOVERY_MNEMONICS_WITH_UP | _RECOVERY_MNEMONICS_ALWAYS
+        )
+        recov_stmt = (
+            select(AlertLog)
+            .where(AlertLog.mnemonic.in_(_recovery_mnemonics))
+            .where(AlertLog.timestamp >= _cutoff_24h)
+            .order_by(desc(AlertLog.timestamp))
+            .limit(200)
+        )
+        recov_result = await session.execute(recov_stmt)
+        recovery_rows = list(recov_result.scalars().all())
+
+    # Merge both sets, sort by timestamp DESC (newest first)
+    rows: list[Any] = critical_rows + [
+        r for r in recovery_rows if _is_recovery_event(r.mnemonic, r.message or "")
+    ]
+    rows.sort(
+        key=lambda r: r.timestamp if r.timestamp else datetime.min,  # noqa: DTZ901
+        reverse=True,
+    )
 
     # Determine the latest state per device+key using a single pass.
-    # Because the query is ORDER BY timestamp DESC, the FIRST row seen for
-    # each key is the most recent event.  If that event is a recovery, the
-    # session/interface is considered resolved even if older DOWN rows exist
-    # in the result set.  If the most recent event is active (DOWN/fault),
-    # the incident is kept regardless of any earlier UP rows — this fixes the
-    # temporal ordering bug where a DOWN→UP→DOWN sequence was incorrectly
-    # resolved because any UP was found, irrespective of timing.
+    # Because the list is sorted by timestamp DESC, the FIRST row seen
+    # for each key is the most recent event.  If that event is a recovery,
+    # the session/interface is considered resolved even if older DOWN rows
+    # exist.  If the most recent event is active (DOWN/fault), the incident
+    # is kept regardless of any earlier UP rows.
     #
     # Resolution is DEVICE-SPECIFIC: the same interface name on different
     # routers connects to different far-end equipment (e.g., KKT-Core-1
@@ -1278,9 +1479,11 @@ async def get_incidents() -> list[dict[str, Any]]:
     key_rows: dict[str, list[Any]] = {}  # key → list of non-recovery rows
 
     for row in rows:
-        is_recovery = _is_recovery_event(row.mnemonic, row.message or "")
+        is_recov = _is_recovery_event(row.mnemonic, row.message or "")
         iface = row.interface_name or _extract_iface_from_msg(row.message or "")
-        if row.mnemonic == "ADJCHANGE" and row.as_number:
+        if row.mnemonic == "ADJCHANGE" and row.bgp_neighbor:
+            key = f"{row.device_name}:BGP:{row.bgp_neighbor}"
+        elif row.mnemonic == "ADJCHANGE" and row.as_number:
             key = f"{row.device_name}:BGP:{row.as_number}"
         elif iface:
             key = f"{row.device_name}:{iface}"
@@ -1288,9 +1491,9 @@ async def get_incidents() -> list[dict[str, Any]]:
             key = f"{row.device_name}:{row.mnemonic}:{row.bgp_neighbor or ''}"
 
         if key not in latest_state:
-            latest_state[key] = "recovery" if is_recovery else "active"
+            latest_state[key] = "recovery" if is_recov else "active"
 
-        if not is_recovery:
+        if not is_recov:
             key_rows.setdefault(key, []).append(row)
 
     # Build incidents only for keys whose latest event is NOT a recovery.
@@ -1300,7 +1503,9 @@ async def get_incidents() -> list[dict[str, Any]]:
             continue
         for row in key_rows.get(key, []):
             discriminator = ""
-            if row.mnemonic == "ADJCHANGE" and row.as_number:
+            if row.mnemonic == "ADJCHANGE" and row.bgp_neighbor:
+                discriminator = row.bgp_neighbor
+            elif row.mnemonic == "ADJCHANGE" and row.as_number:
                 discriminator = str(row.as_number)
             else:
                 iface = row.interface_name or _extract_iface_from_msg(row.message or "")
