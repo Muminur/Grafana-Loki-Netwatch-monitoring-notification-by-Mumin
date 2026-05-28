@@ -842,7 +842,7 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
                             _r_dev,
                             _r_iface or _r_neighbor,
                         )
-                except Exception:
+                except Exception:  # noqa: BLE001
                     logger.exception(
                         "Failed to persist recovery resolution for %s/%s",
                         _r_dev,
@@ -915,7 +915,7 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
                                 await resolve_silent_faults_in_db(
                                     _engine_capture, _dev_capture, _members_capture
                                 )
-                            except Exception:
+                            except Exception:  # noqa: BLE001
                                 _bgp_log.exception(
                                     "Failed to persist BGP-UP resolution for %s/%s",
                                     _dev_capture,
@@ -1981,7 +1981,7 @@ async def create_shift_handoff(
                 "shift_name": body.shift_name,
                 "operator_name": body.operator_name,
             }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         import logging  # noqa: PLC0415
 
         logging.getLogger(__name__).exception("shift handoff DB write failed")
