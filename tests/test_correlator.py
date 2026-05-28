@@ -675,14 +675,14 @@ class TestPurgeStaleIncidentsEdgeCases:
         # Manually inject an incident with zero events
         inc_id = engine._generate_incident_id()  # noqa: SLF001
         engine._incidents[inc_id] = []  # noqa: SLF001
-        engine._device_incident["192.168.203.1"] = inc_id  # noqa: SLF001
+        engine._device_incidents["192.168.203.1"].append(inc_id)  # noqa: SLF001
 
         # Purge — the empty incident should be removed regardless of timestamp
         now = datetime.now(_UTC6)
         engine._purge_stale_incidents(now)  # noqa: SLF001
 
         assert inc_id not in engine._incidents  # noqa: SLF001
-        assert "192.168.203.1" not in engine._device_incident  # noqa: SLF001
+        assert "192.168.203.1" not in engine._device_incidents  # noqa: SLF001
 
 
 class TestFlapKeyFallback:
@@ -788,26 +788,26 @@ class TestIncidentMemoryBounds:
         assert ids[1] in engine._incidents  # noqa: SLF001
         assert ids[2] in engine._incidents  # noqa: SLF001
 
-    def test_eviction_cleans_device_incident_map(self) -> None:
-        """Eviction also removes entries from _device_incident."""
+    def test_eviction_cleans_device_incidents_map(self) -> None:
+        """Eviction also removes entries from _device_incidents."""
         engine = CorrelationEngine(max_incidents=2)
 
         # Inject 2 incidents and map them to device IPs
         id1 = engine._generate_incident_id()  # noqa: SLF001
         engine._incidents[id1] = []  # noqa: SLF001
-        engine._device_incident["192.168.0.1"] = id1  # noqa: SLF001
+        engine._device_incidents["192.168.0.1"].append(id1)  # noqa: SLF001
 
         id2 = engine._generate_incident_id()  # noqa: SLF001
         engine._incidents[id2] = []  # noqa: SLF001
-        engine._device_incident["192.168.0.2"] = id2  # noqa: SLF001
+        engine._device_incidents["192.168.0.2"].append(id2)  # noqa: SLF001
 
         # Enforce cap — should evict id1
         engine._enforce_incident_cap()  # noqa: SLF001
 
         assert id1 not in engine._incidents  # noqa: SLF001
-        assert "192.168.0.1" not in engine._device_incident  # noqa: SLF001
+        assert "192.168.0.1" not in engine._device_incidents  # noqa: SLF001
         assert id2 in engine._incidents  # noqa: SLF001
-        assert "192.168.0.2" in engine._device_incident  # noqa: SLF001
+        assert "192.168.0.2" in engine._device_incidents  # noqa: SLF001
 
     def test_eviction_logs_warning(self) -> None:
         """Eviction logs a warning with the incident ID and cap value."""
@@ -860,14 +860,14 @@ class TestIncidentMemoryBounds:
             vrf="network",
         )
         engine._incidents[inc_id] = [old_enriched]  # noqa: SLF001
-        engine._device_incident["192.168.0.1"] = inc_id  # noqa: SLF001
+        engine._device_incidents["192.168.0.1"].append(inc_id)  # noqa: SLF001
 
         # Purge should remove the stale incident
         now = datetime.now(_UTC6)
         engine._purge_stale_incidents(now)  # noqa: SLF001
 
         assert inc_id not in engine._incidents  # noqa: SLF001
-        assert "192.168.0.1" not in engine._device_incident  # noqa: SLF001
+        assert "192.168.0.1" not in engine._device_incidents  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------
@@ -886,7 +886,7 @@ class TestResolveIncident:
         inc_id = engine._generate_incident_id()  # noqa: SLF001
         enriched = _make_enriched()
         engine._incidents[inc_id] = [enriched]  # noqa: SLF001
-        engine._device_incident["192.168.203.1"] = inc_id  # noqa: SLF001
+        engine._device_incidents["192.168.203.1"].append(inc_id)  # noqa: SLF001
 
         result = engine.resolve_incident(inc_id)
 
@@ -899,12 +899,12 @@ class TestResolveIncident:
         inc_id = engine._generate_incident_id()  # noqa: SLF001
         enriched = _make_enriched()
         engine._incidents[inc_id] = [enriched]  # noqa: SLF001
-        engine._device_incident["192.168.203.1"] = inc_id  # noqa: SLF001
+        engine._device_incidents["192.168.203.1"].append(inc_id)  # noqa: SLF001
 
         engine.resolve_incident(inc_id)
 
         assert inc_id not in engine._incidents  # noqa: SLF001
-        assert "192.168.203.1" not in engine._device_incident  # noqa: SLF001
+        assert "192.168.203.1" not in engine._device_incidents  # noqa: SLF001
 
     def test_resolve_nonexistent_incident_returns_none(self) -> None:
         """resolve_incident() with unknown ID returns None."""
@@ -912,7 +912,7 @@ class TestResolveIncident:
         result = engine.resolve_incident("INC-99990101-999")
         assert result is None
 
-    def test_resolve_clears_only_matching_device_incident(self) -> None:
+    def test_resolve_clears_only_matching_device_incidents(self) -> None:
         """resolve_incident() only removes device mappings for the resolved incident."""
         engine = CorrelationEngine()
 
@@ -920,13 +920,13 @@ class TestResolveIncident:
         id2 = engine._generate_incident_id()  # noqa: SLF001
         engine._incidents[id1] = [_make_enriched()]  # noqa: SLF001
         engine._incidents[id2] = [_make_enriched()]  # noqa: SLF001
-        engine._device_incident["192.168.0.1"] = id1  # noqa: SLF001
-        engine._device_incident["192.168.0.2"] = id2  # noqa: SLF001
+        engine._device_incidents["192.168.0.1"].append(id1)  # noqa: SLF001
+        engine._device_incidents["192.168.0.2"].append(id2)  # noqa: SLF001
 
         engine.resolve_incident(id1)
 
         assert id1 not in engine._incidents  # noqa: SLF001
-        assert "192.168.0.1" not in engine._device_incident  # noqa: SLF001
+        assert "192.168.0.1" not in engine._device_incidents  # noqa: SLF001
         # id2 must remain untouched
         assert id2 in engine._incidents  # noqa: SLF001
-        assert engine._device_incident["192.168.0.2"] == id2  # noqa: SLF001
+        assert id2 in engine._device_incidents["192.168.0.2"]  # noqa: SLF001

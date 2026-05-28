@@ -285,12 +285,12 @@ def format_resolution_discord_embed(
 
     title = f"✅ RESOLVED — {safe_device}"
     description = (
-        f"Incident `{incident_id}` resolved by **{safe_event}**\n"
+        f"Incident `{_sanitise(incident_id)}` resolved by **{safe_event}**\n"
         f"[View in Grafana]({grafana_url})"
     )
 
     fields = _build_discord_fields(enriched)
-    fields.append({"name": "Incident", "value": incident_id, "inline": True})
+    fields.append({"name": "Incident", "value": _sanitise(incident_id), "inline": True})
 
     embed: dict[str, Any] = {
         "title": title,

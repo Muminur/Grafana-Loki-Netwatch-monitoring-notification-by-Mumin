@@ -341,33 +341,41 @@ async def _on_syslog_line(raw_line: str) -> None:
     # the device has an active incident in the correlator, resolve it:
     # remove from in-memory registry, clear escalation entries, persist the
     # resolution to the DB, and send RESOLVED notifications.
-    if is_recovery and _correlator is not None and incident_id:
-        resolved_id = _correlator.resolve_incident(incident_id)
-        if resolved_id is not None:
-            _log.info(
-                "Recovery event resolved incident %s on %s",
-                resolved_id,
-                enriched.device_name,
-            )
-            # Clear escalation tracking for the device
-            if _escalation is not None:
-                _escalation.clear_incident(enriched.device_name)
+    if is_recovery and _correlator is not None:
+        # Look up the device's active incidents from the correlator
+        # instead of relying on correlated.incident_id (which is empty
+        # for independent recovery events).
+        device_ip = enriched.parsed.source_ip
+        incident_ids = list(
+            _correlator._device_incidents.get(device_ip, [])  # noqa: SLF001
+        )
+        for _resolve_id in incident_ids:
+            resolved_id = _correlator.resolve_incident(_resolve_id)
+            if resolved_id is not None:
+                _log.info(
+                    "Recovery event resolved incident %s on %s",
+                    resolved_id,
+                    enriched.device_name,
+                )
+                # Clear escalation tracking for the device
+                if _escalation is not None:
+                    _escalation.clear_incident(enriched.device_name)
 
-            # Persist resolution to the database
-            if _engine is not None:
-                try:
-                    async with AsyncSession(_engine) as session:
-                        await update_incident(session, resolved_id)
-                        await session.commit()
-                except Exception as exc:  # noqa: BLE001
-                    _log.error("DB update_incident failed for %s: %s", resolved_id, exc)
+                # Persist resolution to the database
+                if _engine is not None:
+                    try:
+                        async with AsyncSession(_engine) as session:
+                            await update_incident(session, resolved_id)
+                            await session.commit()
+                    except Exception as exc:  # noqa: BLE001
+                        _log.error("DB update_incident failed for %s: %s", resolved_id, exc)
 
-            # Send RESOLVED notifications
-            settings = get_settings()
-            if settings.discord_enabled:
-                await send_discord_resolution(enriched, resolved_id, settings)
-            if settings.telegram_enabled:
-                await send_telegram_resolution(enriched, resolved_id, settings)
+                # Send RESOLVED notifications
+                settings = get_settings()
+                if settings.discord_enabled:
+                    await send_discord_resolution(enriched, resolved_id, settings)
+                if settings.telegram_enabled:
+                    await send_telegram_resolution(enriched, resolved_id, settings)
 
     # ── Broadcast to WebSocket clients ─────────────────────────────────────
     if should_send:
