@@ -107,6 +107,20 @@ _RECOVERY_MNEMONICS_ALWAYS = frozenset(
     }
 )
 
+# Mnemonics where a "Clear" substring in the message indicates recovery.
+# LOW_RX_POWER_ALARM fires for both alarm-set ("Set|…") and alarm-clear ("Clear|…").
+# The classification rules use rule_id="SFP_ALARM_CLEAR" for the clear variant, but
+# rule_id is not persisted in alert_log, so the DB-synthesis path must detect it from
+# the message text instead.
+_RECOVERY_MNEMONICS_WITH_CLEAR = frozenset(
+    {
+        "LOW_RX_POWER_ALARM",
+        "TX_POWER_ALARM",
+        "RX_POWER_ALARM",
+        "HIGH_RX_POWER_ALARM",
+    }
+)
+
 _SILENT_FAULT_MNEMONICS = frozenset({"RX_FAULT", "SIGNAL", "RFI"})
 
 # Runtime toggle: treat hardware defects (RX_FAULT/SIGNAL/RFI) on backbone
@@ -124,6 +138,8 @@ def _is_recovery_event(mnemonic: str, message: str, rule_id: str = "") -> bool:
     if rule_id and rule_id in _RECOVERY_RULE_IDS:
         return True
     if mnemonic in _RECOVERY_MNEMONICS_ALWAYS and "no longer" not in message:
+        return True
+    if mnemonic in _RECOVERY_MNEMONICS_WITH_CLEAR and re.search(r"\bClear\b", message):
         return True
     return mnemonic in _RECOVERY_MNEMONICS_WITH_UP and bool(
         re.search(r"\bUp\b", message)
