@@ -278,8 +278,8 @@ async def _on_syslog_line(raw_line: str) -> None:
             )
             async with AsyncSession(_engine) as session:
                 await insert_alert(session, alert)
+                alert_id = alert.id
                 await session.commit()
-            alert_id = alert.id
         except Exception as exc:  # noqa: BLE001
             _log.error("DB insert failed: %s", exc)
 
