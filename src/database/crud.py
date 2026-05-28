@@ -10,9 +10,15 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
-from src.database.models import AlertLog, AppSetting, HourlyStats, MaintenanceWindow
+from src.database.models import (
+    AlertLog,
+    AppSetting,
+    HourlyStats,
+    Incident,
+    MaintenanceWindow,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
@@ -109,6 +115,66 @@ async def get_alerts_by_device(
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# Incident CRUD
+# ---------------------------------------------------------------------------
+
+
+async def update_incident(
+    session: AsyncSession,
+    incident_id: str,
+    *,
+    status: str = "resolved",
+    resolved_at: datetime | None = None,
+) -> bool:
+    """Update an incident's status and optional resolved_at timestamp.
+
+    Also marks any unresolved ``AlertLog`` rows carrying the same
+    ``incident_id`` with the supplied ``resolved_at`` timestamp and a
+    ``resolution_reason`` of ``"incident_resolved"``.
+
+    Args:
+        session: An active async session.  The caller is responsible for
+            committing the transaction.
+        incident_id: The ``INC-YYYYMMDD-NNN`` incident identifier.
+        status: New status string (default ``"resolved"``).
+        resolved_at: Optional timestamp; defaults to ``datetime.now(UTC)``
+            when not supplied.
+
+    Returns:
+        ``True`` if an ``Incident`` row was found and updated (or if
+        ``AlertLog`` rows were updated), ``False`` if nothing matched.
+    """
+    if resolved_at is None:
+        resolved_at = datetime.now(UTC)
+
+    updated = False
+
+    # Update the Incident table row (if it exists)
+    stmt = select(Incident).where(Incident.id == incident_id)
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is not None:
+        row.status = status
+        row.resolved_at = resolved_at
+        session.add(row)
+        updated = True
+
+    # Mark associated AlertLog rows as resolved
+    alert_stmt = (
+        update(AlertLog)
+        .where(AlertLog.incident_id == incident_id, AlertLog.resolved_at.is_(None))
+        .values(resolved_at=resolved_at, resolution_reason="incident_resolved")
+        .execution_options(synchronize_session=False)
+    )
+    alert_result = await session.execute(alert_stmt)
+    if alert_result.rowcount:  # type: ignore[attr-defined]
+        updated = True
+
+    await session.flush()
+    return updated
 
 
 # ---------------------------------------------------------------------------

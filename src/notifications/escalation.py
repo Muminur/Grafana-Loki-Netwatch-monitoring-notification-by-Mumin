@@ -163,6 +163,37 @@ class EscalationEngine:
             acknowledged,
         )
 
+    def clear_incident(self, device_name: str) -> int:
+        """Remove all tracked and acknowledged entries for *device_name*.
+
+        Called when an incident for the device is resolved, so that stale
+        escalation entries do not fire after the issue is already cleared.
+
+        Parameters
+        ----------
+        device_name:
+            The device name as stored in ``EnrichedLog.device_name``.
+
+        Returns
+        -------
+        int
+            The number of entries removed from ``_tracked``.
+        """
+        matching_keys = [k for k in self._tracked if k[0] == device_name]
+        if not matching_keys:
+            _log.debug("clear_incident: no tracked entries for %s", device_name)
+            return 0
+
+        for key in matching_keys:
+            del self._tracked[key]
+            self._acked.discard(key)
+        _log.debug(
+            "Cleared %d escalation entries for device %s",
+            len(matching_keys),
+            device_name,
+        )
+        return len(matching_keys)
+
     def get_pending_escalations(self) -> list[tuple[EnrichedLog, int]]:
         """Return alerts that need escalation (unacknowledged after delay).
 

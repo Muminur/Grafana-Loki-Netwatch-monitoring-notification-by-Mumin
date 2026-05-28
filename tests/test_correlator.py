@@ -868,3 +868,65 @@ class TestIncidentMemoryBounds:
 
         assert inc_id not in engine._incidents  # noqa: SLF001
         assert "192.168.0.1" not in engine._device_incident  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# resolve_incident tests
+# ---------------------------------------------------------------------------
+
+
+class TestResolveIncident:
+    """Tests for CorrelationEngine.resolve_incident()."""
+
+    def test_recovery_resolves_incident(self) -> None:
+        """resolve_incident() removes the incident and returns its ID."""
+        engine = CorrelationEngine()
+
+        # Manually inject an incident
+        inc_id = engine._generate_incident_id()  # noqa: SLF001
+        enriched = _make_enriched()
+        engine._incidents[inc_id] = [enriched]  # noqa: SLF001
+        engine._device_incident["192.168.203.1"] = inc_id  # noqa: SLF001
+
+        result = engine.resolve_incident(inc_id)
+
+        assert result == inc_id
+
+    def test_resolved_incident_not_in_registry(self) -> None:
+        """After resolve_incident(), the incident is absent from both registries."""
+        engine = CorrelationEngine()
+
+        inc_id = engine._generate_incident_id()  # noqa: SLF001
+        enriched = _make_enriched()
+        engine._incidents[inc_id] = [enriched]  # noqa: SLF001
+        engine._device_incident["192.168.203.1"] = inc_id  # noqa: SLF001
+
+        engine.resolve_incident(inc_id)
+
+        assert inc_id not in engine._incidents  # noqa: SLF001
+        assert "192.168.203.1" not in engine._device_incident  # noqa: SLF001
+
+    def test_resolve_nonexistent_incident_returns_none(self) -> None:
+        """resolve_incident() with unknown ID returns None."""
+        engine = CorrelationEngine()
+        result = engine.resolve_incident("INC-99990101-999")
+        assert result is None
+
+    def test_resolve_clears_only_matching_device_incident(self) -> None:
+        """resolve_incident() only removes device mappings for the resolved incident."""
+        engine = CorrelationEngine()
+
+        id1 = engine._generate_incident_id()  # noqa: SLF001
+        id2 = engine._generate_incident_id()  # noqa: SLF001
+        engine._incidents[id1] = [_make_enriched()]  # noqa: SLF001
+        engine._incidents[id2] = [_make_enriched()]  # noqa: SLF001
+        engine._device_incident["192.168.0.1"] = id1  # noqa: SLF001
+        engine._device_incident["192.168.0.2"] = id2  # noqa: SLF001
+
+        engine.resolve_incident(id1)
+
+        assert id1 not in engine._incidents  # noqa: SLF001
+        assert "192.168.0.1" not in engine._device_incident  # noqa: SLF001
+        # id2 must remain untouched
+        assert id2 in engine._incidents  # noqa: SLF001
+        assert engine._device_incident["192.168.0.2"] == id2  # noqa: SLF001

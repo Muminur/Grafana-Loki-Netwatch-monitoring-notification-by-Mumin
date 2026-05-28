@@ -250,6 +250,110 @@ def format_telegram_message(enriched: EnrichedLog) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Resolution formatters
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Discord resolution embed color: green, matching USER_LOGIN palette entry.
+RESOLUTION_DISCORD_COLOR = 0x00FF88
+
+
+def format_resolution_discord_embed(
+    enriched: EnrichedLog, incident_id: str, settings: Settings
+) -> dict[str, Any]:
+    """Format an incident resolution as a Discord webhook payload.
+
+    Uses green (0x00FF88) to clearly indicate the incident is resolved.
+
+    Parameters
+    ----------
+    enriched:
+        The enriched syslog event that triggered the resolution (the
+        recovery event, e.g. Interface Up or BGP Up).
+    incident_id:
+        The ``INC-YYYYMMDD-NNN`` identifier of the resolved incident.
+    settings:
+        Application settings (used to build the Grafana deep-link URL).
+
+    Returns
+    -------
+    dict
+        Ready-to-POST Discord webhook payload with a single embed.
+    """
+    safe_device = _sanitise(enriched.device_name)
+    safe_event = _sanitise(enriched.event_type)
+    grafana_url = _grafana_deep_link(enriched, settings)
+
+    title = f"✅ RESOLVED — {safe_device}"
+    description = (
+        f"Incident `{incident_id}` resolved by **{safe_event}**\n"
+        f"[View in Grafana]({grafana_url})"
+    )
+
+    fields = _build_discord_fields(enriched)
+    fields.append({"name": "Incident", "value": incident_id, "inline": True})
+
+    embed: dict[str, Any] = {
+        "title": title,
+        "description": description,
+        "color": RESOLUTION_DISCORD_COLOR,
+        "fields": fields,
+        "footer": {"text": "BSCCL NetWatch — Resolution"},
+        "timestamp": enriched.parsed.timestamp.isoformat(),
+    }
+
+    return {"embeds": [embed]}
+
+
+def format_resolution_telegram_message(enriched: EnrichedLog, incident_id: str) -> str:
+    """Format an incident resolution as a Telegram Markdown message string.
+
+    Parameters
+    ----------
+    enriched:
+        The enriched syslog event that triggered the resolution.
+    incident_id:
+        The ``INC-YYYYMMDD-NNN`` identifier of the resolved incident.
+
+    Returns
+    -------
+    str
+        Telegram Markdown-formatted resolution text.
+    """
+    lines: list[str] = []
+
+    lines.append(f"*✅ RESOLVED — {_sanitise(enriched.device_name)}*")
+    lines.append(f"Incident `{incident_id}` resolved")
+    lines.append("")
+
+    safe_event = _sanitise(enriched.event_type)
+    lines.append(f"*Event:* {safe_event}")
+
+    if enriched.device_location:
+        lines.append(f"*Location:* {_sanitise(enriched.device_location)}")
+
+    if enriched.interface_name:
+        iface = _sanitise(enriched.interface_name)
+        if enriched.interface_description:
+            iface += f" — {_sanitise(enriched.interface_description)}"
+        lines.append(f"*Interface:* `{iface}`")
+
+    if enriched.bgp_neighbor:
+        peer = _sanitise(enriched.bgp_neighbor)
+        if enriched.as_number is not None and enriched.as_name:
+            peer += f" (AS{enriched.as_number} {_sanitise(enriched.as_name)})"
+        elif enriched.as_number is not None:
+            peer += f" (AS{enriched.as_number})"
+        lines.append(f"*Peer:* `{peer}`")
+
+    lines.append("")
+    ts_str = enriched.parsed.timestamp.strftime("%Y-%m-%d %H:%M:%S %Z")
+    lines.append(f"_{ts_str}_")
+
+    raw_msg = "\n".join(lines)
+    return _sanitise(raw_msg, max_len=_MAX_TEXT_LEN)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Escalation formatters
 # ─────────────────────────────────────────────────────────────────────────────
 

@@ -56,7 +56,13 @@ from src.core.dedup import DedupEngine
 from src.core.enricher import enrich
 from src.core.parser import parse_syslog
 from src.core.syslog_receiver import SyslogReceiver
-from src.database.crud import insert_alert, prune_old_alerts, prune_old_stats, vacuum_db
+from src.database.crud import (
+    insert_alert,
+    prune_old_alerts,
+    prune_old_stats,
+    update_incident,
+    vacuum_db,
+)
 from src.database.migrations import create_tables, get_engine
 from src.database.models import AlertLog
 from src.logging_config import configure_logging
@@ -65,9 +71,17 @@ from src.metrics import (
     record_dedup_suppressed,
     record_notification,
 )
-from src.notifications.discord import send_discord_alert, send_discord_escalation
+from src.notifications.discord import (
+    send_discord_alert,
+    send_discord_escalation,
+    send_discord_resolution,
+)
 from src.notifications.escalation import EscalationEngine
-from src.notifications.telegram import send_telegram_alert, send_telegram_escalation
+from src.notifications.telegram import (
+    send_telegram_alert,
+    send_telegram_escalation,
+    send_telegram_resolution,
+)
 from src.rate_limit import limiter
 
 if TYPE_CHECKING:
@@ -321,6 +335,39 @@ async def _on_syslog_line(raw_line: str) -> None:
             record_notification("telegram")
         if _escalation is not None:
             _escalation.track_alert(enriched)
+
+    # ── Incident resolution on recovery event ─────────────────────────────
+    # When a recovery event (Interface Up, BGP Up, etc.) is detected and
+    # the device has an active incident in the correlator, resolve it:
+    # remove from in-memory registry, clear escalation entries, persist the
+    # resolution to the DB, and send RESOLVED notifications.
+    if is_recovery and _correlator is not None and incident_id:
+        resolved_id = _correlator.resolve_incident(incident_id)
+        if resolved_id is not None:
+            _log.info(
+                "Recovery event resolved incident %s on %s",
+                resolved_id,
+                enriched.device_name,
+            )
+            # Clear escalation tracking for the device
+            if _escalation is not None:
+                _escalation.clear_incident(enriched.device_name)
+
+            # Persist resolution to the database
+            if _engine is not None:
+                try:
+                    async with AsyncSession(_engine) as session:
+                        await update_incident(session, resolved_id)
+                        await session.commit()
+                except Exception as exc:  # noqa: BLE001
+                    _log.error("DB update_incident failed for %s: %s", resolved_id, exc)
+
+            # Send RESOLVED notifications
+            settings = get_settings()
+            if settings.discord_enabled:
+                await send_discord_resolution(enriched, resolved_id, settings)
+            if settings.telegram_enabled:
+                await send_telegram_resolution(enriched, resolved_id, settings)
 
     # ── Broadcast to WebSocket clients ─────────────────────────────────────
     if should_send:
