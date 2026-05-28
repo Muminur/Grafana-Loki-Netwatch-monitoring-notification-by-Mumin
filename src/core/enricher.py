@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 # Interface patterns — ordered from most specific to least.
 # Each pattern captures the interface name from a different syslog message style:
 #   1. Explicit Interface keyword (remote fault, BER, interface up/down)
-#   2. Interface type token followed by "is now/no longer Active" (LACP)
+#   2. Interface type token followed by "is [now|no longer] Active" (LACP)
 #   3. ifname field (port creation failure — uses underscore separators)
 #   4. detected-on phrase (duplicate IPv6 address)
 #   5. SFP alarm pipe-delimited format Set/Clear
@@ -43,8 +43,8 @@ _IFACE_PATTERNS: list[re.Pattern[str]] = [
         r"\bInterface\s+((?:TenGigE|HundredGigE|GigabitEthernet|GigE|Bundle-Ether|FortyGigE|FiftyGigE|TwentyFiveGigE)\S+)"
     ),
     re.compile(
-        r"\b((?:TenGigE|HundredGigE|GigabitEthernet|GigE|Bundle-Ether|FortyGigE|FiftyGigE|TwentyFiveGigE)\S+)\s+is\s+(?:now|no\s+longer)\s+Active"
-    ),  # noqa: ERA001
+        r"\b((?:TenGigE|HundredGigE|GigabitEthernet|GigE|Bundle-Ether|FortyGigE|FiftyGigE|TwentyFiveGigE)\S+)\s+is\s+(?:now\s+|no\s+longer\s+)?Active"
+    ),
     re.compile(r"\bifname:\s+(\S+)"),
     re.compile(r"\bdetected\s+on\s+(Bundle-Ether\d+)"),
     re.compile(
