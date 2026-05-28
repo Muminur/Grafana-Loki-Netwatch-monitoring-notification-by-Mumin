@@ -1,6 +1,6 @@
 """Classification rules for BSCCL NetWatch syslog classifier.
 
-25 rules evaluated top-to-bottom; first match wins.
+26 rules evaluated top-to-bottom; first match wins.
 
 Rule ordering is critical:
   - BGP_DOWN   before BGP_UP   (both match ADJCHANGE)
@@ -80,20 +80,20 @@ CLASSIFICATION_RULES: list[ClassificationRule] = [
     # 1. BGP peer went Down — must come BEFORE BGP_UP (both match ADJCHANGE)
     _rule(
         id="BGP_DOWN",
-        pattern=r"%ROUTING-BGP-5-ADJCHANGE.*Down",
+        pattern=r"%ROUTING-BGP-5-ADJCHANGE.*\bDown\b",
         classification="CRITICAL",
         event_type="BGP Peer Down",
         notify=True,
         extract=["neighbor", "as_number", "vrf"],
         summary_template="{device}: BGP peer {neighbor} Down (AS {as_number})",
     ),
-    # 2. BGP max-prefix limit reached — warning-level, not an outage
+    # 2. BGP max-prefix limit reached — CRITICAL path protection alert
     _rule(
         id="BGP_MAXPFX",
         pattern=r"%ROUTING-BGP-5-MAXPFX",
-        classification="WARNING",
+        classification="CRITICAL",
         event_type="BGP Max Prefix Reached",
-        notify=False,
+        notify=True,
         extract=["neighbor", "prefix_count", "max_prefixes"],
         summary_template=(
             "{device}: BGP max-prefix on {neighbor} ({prefix_count}/{max_prefixes})"
@@ -153,7 +153,7 @@ CLASSIFICATION_RULES: list[ClassificationRule] = [
     # 7. SFP low-rx-power alarm SET — must come BEFORE SFP_ALARM_CLEAR
     _rule(
         id="SFP_ALARM_SET",
-        pattern=r"%PLATFORM-SFP-2-LOW_RX_POWER_ALARM.*Set",
+        pattern=r"%PLATFORM-SFP-2-LOW_RX_POWER_ALARM.*\bSet\b",
         classification="CRITICAL",
         event_type="SFP Alarm Set",
         notify=True,
@@ -205,7 +205,7 @@ CLASSIFICATION_RULES: list[ClassificationRule] = [
     # 12. BGP peer came Up (recovery — still CRITICAL for NOC visibility)
     _rule(
         id="BGP_UP",
-        pattern=r"%ROUTING-BGP-5-ADJCHANGE.*Up",
+        pattern=r"%ROUTING-BGP-5-ADJCHANGE.*\bUp\b",
         classification="CRITICAL",
         event_type="BGP Peer Up",
         notify=True,
@@ -235,7 +235,7 @@ CLASSIFICATION_RULES: list[ClassificationRule] = [
     # 15. SFP low-rx-power alarm CLEARED
     _rule(
         id="SFP_ALARM_CLEAR",
-        pattern=r"%PLATFORM-SFP-2-LOW_RX_POWER_ALARM.*Clear",
+        pattern=r"%PLATFORM-SFP-2-LOW_RX_POWER_ALARM.*\bClear\b",
         classification="WARNING",
         event_type="SFP Alarm Clear",
         notify=False,

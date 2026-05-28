@@ -345,6 +345,87 @@ class TestDedupEngine:
         key = engine._dedup_key(enriched)  # noqa: SLF001
         assert "TenGigE0/0/0/0" in key
 
+    def test_bundle_window_default_is_60(self) -> None:
+        """Default bundle_window should be 60 seconds, not 30."""
+        from src.core.dedup import DedupEngine
+
+        engine = DedupEngine()
+        assert engine._bundle_window == timedelta(seconds=60)  # noqa: SLF001
+
+    def test_export_import_bgp_states_roundtrip(self) -> None:
+        """export_bgp_states / import_bgp_states round-trip preserves state."""
+        from src.core.dedup import DedupEngine
+
+        engine = DedupEngine(flap_window=120)
+
+        ts_base = datetime(2026, 5, 22, 21, 0, 0, tzinfo=_UTC6)
+
+        # Build BGP state: Down at t=0
+        parsed_down = _make_parsed_log(
+            mnemonic="ADJCHANGE",
+            message="neighbor 2001:de8:4::39:9077:1 Down - BGP Notification received",
+            timestamp=ts_base,
+        )
+        down = _make_enriched(
+            rule_id="bgp_down",
+            event_type="BGP Session Down",
+            bgp_neighbor="2001:de8:4::39:9077:1",
+            parsed=parsed_down,
+        )
+        engine.should_notify(down)
+
+        # Up at t=30s
+        parsed_up = _make_parsed_log(
+            mnemonic="ADJCHANGE",
+            message="neighbor 2001:de8:4::39:9077:1 Up",
+            timestamp=ts_base + timedelta(seconds=30),
+        )
+        up = _make_enriched(
+            rule_id="bgp_up",
+            event_type="BGP Session Up",
+            classification="WARNING",
+            bgp_neighbor="2001:de8:4::39:9077:1",
+            parsed=parsed_up,
+        )
+        engine.should_notify(up)
+
+        # Now export
+        exported = engine.export_bgp_states()
+
+        # Verify exported structure: keys are strings, values are lists of
+        # [state, iso_datetime_string] pairs.
+        assert isinstance(exported, dict)
+        assert len(exported) > 0
+        for key, history in exported.items():
+            assert isinstance(key, str)
+            assert isinstance(history, list)
+            for entry in history:
+                assert isinstance(entry, list)
+                assert len(entry) == 2
+                assert isinstance(entry[0], str)  # state ("down"/"up")
+                assert isinstance(entry[1], str)  # ISO datetime string
+
+        # Import into a fresh engine
+        engine2 = DedupEngine(flap_window=120)
+        engine2.import_bgp_states(exported)
+
+        # Verify internal state matches: same keys, same history length,
+        # same state strings, and datetime objects restored correctly.
+        assert set(engine2._bgp_states.keys()) == set(  # noqa: SLF001
+            engine._bgp_states.keys()  # noqa: SLF001
+        )
+        for key in engine._bgp_states:  # noqa: SLF001
+            orig = engine._bgp_states[key]  # noqa: SLF001
+            restored = engine2._bgp_states[key]  # noqa: SLF001
+            assert len(restored) == len(orig)
+            for (orig_state, orig_ts), (rest_state, rest_ts) in zip(
+                orig, restored, strict=True
+            ):
+                assert orig_state == rest_state
+                assert isinstance(rest_ts, datetime)
+                # Timestamps should be equal (ISO round-trip preserves them)
+                assert orig_ts == rest_ts
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DedupEngine eviction tests

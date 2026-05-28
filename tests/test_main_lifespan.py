@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import src.main as main_mod
@@ -293,10 +294,10 @@ async def test_lifespan_startup_db_errors_are_swallowed(tmp_path: Path) -> None:
         await asyncio.sleep(0)
 
     # Force every AsyncSession.execute to raise so each guarded query block
-    # falls into its except handler.
+    # falls into its except handler.  Use OperationalError (a SQLAlchemyError
+    # subclass) to match the specific exception types caught in lifespan().
     async def _boom_execute(*_args: object, **_kwargs: object) -> object:
-        msg = "simulated DB failure"
-        raise RuntimeError(msg)
+        raise OperationalError("simulated DB failure", params=None, orig=None)
 
     with (
         patch.object(main_mod, "get_settings", return_value=settings),

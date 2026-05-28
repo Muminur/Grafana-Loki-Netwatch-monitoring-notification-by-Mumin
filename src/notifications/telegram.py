@@ -86,7 +86,12 @@ def _parse_retry_after(header_value: str) -> float:
         return 1.0
 
 
-async def send_telegram_alert(enriched: EnrichedLog, settings: Settings) -> bool:
+async def send_telegram_alert(
+    enriched: EnrichedLog,
+    settings: Settings,
+    *,
+    incident_context: dict[str, object] | None = None,
+) -> bool:
     """Send a Telegram message for an enriched alert.
 
     Parameters
@@ -96,6 +101,9 @@ async def send_telegram_alert(enriched: EnrichedLog, settings: Settings) -> bool
     settings:
         Application settings containing ``telegram_bot_token``,
         ``telegram_chat_id``, and ``telegram_enabled``.
+    incident_context:
+        Optional dict with ``incident_id`` and ``related_count`` keys,
+        passed through to the formatter to enrich the message.
 
     Returns
     -------
@@ -122,7 +130,7 @@ async def send_telegram_alert(enriched: EnrichedLog, settings: Settings) -> bool
         )
         return False
 
-    text = format_telegram_message(enriched)
+    text = format_telegram_message(enriched, incident_context=incident_context)
     url = f"{_TELEGRAM_API_BASE}/bot{settings.telegram_bot_token}/sendMessage"
     payload = {
         "chat_id": settings.telegram_chat_id,

@@ -39,7 +39,7 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.telegram_enabled is False
     assert settings.dedup_window_seconds == 300
     assert settings.bgp_flap_window_seconds == 120
-    assert settings.bundle_group_window_seconds == 30
+    assert settings.bundle_group_window_seconds == 60
     assert settings.grafana_dashboard_uid == "8sWAY1LMz"
 
 

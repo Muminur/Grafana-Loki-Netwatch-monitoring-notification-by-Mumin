@@ -282,9 +282,9 @@ class CorrelationEngine:
                         backhaul_root_cause = True
                 elif "Up" in enriched.event_type or "Clear" in enriched.event_type:
                     self._backhaul_failures.pop(bh_key, None)
-        # ── Mass BGP event detection (runs before symptom return) ──────────
+        # ── Mass BGP event detection (runs before symptom return) ────────────
         # Mass-event detection runs early so that a device can host both a
-        # backhaul incident AND a mass BGP incident simultaneously. ────────────────────────────────────────
+        # backhaul incident AND a mass BGP incident simultaneously.
         mass_events = self._check_mass_event(enriched)
         mass_incident_result: CorrelatedEvent | None = None
         if len(mass_events) >= self.MASS_BGP_THRESHOLD - 1:
@@ -306,7 +306,7 @@ class CorrelationEngine:
                     related_events=list(mass_events),
                 )
             else:
-                # Add to existing incident, suppress notification.
+                # Add to existing mass incident, suppress notification.
                 # Guard against stale reference after eviction.
                 if existing_mass_id in self._incidents:
                     self._incidents[existing_mass_id].append(enriched)
@@ -520,15 +520,28 @@ class CorrelationEngine:
     def _find_mass_incident(self, device_ip: str) -> str | None:
         """Find an existing mass-event incident for *device_ip*.
 
-        Returns the most recently added non-backhaul incident ID,
-        or ``None`` if none exists.
+        Searches the device's incident list for one that is NOT a backhaul
+        incident (i.e. its key is the bare device IP, not
+        ``device_ip:bundle_name``).  Returns the most recently added mass-event
+        incident ID, or ``None`` if none exists.
+
+        Parameters
+        ----------
+        device_ip:
+            Syslog source IP of the device.
+
+        Returns
+        -------
+        str | None
+            The incident ID if found, otherwise ``None``.
         """
         device_ids = self._device_incidents.get(device_ip)
         if not device_ids:
             return None
 
         # Return the most recent non-backhaul incident (mass-event incident)
-        # using the explicit _backhaul_incident_ids set.
+        # using the explicit _backhaul_incident_ids set instead of key-format
+        # heuristics that could false-match on IPs sharing a common prefix.
         for iid in reversed(device_ids):
             if iid not in self._backhaul_incident_ids and iid in self._incidents:
                 return iid
@@ -590,7 +603,13 @@ class CorrelationEngine:
                 ev is not enriched
                 and ev.parsed.source_ip == device_ip
                 and ts >= cutoff
-                and ev.event_type in ("BGP Peer Down", "BGP Down", "Max Prefix")
+                and ev.event_type
+                in (
+                    "BGP Peer Down",
+                    "BGP Down",
+                    "Max Prefix",
+                    "BGP Max Prefix Reached",
+                )
                 and ev.classification in ("CRITICAL", "WARNING")
             )
         ]
