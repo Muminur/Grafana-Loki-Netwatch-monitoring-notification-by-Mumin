@@ -481,7 +481,13 @@ class CorrelationEngine:
                 ev is not enriched
                 and ev.parsed.source_ip == device_ip
                 and ts >= cutoff
-                and ev.event_type in ("BGP Peer Down", "BGP Down", "Max Prefix")
+                and ev.event_type
+                in (
+                    "BGP Peer Down",
+                    "BGP Down",
+                    "Max Prefix",
+                    "BGP Max Prefix Reached",
+                )
                 and ev.classification in ("CRITICAL", "WARNING")
             )
         ]

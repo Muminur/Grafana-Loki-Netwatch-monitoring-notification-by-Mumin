@@ -63,6 +63,7 @@ from src.database.crud import (
     prune_old_alerts,
     prune_old_stats,
     update_incident,
+    update_notification_status,
     vacuum_db,
 )
 from src.database.migrations import create_tables, get_engine
@@ -253,6 +254,7 @@ async def _on_syslog_line(raw_line: str) -> None:
     suppress = correlated.suppress_notification if correlated is not None else False
     will_notify = should_send and enriched.notify and not suppress
     incident_id = (correlated.incident_id or "") if correlated is not None else ""
+    alert_id: int | None = None
     if (should_send or is_recovery) and _engine is not None:
         try:
             alert = AlertLog(
@@ -279,6 +281,7 @@ async def _on_syslog_line(raw_line: str) -> None:
             )
             async with AsyncSession(_engine) as session:
                 await insert_alert(session, alert)
+                alert_id = alert.id
                 await session.commit()
         except Exception as exc:  # noqa: BLE001
             _log.error("DB insert failed: %s", exc)
@@ -378,10 +381,41 @@ async def _on_syslog_line(raw_line: str) -> None:
     # ── Notify (Discord + Telegram) ────────────────────────────────────────
     if will_notify:
         settings = get_settings()
-        if settings.discord_enabled and await send_discord_alert(enriched, settings):
-            record_notification("discord")
-        if settings.telegram_enabled and await send_telegram_alert(enriched, settings):
-            record_notification("telegram")
+
+        discord_ok = False
+        discord_err = ""
+        if settings.discord_enabled:
+            discord_ok = await send_discord_alert(enriched, settings)
+            if discord_ok:
+                record_notification("discord")
+            else:
+                discord_err = "delivery failed"
+
+        telegram_ok = False
+        telegram_err = ""
+        if settings.telegram_enabled:
+            telegram_ok = await send_telegram_alert(enriched, settings)
+            if telegram_ok:
+                record_notification("telegram")
+            else:
+                telegram_err = "delivery failed"
+
+        # Persist per-channel delivery results
+        if alert_id is not None and _engine is not None:
+            try:
+                async with AsyncSession(_engine) as session:
+                    await update_notification_status(
+                        session,
+                        alert_id,
+                        discord_sent=discord_ok,
+                        telegram_sent=telegram_ok,
+                        discord_error=discord_err,
+                        telegram_error=telegram_err,
+                    )
+                    await session.commit()
+            except Exception as exc:  # noqa: BLE001
+                _log.error("Failed to update notification status: %s", exc)
+
         if _escalation is not None:
             _escalation.track_alert(enriched)
 

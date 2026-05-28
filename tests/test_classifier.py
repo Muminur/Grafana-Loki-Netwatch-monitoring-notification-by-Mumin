@@ -143,11 +143,11 @@ def test_classify_bgp_down(sample_bgp_down_log: str) -> None:
 
 
 def test_classify_bgp_maxpfx(sample_maxpfx_log: str) -> None:
-    """Rule BGP_MAXPFX: %ROUTING-BGP-5-MAXPFX → WARNING."""
+    """Rule BGP_MAXPFX: %ROUTING-BGP-5-MAXPFX → CRITICAL."""
     result = classify(_parse(sample_maxpfx_log))
     assert result.rule_id == "BGP_MAXPFX"
-    assert result.classification == "WARNING"
-    assert result.notify is False
+    assert result.classification == "CRITICAL"
+    assert result.notify is True
 
 
 def test_classify_lacp_expired(sample_lacp_expired_log: str) -> None:
@@ -482,7 +482,7 @@ def test_default_classification_returns_info_for_unknown() -> None:
 def test_notify_flag_all_critical_rules_true() -> None:
     """Every rule with classification=='CRITICAL' must have notify=True."""
     critical_rules = [r for r in CLASSIFICATION_RULES if r.classification == "CRITICAL"]
-    assert len(critical_rules) == 14, "Expected exactly 14 CRITICAL rules"
+    assert len(critical_rules) == 15, "Expected exactly 15 CRITICAL rules"
     for rule in critical_rules:
         assert rule.notify is True, f"Rule {rule.id} is CRITICAL but notify=False"
 
@@ -517,3 +517,51 @@ def test_classification_result_is_frozen(sample_bgp_down_log: str) -> None:
     result = classify(_parse(sample_bgp_down_log))
     with pytest.raises((AttributeError, TypeError)):
         result.rule_id = "TAMPERED"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Error handling — graceful None input
+# ---------------------------------------------------------------------------
+
+
+def test_classify_none_input_returns_default() -> None:
+    """Passing None to classify() must return the default result, not crash."""
+    result = classify(None)  # type: ignore[arg-type]
+    assert result.rule_id == "UNKNOWN"
+    assert result.classification == "INFO"
+    assert result.notify is False
+
+
+# ---------------------------------------------------------------------------
+# RFI_FAULT rule — positive match + false-positive guard
+# ---------------------------------------------------------------------------
+
+
+def test_classify_rfi_fault() -> None:
+    """Synthetic RFI log classifies as RFI_FAULT/CRITICAL."""
+    rfi_raw = (
+        "May 22 16:00:01 192.168.200.11 52501: LC/0/0/CPU0:"
+        "May 22 16:00:26.000 +06: optics_driver[165]: "
+        "%PLATFORM-RFI-2-FAULT : Interface TenGigE0/0/0/1, "
+        "Detected Remote Fault Indication"
+    )
+    parsed = parse_syslog(rfi_raw)
+    assert parsed is not None, "parse_syslog returned None for RFI_FAULT sample"
+    result = classify(parsed)
+    assert result.rule_id == "RFI_FAULT"
+    assert result.classification == "CRITICAL"
+    assert result.notify is True
+
+
+def test_classify_rfi_no_false_positive_on_rfid() -> None:
+    """A log containing 'RFID' must NOT match the RFI_FAULT rule (word boundary)."""
+    rfid_raw = (
+        "May 22 16:00:01 192.168.200.11 52502: LC/0/0/CPU0:"
+        "May 22 16:00:26.000 +06: inventory[165]: "
+        "%PLATFORM-RFID-6-READ : RFID tag read successfully on module 0/0"
+    )
+    parsed = parse_syslog(rfid_raw)
+    assert parsed is not None, "parse_syslog returned None for RFID sample"
+    result = classify(parsed)
+    # RFID must NOT match RFI_FAULT
+    assert result.rule_id != "RFI_FAULT"

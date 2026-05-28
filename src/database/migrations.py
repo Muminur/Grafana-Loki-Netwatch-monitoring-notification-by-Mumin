@@ -65,6 +65,7 @@ async def create_tables(engine: AsyncEngine) -> None:
     await _migrate_alert_log_acknowledged_at(engine)
     await _migrate_alert_log_indexes(engine)
     await _migrate_maintenance_window_created_at(engine)
+    await _migrate_alert_log_notification_columns(engine)
 
 
 async def _migrate_alert_log_resolution_columns(engine: AsyncEngine) -> None:
@@ -166,5 +167,50 @@ async def _migrate_maintenance_window_created_at(engine: AsyncEngine) -> None:
                 text(
                     "ALTER TABLE maintenance_window "
                     "ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                )
+            )
+
+
+async def _migrate_alert_log_notification_columns(engine: AsyncEngine) -> None:
+    """Add per-channel notification tracking columns if missing (v13 schema).
+
+    Adds ``discord_sent``, ``telegram_sent``, ``discord_error``, and
+    ``telegram_error`` to ``alert_log`` so delivery status can be tracked
+    per notification channel.  Existing rows default to ``0`` (False) for
+    booleans and ``''`` for error strings.
+
+    Idempotent: guarded by ``PRAGMA table_info`` existence check.
+    Safe to call on fresh databases (``create_all`` already creates the
+    columns via ORM metadata).
+    """
+    from sqlalchemy import text  # noqa: PLC0415
+
+    async with engine.begin() as conn:
+        result = await conn.execute(text("PRAGMA table_info(alert_log)"))
+        columns = {row[1] for row in result.fetchall()}
+
+        if "discord_sent" not in columns:
+            await conn.execute(
+                text("ALTER TABLE alert_log ADD COLUMN discord_sent BOOLEAN DEFAULT 0")
+            )
+        if "telegram_sent" not in columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE alert_log "
+                    "ADD COLUMN telegram_sent BOOLEAN DEFAULT 0"
+                )
+            )
+        if "discord_error" not in columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE alert_log "
+                    "ADD COLUMN discord_error VARCHAR(256) DEFAULT ''"
+                )
+            )
+        if "telegram_error" not in columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE alert_log "
+                    "ADD COLUMN telegram_error VARCHAR(256) DEFAULT ''"
                 )
             )
