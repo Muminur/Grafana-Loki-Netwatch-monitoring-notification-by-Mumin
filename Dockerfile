@@ -14,7 +14,6 @@ WORKDIR /app
 
 # Copy application source
 COPY src/ ./src/
-COPY .env.example ./.env.example
 
 # Create a non-root user and own the working directory
 RUN useradd --create-home --shell /bin/bash netwatch \
@@ -22,6 +21,8 @@ RUN useradd --create-home --shell /bin/bash netwatch \
     && chown -R netwatch:netwatch /app
 
 USER netwatch
+
+ENV DATABASE_URL=sqlite+aiosqlite:////app/data/bsccl_netwatch.db
 
 EXPOSE 8080
 

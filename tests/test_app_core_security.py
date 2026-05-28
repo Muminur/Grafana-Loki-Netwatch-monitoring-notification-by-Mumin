@@ -86,6 +86,21 @@ class TestSecurityHeaders:
         assert "style-src" in csp
         assert "'unsafe-inline'" in csp
 
+    def test_referrer_policy_header(self) -> None:
+        """Referrer-Policy header is set on all responses."""
+        client = _make_client()
+        resp = client.get("/health")
+        assert resp.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
+
+    def test_permissions_policy_header(self) -> None:
+        """Permissions-Policy header restricts sensitive APIs."""
+        client = _make_client()
+        resp = client.get("/health")
+        pp = resp.headers.get("permissions-policy", "")
+        assert "camera=()" in pp
+        assert "microphone=()" in pp
+        assert "geolocation=()" in pp
+
 
 # ---------------------------------------------------------------------------
 # CORS origins from config

@@ -1,4 +1,3 @@
-version: "3.8"
 services:
   netwatch:
     build: .
@@ -6,9 +5,14 @@ services:
       - "8080:8080"
     env_file:
       - .env
+    environment:
+      DATABASE_URL: "sqlite+aiosqlite:////app/data/bsccl_netwatch.db"
     volumes:
       - netwatch-data:/app/data
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
     # Top-level limits honoured by docker-compose v1 and docker compose v2
     mem_limit: 512m
     cpus: 1.0

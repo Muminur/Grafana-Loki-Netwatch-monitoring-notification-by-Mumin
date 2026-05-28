@@ -277,67 +277,96 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 2000);
     }
 
-    // ── Sound toggles (localStorage-backed, client-side only) ────────────
+    // ── Sound & UI toggles (DB-backed via /api/settings/sound) ────────────
     var soundEnabled = document.getElementById('soundEnabled');
     var criticalSound = document.getElementById('criticalSoundEnabled');
     var warningSound = document.getElementById('warningSoundEnabled');
     var recoverySound = document.getElementById('recoverySoundEnabled');
     var repeatAlarm = document.getElementById('repeatAlarmEnabled');
 
-    function loadSoundPrefs() {
-        var prefs = JSON.parse(localStorage.getItem('netwatch_sound_prefs') || '{}');
-        if (soundEnabled) soundEnabled.checked = prefs.enabled !== false;
-        if (criticalSound) criticalSound.checked = prefs.critical !== false;
-        if (warningSound) warningSound.checked = prefs.warning !== false;
-        if (recoverySound) recoverySound.checked = prefs.recovery !== false;
-        if (repeatAlarm) repeatAlarm.checked = localStorage.getItem('netwatch_repeat_alarm') !== 'false';
+    function applySoundPrefsToUI(data) {
+        if (soundEnabled) soundEnabled.checked = data.sound_enabled !== false;
+        if (criticalSound) criticalSound.checked = data.sound_critical !== false;
+        if (warningSound) warningSound.checked = data.sound_warning !== false;
+        if (recoverySound) recoverySound.checked = data.sound_recovery !== false;
+        if (repeatAlarm) repeatAlarm.checked = data.repeat_alarm !== false;
+        if (browserNotifToggle && data.browser_notif !== undefined) {
+            browserNotifToggle.checked = !!data.browser_notif;
+            try { localStorage.setItem('netwatch_browser_notif', data.browser_notif ? '1' : '0'); } catch(e) {}
+        }
         if (window.NetwatchSounds) {
-            window.NetwatchSounds.setEnabled(prefs.enabled !== false);
+            window.NetwatchSounds.setEnabled(data.sound_enabled !== false);
             window.NetwatchSounds.setPrefs({
-                critical: prefs.critical !== false,
-                warning: prefs.warning !== false,
-                recovery: prefs.recovery !== false,
+                critical: data.sound_critical !== false,
+                warning: data.sound_warning !== false,
+                recovery: data.sound_recovery !== false,
             });
+        }
+        if (window.NetwatchDashboard) {
+            window.NetwatchDashboard.setRepeatAlarm(data.repeat_alarm !== false);
         }
     }
 
-    function saveSoundPrefs() {
-        var prefs = {
-            enabled: soundEnabled ? soundEnabled.checked : true,
-            critical: criticalSound ? criticalSound.checked : true,
-            warning: warningSound ? warningSound.checked : true,
-            recovery: recoverySound ? recoverySound.checked : true,
-        };
-        localStorage.setItem('netwatch_sound_prefs', JSON.stringify(prefs));
-        if (window.NetwatchSounds) {
-            window.NetwatchSounds.setEnabled(prefs.enabled);
-            window.NetwatchSounds.setPrefs({
-                critical: prefs.critical,
-                warning: prefs.warning,
-                recovery: prefs.recovery,
+    fetch(api + '/settings/sound')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            applySoundPrefsToUI(data);
+        })
+        .catch(function() {});
+
+    function saveSoundSetting(params) {
+        fetch(api + '/settings/sound?' + params, { method: 'POST' })
+            .then(function(r) {
+                if (!r.ok) throw new Error('Save failed: ' + r.status);
+                return r.json();
+            })
+            .then(function(data) {
+                applySoundPrefsToUI(data);
+                showSaveToast('Setting saved');
+            })
+            .catch(function(err) {
+                console.error('[Settings] Sound save failed:', err);
+                showSaveToast('Save failed — check connection');
             });
-        }
-        showSaveToast('Sound preference saved');
     }
 
-    loadSoundPrefs();
-    [soundEnabled, criticalSound, warningSound, recoverySound].forEach(function(el) {
-        if (el) el.addEventListener('change', saveSoundPrefs);
-    });
-
+    if (soundEnabled) {
+        soundEnabled.addEventListener('change', function() {
+            saveSoundSetting('sound_enabled=' + soundEnabled.checked);
+        });
+    }
+    if (criticalSound) {
+        criticalSound.addEventListener('change', function() {
+            saveSoundSetting('sound_critical=' + criticalSound.checked);
+        });
+    }
+    if (warningSound) {
+        warningSound.addEventListener('change', function() {
+            saveSoundSetting('sound_warning=' + warningSound.checked);
+        });
+    }
+    if (recoverySound) {
+        recoverySound.addEventListener('change', function() {
+            saveSoundSetting('sound_recovery=' + recoverySound.checked);
+        });
+    }
     if (repeatAlarm) {
         repeatAlarm.addEventListener('change', function() {
-            localStorage.setItem('netwatch_repeat_alarm', repeatAlarm.checked ? 'true' : 'false');
-            if (window.NetwatchDashboard) {
-                window.NetwatchDashboard.setRepeatAlarm(repeatAlarm.checked);
-            }
-            showSaveToast('Sound preference saved');
+            saveSoundSetting('repeat_alarm=' + repeatAlarm.checked);
         });
     }
 
-    // ── Browser Notifications toggle (localStorage-backed) ────────────────
+    // ── Browser Notifications toggle (DB-backed + localStorage fallback) ──
     var browserNotifToggle = document.getElementById('browserNotifEnabled');
     var browserNotifStatus = document.getElementById('browserNotifStatus');
+
+    // Immediately restore from localStorage before server fetch resolves
+    try {
+        var _cached = localStorage.getItem('netwatch_browser_notif');
+        if (_cached !== null && browserNotifToggle) {
+            browserNotifToggle.checked = _cached === '1';
+        }
+    } catch(e) {}
 
     function updateBrowserNotifStatus() {
         if (!browserNotifStatus) return;
@@ -358,22 +387,31 @@ document.addEventListener('DOMContentLoaded', function() {
     updateBrowserNotifStatus();
 
     if (browserNotifToggle) {
-        browserNotifToggle.checked = localStorage.getItem('netwatch_browser_notif') === 'true';
         browserNotifToggle.addEventListener('change', function() {
             var enabled = browserNotifToggle.checked;
+            try { localStorage.setItem('netwatch_browser_notif', enabled ? '1' : '0'); } catch(e) {}
+            fetch(api + '/settings/sound?browser_notif=' + enabled, { method: 'POST' })
+                .then(function(r) {
+                    if (!r.ok) throw new Error('Save failed: ' + r.status);
+                    return r.json();
+                })
+                .then(function(data) {
+                    applySoundPrefsToUI(data);
+                    showSaveToast('Setting saved');
+                })
+                .catch(function(err) {
+                    console.error('[Settings] Browser notif save failed:', err);
+                    showSaveToast('Save failed — check connection');
+                });
             if (window.NetwatchDashboard) {
                 window.NetwatchDashboard.setBrowserNotif(enabled);
-            } else {
-                localStorage.setItem('netwatch_browser_notif', enabled ? 'true' : 'false');
-                if (enabled && 'Notification' in window && Notification.permission === 'default') {
-                    Notification.requestPermission().then(function() {
-                        updateBrowserNotifStatus();
-                    });
-                }
             }
-            // Re-check permission status after a brief delay (permission prompt is async)
+            if (enabled && 'Notification' in window && Notification.permission === 'default') {
+                Notification.requestPermission().then(function() {
+                    updateBrowserNotifStatus();
+                });
+            }
             setTimeout(updateBrowserNotifStatus, 500);
-            showSaveToast('Notification preference saved');
         });
     }
 

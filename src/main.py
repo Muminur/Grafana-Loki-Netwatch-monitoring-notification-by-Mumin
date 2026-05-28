@@ -137,6 +137,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Content-Security-Policy"] = _CSP
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=()"
+        )
         return response
 
 
@@ -311,8 +315,7 @@ async def _on_syslog_line(raw_line: str) -> None:
                             session,
                             id=correlated.incident_id,
                             title=(
-                                f"{enriched.device_name} "
-                                f"{enriched.parsed.mnemonic}"
+                                f"{enriched.device_name} " f"{enriched.parsed.mnemonic}"
                             ),
                             root_cause=enriched.parsed.message,
                             affected_devices=f'["{enriched.device_name}"]',
@@ -474,7 +477,9 @@ async def _on_syslog_line(raw_line: str) -> None:
                             await resolve_incident(session, resolved_id)
                             await session.commit()
                     except Exception as exc:  # noqa: BLE001
-                        _log.error("DB resolve_incident failed for %s: %s", resolved_id, exc)
+                        _log.error(
+                            "DB resolve_incident failed for %s: %s", resolved_id, exc
+                        )
 
                 # Send RESOLVED notifications
                 settings = get_settings()
@@ -792,6 +797,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     global _engine, _correlator, _dedup, _escalation  # noqa: PLW0603
 
     settings = get_settings()
+
+    if not settings.api_key.strip():
+        _log.warning(
+            "API_KEY is not set — dashboard and mutating endpoints are unauthenticated"
+        )
 
     # ── Logging ────────────────────────────────────────────────────────────
     configure_logging(settings.log_format, settings.log_level)

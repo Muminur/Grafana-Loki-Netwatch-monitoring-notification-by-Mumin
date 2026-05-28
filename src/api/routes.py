@@ -517,6 +517,13 @@ async def load_persisted_state(engine: AsyncEngine) -> None:
                 object.__setattr__(_s, "notify_severity", val)
                 _load_log.info("Loaded notify_severity=%s from DB", val)
 
+            # ── Sound & UI preferences ────────────────────────────────────
+            for _snd_key in _sound_prefs:
+                _snd_val = await get_app_setting(session, _snd_key)
+                if _snd_val is not None:
+                    _sound_prefs[_snd_key] = _snd_val.lower() == "true"
+                    _load_log.info("Loaded %s=%s from DB", _snd_key, _snd_val)
+
             # ── Resolve stale noise-eligible alerts ───────────────────────
             if _hardware_defects_as_noise:
                 resolved = await _resolve_noise_alerts_on_startup(engine)
@@ -842,7 +849,7 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
                             _r_dev,
                             _r_iface or _r_neighbor,
                         )
-                except Exception:
+                except Exception:  # noqa: BLE001
                     logger.exception(
                         "Failed to persist recovery resolution for %s/%s",
                         _r_dev,
@@ -915,7 +922,7 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
                                 await resolve_silent_faults_in_db(
                                     _engine_capture, _dev_capture, _members_capture
                                 )
-                            except Exception:
+                            except Exception:  # noqa: BLE001
                                 _bgp_log.exception(
                                     "Failed to persist BGP-UP resolution for %s/%s",
                                     _dev_capture,
@@ -1981,7 +1988,7 @@ async def create_shift_handoff(
                 "shift_name": body.shift_name,
                 "operator_name": body.operator_name,
             }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         import logging  # noqa: PLC0415
 
         logging.getLogger(__name__).exception("shift handoff DB write failed")
@@ -2423,6 +2430,79 @@ async def set_notification_settings(
         "dedup_window": s.dedup_window_seconds,
         "notify_severity": getattr(s, "notify_severity", "CRITICAL"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Sound & UI preferences (DB-persisted, survive restart / cross-browser)
+# ---------------------------------------------------------------------------
+
+_sound_prefs: dict[str, bool] = {
+    "sound_enabled": True,
+    "sound_critical": True,
+    "sound_warning": True,
+    "sound_recovery": True,
+    "repeat_alarm": True,
+    "browser_notif": False,
+}
+
+
+@router.get("/api/settings/sound")
+async def get_sound_settings() -> dict[str, bool]:
+    """Return current sound and UI notification preferences."""
+    return dict(_sound_prefs)
+
+
+@router.post(
+    "/api/settings/sound",
+    dependencies=[Depends(require_api_key)],
+)
+@limiter.limit(RATE_LIMIT_MUTATING)
+async def set_sound_settings(
+    request: Request,
+    sound_enabled: bool | None = None,
+    sound_critical: bool | None = None,
+    sound_warning: bool | None = None,
+    sound_recovery: bool | None = None,
+    repeat_alarm: bool | None = None,
+    browser_notif: bool | None = None,
+) -> dict[str, bool]:
+    """Update sound/UI preferences. Only updates fields that are provided.
+
+    Persisted to the ``app_setting`` table so values survive restart and
+    are consistent across all browsers/clients.
+    """
+    updates: dict[str, bool] = {}
+    if sound_enabled is not None:
+        updates["sound_enabled"] = sound_enabled
+    if sound_critical is not None:
+        updates["sound_critical"] = sound_critical
+    if sound_warning is not None:
+        updates["sound_warning"] = sound_warning
+    if sound_recovery is not None:
+        updates["sound_recovery"] = sound_recovery
+    if repeat_alarm is not None:
+        updates["repeat_alarm"] = repeat_alarm
+    if browser_notif is not None:
+        updates["browser_notif"] = browser_notif
+
+    _sound_prefs.update(updates)
+
+    if _db_engine is not None and updates:
+        try:
+            from sqlalchemy.ext.asyncio import (  # noqa: PLC0415
+                AsyncSession as _SoundSession,
+            )
+
+            from src.database.crud import set_app_setting  # noqa: PLC0415
+
+            async with _SoundSession(_db_engine) as session:
+                for key, val in updates.items():
+                    await set_app_setting(session, key, str(val).lower())
+                await session.commit()
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to persist sound setting to DB", exc_info=True)
+
+    return dict(_sound_prefs)
 
 
 # ---------------------------------------------------------------------------

@@ -21,8 +21,10 @@
         USER_LOGIN: 0,
     };
 
-    // ── Browser Notification state ───────────────────────────────────────────
-    var _browserNotifEnabled = localStorage.getItem('netwatch_browser_notif') === 'true';
+    // ── Browser Notification state (loaded from server, localStorage fallback) ──
+    var _browserNotifEnabled = (function() {
+        try { return localStorage.getItem('netwatch_browser_notif') === '1'; } catch(e) { return false; }
+    })();
 
     // Race-condition guard: queue WebSocket alerts while a fetch is in-flight
     var _isFetching = false;
@@ -560,7 +562,7 @@
 
     function _setBrowserNotifEnabled(enabled) {
         _browserNotifEnabled = enabled;
-        localStorage.setItem('netwatch_browser_notif', enabled ? 'true' : 'false');
+        try { localStorage.setItem('netwatch_browser_notif', enabled ? '1' : '0'); } catch(e) {}
         if (enabled) {
             _requestNotificationPermission();
         }
@@ -758,7 +760,7 @@
     // ── Incident Alarm System (only for unacked active incidents) ─────────
     var _incidentAlarmInterval = null;
     var _incidentAlarmActive = false;
-    var _repeatAlarmEnabled = localStorage.getItem('netwatch_repeat_alarm') !== 'false';
+    var _repeatAlarmEnabled = true;
 
     function _startIncidentAlarm() {
         if (_incidentAlarmActive) return;
@@ -790,7 +792,6 @@
 
     function _setRepeatAlarm(enabled) {
         _repeatAlarmEnabled = enabled;
-        localStorage.setItem('netwatch_repeat_alarm', enabled ? 'true' : 'false');
         if (_incidentAlarmActive) {
             if (enabled && !_incidentAlarmInterval) {
                 _incidentAlarmInterval = setInterval(function () {
@@ -1284,6 +1285,23 @@
         _updateCounters();
         _renderAlerts();
         _loadIncidents();
+
+        fetch('/api/settings/sound')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                _browserNotifEnabled = !!data.browser_notif;
+                try { localStorage.setItem('netwatch_browser_notif', data.browser_notif ? '1' : '0'); } catch(e) {}
+                _repeatAlarmEnabled = data.repeat_alarm !== false;
+                if (window.NetwatchSounds) {
+                    window.NetwatchSounds.setEnabled(data.sound_enabled !== false);
+                    window.NetwatchSounds.setPrefs({
+                        critical: data.sound_critical !== false,
+                        warning: data.sound_warning !== false,
+                        recovery: data.sound_recovery !== false,
+                    });
+                }
+            })
+            .catch(function() {});
 
         // Load historical alerts from DB for today on initial page load
         applyFilters();
