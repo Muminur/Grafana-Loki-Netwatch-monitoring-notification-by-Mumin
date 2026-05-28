@@ -471,18 +471,18 @@ def test_bgp_down_no_false_positive_on_downloading() -> None:
     ), "BGP_DOWN matched 'Downloading' — missing word boundary"
 
 
-def test_sfp_alarm_no_false_positive_on_set_top() -> None:
-    """SFP_ALARM_SET must NOT match a line containing 'Set-Top' instead of 'Set'."""
+def test_sfp_alarm_no_false_positive_on_setting() -> None:
+    """SFP_ALARM_SET must NOT match a line containing 'Setting' instead of 'Set'."""
     raw = (
         "May 22 05:27:59 192.168.200.8 29146: LC/0/0/CPU0:"
         "May 22 05:27:59 : pfm_node_lc[298]: "
         "%PLATFORM-SFP-2-LOW_RX_POWER_ALARM : "
-        "Set-Top|envmon_lc[172121]|0x1029004|GigE0/0/0/4"
+        "Setting|envmon_lc[172121]|0x1029004|GigE0/0/0/4"
     )
     result = classify(_parse(raw))
     assert (
         result.rule_id != "SFP_ALARM_SET"
-    ), "SFP_ALARM_SET matched 'Set-Top' — missing word boundary"
+    ), "SFP_ALARM_SET matched 'Setting' — missing word boundary"
 
 
 def test_bgp_up_no_false_positive_on_upload() -> None:

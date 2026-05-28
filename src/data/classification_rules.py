@@ -153,7 +153,7 @@ CLASSIFICATION_RULES: list[ClassificationRule] = [
     # 7. SFP low-rx-power alarm SET — must come BEFORE SFP_ALARM_CLEAR
     _rule(
         id="SFP_ALARM_SET",
-        pattern=r"%PLATFORM-SFP-2-LOW_RX_POWER_ALARM.*\bSet\|",
+        pattern=r"%PLATFORM-SFP-2-LOW_RX_POWER_ALARM.*\bSet\b",
         classification="CRITICAL",
         event_type="SFP Alarm Set",
         notify=True,
@@ -235,7 +235,7 @@ CLASSIFICATION_RULES: list[ClassificationRule] = [
     # 15. SFP low-rx-power alarm CLEARED
     _rule(
         id="SFP_ALARM_CLEAR",
-        pattern=r"%PLATFORM-SFP-2-LOW_RX_POWER_ALARM.*\bClear\|",
+        pattern=r"%PLATFORM-SFP-2-LOW_RX_POWER_ALARM.*\bClear\b",
         classification="WARNING",
         event_type="SFP Alarm Clear",
         notify=False,
