@@ -20,6 +20,7 @@ ignore = ["S101", "S104", "A005"]
 "src/data/interface_map.py" = ["E501"]
 "src/data/device_map.py" = ["E501"]
 "src/data/as_database.py" = ["E501"]
+"tests/**/*.py" = ["S101", "SLF001", "ARG001"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["src"]
@@ -38,6 +39,15 @@ disallow_untyped_defs = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning",
+    "ignore::pytest.PytestUnraisableExceptionWarning",
+]
+markers = [
+    "asyncio: mark test as async",
+    "slow: marks tests as slow",
+]
 
 [tool.coverage.run]
 source = ["src"]
