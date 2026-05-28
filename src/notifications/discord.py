@@ -98,7 +98,12 @@ def _parse_retry_after(header_value: str) -> float:
         return 1.0
 
 
-async def send_discord_alert(enriched: EnrichedLog, settings: Settings) -> bool:
+async def send_discord_alert(
+    enriched: EnrichedLog,
+    settings: Settings,
+    *,
+    incident_context: dict[str, object] | None = None,
+) -> bool:
     """Send a Discord webhook embed for an enriched alert.
 
     Parameters
@@ -108,6 +113,9 @@ async def send_discord_alert(enriched: EnrichedLog, settings: Settings) -> bool:
     settings:
         Application settings containing ``discord_webhook_url`` and
         ``discord_enabled``.
+    incident_context:
+        Optional dict with ``incident_id`` and ``related_count`` keys,
+        passed through to the formatter to enrich the embed.
 
     Returns
     -------
@@ -128,7 +136,9 @@ async def send_discord_alert(enriched: EnrichedLog, settings: Settings) -> bool:
         _log.error("discord_webhook_url has invalid format — skipping.")
         return False
 
-    payload = format_discord_embed(enriched, settings)
+    payload = format_discord_embed(
+        enriched, settings, incident_context=incident_context
+    )
 
     last_error: str = ""
     for attempt in range(1, _MAX_ATTEMPTS + 1):

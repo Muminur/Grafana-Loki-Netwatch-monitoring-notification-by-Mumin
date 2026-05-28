@@ -165,7 +165,10 @@ class TestGenerateDailyDigest:
             if call_count == 2:
                 # Second execute: active incident count
                 return mock_count_result
-            # Third execute: top devices
+            if call_count == 3:
+                # Third execute: flapping peers count
+                return mock_count_result
+            # Fourth execute: top devices
             return mock_top_result
 
         mock_session = AsyncMock()

@@ -19,7 +19,7 @@ import httpx
 from sqlalchemy import func, select
 
 from src.config import get_settings
-from src.database.models import AlertLog, Incident
+from src.database.models import AlertLog, BGPPeerHistory, Incident
 from src.statistics.engine import get_daily_stats
 from src.statistics.health_score import calculate_health_score
 
@@ -63,8 +63,24 @@ async def generate_daily_digest(session: AsyncSession) -> str:
     active_result = await session.execute(active_stmt)
     active_incidents: int = active_result.scalar_one() or 0
 
-    # Flapping peers: approximate from BGP peer history (digest uses 0 for simplicity)
-    flapping_peers = 0
+    # Flapping peers: count distinct device+neighbor pairs with state='FLAPPING'
+    # within the current day.
+    flap_stmt = (
+        select(
+            func.count(
+                func.distinct(
+                    BGPPeerHistory.device_name + ":" + BGPPeerHistory.neighbor
+                )
+            )
+        )
+        .where(BGPPeerHistory.state == "FLAPPING")
+        .where(
+            BGPPeerHistory.timestamp
+            >= datetime(today.year, today.month, today.day, 0, 0, 0)  # noqa: DTZ001
+        )
+    )
+    flap_result = await session.execute(flap_stmt)
+    flapping_peers: int = flap_result.scalar_one() or 0
 
     # Health score
     score = calculate_health_score(
