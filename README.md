@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-1086_passing-00ff88?style=flat-square" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-1102_passing-00ff88?style=flat-square" alt="Tests"/>
   <img src="https://img.shields.io/badge/coverage-96%25-00ff88?style=flat-square" alt="Coverage"/>
   <img src="https://img.shields.io/badge/ruff-clean-00f0ff?style=flat-square" alt="Ruff"/>
   <img src="https://img.shields.io/badge/mypy-strict-8b5cf6?style=flat-square" alt="Mypy"/>
@@ -109,7 +109,7 @@ The correlation engine uses the **network dependency tree** (11 backbone devices
 | Classification rules | **26** (15 CRITICAL, 2 WARNING, 6 INFO, 3 LOGIN) |
 | Syslog formats parsed | **4** (IOS-XR +06, BDT, ADMIN, bare) |
 | Dedup windows | **5 min** standard, **2 min** BGP flap, **60 sec** bundle |
-| Test suite | **1086 tests**, 96% coverage |
+| Test suite | **1102 tests**, 96% coverage |
 
 ---
 
@@ -472,7 +472,7 @@ Production-hardening applied across the stack:
 - **Startup resilience** — server starts successfully even when Loki is unreachable, with automatic reconnection via exponential backoff (1s → 60s). The dashboard serves cached data until Loki comes up.
 - **Self-monitoring** — `/health` endpoint reports `loki_connected` and `last_alert_received_at`; a background task sends Discord/Telegram alerts if no syslog data arrives for 10+ minutes (with startup grace period).
 - **Database retention** — automated cleanup task prunes alerts older than `RETENTION_DAYS` (default 90) and runs SQLite VACUUM at 03:00 UTC daily.
-- **State survives restart** — maintenance windows, the Hardware-Defects-as-Noise toggle, notification preferences (including severity threshold), in-flight CRITICAL escalation tracking, **BGP flap detection state**, and **incident records** are all persisted to SQLite and restored on startup; the incident-ID counter is seeded from the DB so IDs never collide across a restart. The incident panel synthesizes active incidents from the DB after restart using temporally-correct resolution — a DOWN→UP→DOWN sequence is correctly preserved as active.
+- **State survives restart** — maintenance windows, the Hardware-Defects-as-Noise toggle, notification preferences (including severity threshold), in-flight CRITICAL escalation tracking, **BGP flap detection state**, **incident records**, and **incident acknowledgment marks** are all persisted to SQLite and restored on startup; the incident-ID counter is seeded from the DB so IDs never collide across a restart. The incident panel synthesizes active incidents from the DB after restart using temporally-correct resolution — a DOWN→UP→DOWN sequence is correctly preserved as active. ACK marks are restored from the `incident_ack` audit trail so acknowledged incidents remain acknowledged after restart, and `AlertLog.acknowledged_at` is written during acknowledgment to prevent the escalation engine from re-escalating already-acknowledged alerts.
 - **Observability** — optional structured JSON logs (`LOG_FORMAT=json`) with a per-request `X-Request-ID`, Prometheus `/metrics` endpoint (alerts processed, dedup suppressed, notifications sent, live WebSocket connections), and `/health` endpoint with background task liveness.
 - **Dedup correctness** — the window uses `max(event-time, monotonic)` elapsed so replayed/historical logs and backward clock steps are handled without mis-suppressing real alerts. Eviction logging tracks purged entries for operational visibility.
 - **Accessibility** — ARIA labels on form hints, chart containers, and emoji icons; keyboard focus indicators (`:focus-visible`) on all interactive elements; acknowledged alert contrast meets WCAG AA (opacity 0.6 + grayscale); responsive tablet breakpoint at 768px.
@@ -588,7 +588,7 @@ bsccl-netwatch/
 │       └── static/
 │           ├── css/neon-theme.css  # Full neon design system
 │           └── js/                # WebSocket, charts, topology, sounds, shortcuts
-├── tests/                         # 1086 tests (unit + integration + e2e + Playwright)
+├── tests/                         # 1102 tests (unit + integration + e2e + Playwright)
 ├── Dockerfile                     # Multi-stage, non-root, pinned, healthcheck
 ├── docker-compose.yml             # Production (read-only fs, limits, no-new-privileges)
 └── .github/workflows/ci.yml       # CI: ruff + black + mypy + pytest + coverage + pip-audit
