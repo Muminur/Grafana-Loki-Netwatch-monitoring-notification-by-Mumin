@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import secrets
 import time
@@ -35,6 +36,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -869,6 +871,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         settings.bundle_group_window_seconds,
     )
 
+    # ── Restore persisted BGP flap state from DB ──────────────────────────
+    try:
+        from src.database.crud import get_app_setting  # noqa: PLC0415
+
+        async with AsyncSession(engine) as session:
+            bgp_state_json = await get_app_setting(session, "bgp_flap_state")
+        if bgp_state_json is not None:
+            _dedup.import_bgp_states(json.loads(bgp_state_json))
+            _log.info("Restored persisted BGP flap state from DB")
+    except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+        _log.warning("Could not restore BGP flap state: %s", exc)
+    except SQLAlchemyError as exc:
+        _log.warning("Could not read BGP flap state from DB: %s", exc)
+
     # ── Restore in-flight escalation state from DB ─────────────────────────
     # Reconstruct _escalation from AlertLog rows so in-flight timers are
     # preserved across restarts.  The original tracked_at is approximated
@@ -1021,6 +1037,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         await retention_task
     with contextlib.suppress(asyncio.CancelledError):
         await self_monitor_task
+
+    # ── Persist BGP flap state to DB ─────────────────────────────────────
+    if _dedup is not None:
+        try:
+            from src.database.crud import set_app_setting  # noqa: PLC0415
+
+            bgp_data = json.dumps(_dedup.export_bgp_states())
+            async with AsyncSession(engine) as session:
+                await set_app_setting(session, "bgp_flap_state", bgp_data)
+                await session.commit()
+            _log.info("Persisted BGP flap state to DB")
+        except (TypeError, ValueError) as exc:
+            _log.warning("Could not serialize BGP flap state: %s", exc)
+        except SQLAlchemyError as exc:
+            _log.warning("Could not persist BGP flap state to DB: %s", exc)
 
     _log.info("Disposing DB engine…")
     await engine.dispose()
