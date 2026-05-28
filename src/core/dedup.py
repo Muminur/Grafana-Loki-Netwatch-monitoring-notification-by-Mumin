@@ -238,12 +238,32 @@ class DedupEngine:
             Dictionary in the format produced by ``export_bgp_states()``:
             ``{bgp_key: [[state, iso_datetime], ...]}``.  ISO datetime strings
             are parsed back into ``datetime`` objects.
+
+            Malformed entries (wrong type, wrong length, unparseable timestamps)
+            are skipped with a warning so that corrupt persisted data does not
+            crash the startup sequence.
         """
         self._bgp_states.clear()
         for key, history in data.items():
-            self._bgp_states[key] = [
-                (entry[0], datetime.fromisoformat(entry[1])) for entry in history
-            ]
+            restored: list[tuple[str, datetime]] = []
+            for entry in history:
+                if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                    _log.warning(
+                        "Skipping malformed BGP state entry for %s: %r", key, entry
+                    )
+                    continue
+                try:
+                    restored.append((entry[0], datetime.fromisoformat(entry[1])))
+                except (ValueError, TypeError) as exc:
+                    _log.warning(
+                        "Skipping BGP state entry with bad timestamp for %s: %r (%s)",
+                        key,
+                        entry,
+                        exc,
+                    )
+                    continue
+            if restored:
+                self._bgp_states[key] = restored
 
     def _dedup_key(self, enriched: EnrichedLog) -> str:
         """Generate a dedup key: ``device:mnemonic:interface_or_neighbor``."""
