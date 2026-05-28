@@ -85,13 +85,16 @@ Syslog (UDP 514) → Grafana Loki → WebSocket Tail → NetWatch Pipeline
   <img src="docs/assets/topology.svg" alt="Network Topology" width="600"/>
 </p>
 
-The correlation engine uses the **network dependency tree** to automatically detect root causes. When `Bundle-Ether500` (the 9-link backhaul between Singapore and Kuakata) degrades, NetWatch:
+The correlation engine uses the **network dependency tree** (11 backbone devices with recursive BFS traversal) to automatically detect root causes. When `Bundle-Ether500` (the 9-link backhaul between Singapore and Kuakata) degrades, NetWatch:
 
-1. Identifies the member link failure as **root cause**
-2. Marks all subsequent BGP peer-down alerts as **symptoms**
-3. Groups everything into a **single incident** (e.g. `INC-20260523-001`)
-4. Suppresses 200+ redundant notifications
-5. Lists all **affected clients** from the topology tree
+1. Tags the first member link failure as **root cause** (`is_root_cause=True`) and creates an incident
+2. Recursively identifies **all downstream devices** (multi-hop traversal with cycle detection)
+3. Marks all subsequent BGP peer-down alerts as **symptoms** of that incident
+4. Groups everything into a **single incident** (e.g. `INC-20260523-001`) — persisted to DB across restarts
+5. Suppresses 200+ redundant notifications
+6. Lists all **affected clients** from the topology tree
+7. Supports **multiple concurrent incidents** per device (e.g., backhaul failure + mass BGP event)
+8. **Auto-resolves** when recovery events arrive, sending green RESOLVED notifications
 
 ---
 
@@ -103,9 +106,9 @@ The correlation engine uses the **network dependency tree** to automatically det
 | Interface mappings | **845** with descriptions |
 | BGP peers tracked | **294** (210 MLPE IX + 84 PNI/transit) |
 | AS number database | **121** entries with names and types |
-| Classification rules | **26** (14 CRITICAL, 3 WARNING, 6 INFO, 3 LOGIN) |
+| Classification rules | **26** (15 CRITICAL, 2 WARNING, 6 INFO, 3 LOGIN) |
 | Syslog formats parsed | **4** (IOS-XR +06, BDT, ADMIN, bare) |
-| Dedup windows | **5 min** standard, **2 min** BGP flap, **30 sec** bundle |
+| Dedup windows | **5 min** standard, **2 min** BGP flap, **60 sec** bundle |
 | Test suite | **995 tests**, 96% coverage |
 
 ---
@@ -189,7 +192,7 @@ GRAFANA_DASHBOARD_UID=8sWAY1LMz
 # Dedup windows (seconds)
 DEDUP_WINDOW_SECONDS=300
 BGP_FLAP_WINDOW_SECONDS=120
-BUNDLE_GROUP_WINDOW_SECONDS=30
+BUNDLE_GROUP_WINDOW_SECONDS=60
 
 # ASN organization lookup (BigDataCloud — cached in SQLite)
 ASN_API_KEY=...
@@ -229,8 +232,8 @@ Futuristic "Mission Control" design with:
 ### 6 Severity Tabs
 | Tab | Color | Content |
 |-----|-------|---------|
-| CRITICAL | `#ff0040` (red glow) | BGP down/up, faults, SFP alarms, interface down/up, bundle active/expired |
-| WARNING | `#ffdd00` (yellow) | BGP max-prefix reached, BER clear, SFP clear |
+| CRITICAL | `#ff0040` (red glow) | BGP down/up/max-prefix, faults, SFP alarms, interface down/up, bundle active/expired |
+| WARNING | `#ffdd00` (yellow) | BER clear, SFP alarm clear |
 | INFO | `#00f0ff` (cyan) | Known noise, port creation failures, EEM scripts |
 | NOISE | `#555570` (dim) | Repeated known issues, hidden by default |
 | LOGIN | `#00ff88` (green) | SSH login/logout with session tracking |
@@ -307,7 +310,7 @@ Three shifts aligned to BSCCL NOC operations (BDT timezone):
 ## Classification Rules
 
 <details>
-<summary><strong>14 CRITICAL rules</strong> (trigger Discord + Telegram notifications)</summary>
+<summary><strong>15 CRITICAL rules</strong> (trigger Discord + Telegram notifications)</summary>
 
 | Rule | Pattern | Event |
 |------|---------|-------|
@@ -325,12 +328,13 @@ Three shifts aligned to BSCCL NOC operations (BDT timezone):
 | `INTF_UP` | `UPDOWN.*Up` | Interface came up (recovery) |
 | `LINEPROTO_UP` | `LINEPROTO.*Up` | Line protocol came up (recovery) |
 | `LACP_ACTIVE` | `BM-6-ACTIVE.*Active` | Bundle member became active (recovery) |
+| `BGP_MAXPFX` | `BGP-5-MAXPFX` | BGP max-prefix limit reached (path protection) |
 </details>
 
 <details>
-<summary><strong>3 WARNING rules</strong></summary>
+<summary><strong>2 WARNING rules</strong></summary>
 
-`BGP_MAXPFX` (max prefix threshold), `BER_CLEAR`, `SFP_ALARM_CLEAR`
+`BER_CLEAR`, `SFP_ALARM_CLEAR`
 </details>
 
 <details>
@@ -378,11 +382,15 @@ Alert: BGP DOWN AS32934 Facebook
 | **Telegram** | Bot API `sendMessage` | MarkdownV2 with bold device/mnemonic | Same trigger as Discord (parallel delivery) |
 | **Discord Escalation** | Webhook POST | Pure red embed (0xFF0000), distinct from regular alerts | CRITICAL unacknowledged > 15 minutes |
 | **Telegram Escalation** | Bot API `sendMessage` | Bold "ESCALATION" prefix with elapsed minutes | Same trigger as Discord escalation |
+| **Discord RESOLVED** | Webhook POST | Green embed (0x00FF88) with incident ID and duration | Incident root cause clears (recovery event) |
+| **Telegram RESOLVED** | Bot API `sendMessage` | "RESOLVED" header with incident details | Same trigger as Discord resolution |
 
 ### Delivery Reliability
 
 Both Discord and Telegram senders implement production-grade delivery:
 
+- **Per-channel delivery tracking** — Discord and Telegram delivery status tracked independently with error reasons persisted to DB; `get_failed_notifications()` query for monitoring
+- **Incident context** — notifications include incident ID and related event count when the alert is part of a correlated incident
 - **Exponential backoff** — up to 3 retries with doubling wait (1s → 2s → 4s)
 - **HTTP 429 Rate Limit** — honours `Retry-After` header (integer seconds or RFC 2822 date); waits the exact duration before retry
 - **Webhook/token validation** — format-checks the URL/token before attempting delivery; logs an error and returns early for invalid credentials
@@ -410,6 +418,12 @@ Alert arrives → Classify → Enrich → Correlate → Dedup check
                               Escalation checker fires
                               └── Send escalation to Discord + Telegram
                                   └── Mark as escalated (no re-send)
+                                      │
+                                      ▼ (when recovery event arrives)
+                              Incident resolution fires
+                              ├── Resolve incident in correlator + DB
+                              ├── Clear escalation tracking
+                              └── Send RESOLVED to Discord + Telegram (green)
 ```
 
 ### Dedup Strategies
@@ -418,7 +432,7 @@ Alert arrives → Classify → Enrich → Correlate → Dedup check
 |----------|--------|-----|---------|
 | **Standard dedup** | 5 minutes | `device:mnemonic:interface_or_neighbor` | Same event within window → suppressed |
 | **BGP flap detection** | 2 minutes | `device:neighbor` | Down → Up → Down → single "FLAPPING" alert |
-| **Bundle member grouping** | 30 seconds | `device:bundle_parent` | Multiple member events → grouped by parent bundle |
+| **Bundle member grouping** | 60 seconds | `device:bundle_parent` | Multiple member events → grouped by parent bundle |
 | **Incident auto-resolution** | Real-time | `device:interface` or `device:AS` | Recovery event (Up/Active/Clear) removes matching DOWN incident |
 | **BGP-UP silent fault clear** | Real-time | `device:bundle_members` | BGP UP on backbone P2P bundle auto-resolves RX_FAULT/SIGNAL/RFI (IOS-XR never sends explicit clears for optical faults) |
 
@@ -458,7 +472,7 @@ Production-hardening applied across the stack:
 - **Startup resilience** — server starts successfully even when Loki is unreachable, with automatic reconnection via exponential backoff (1s → 60s). The dashboard serves cached data until Loki comes up.
 - **Self-monitoring** — `/health` endpoint reports `loki_connected` and `last_alert_received_at`; a background task sends Discord/Telegram alerts if no syslog data arrives for 10+ minutes (with startup grace period).
 - **Database retention** — automated cleanup task prunes alerts older than `RETENTION_DAYS` (default 90) and runs SQLite VACUUM at 03:00 UTC daily.
-- **State survives restart** — maintenance windows, the Hardware-Defects-as-Noise toggle, notification preferences (including severity threshold), and in-flight CRITICAL escalation tracking are persisted to SQLite and restored on startup; the incident-ID counter is seeded from the DB so IDs never collide across a restart. The incident panel synthesizes active incidents from the DB after restart using temporally-correct resolution — a DOWN→UP→DOWN sequence is correctly preserved as active.
+- **State survives restart** — maintenance windows, the Hardware-Defects-as-Noise toggle, notification preferences (including severity threshold), in-flight CRITICAL escalation tracking, **BGP flap detection state**, and **incident records** are all persisted to SQLite and restored on startup; the incident-ID counter is seeded from the DB so IDs never collide across a restart. The incident panel synthesizes active incidents from the DB after restart using temporally-correct resolution — a DOWN→UP→DOWN sequence is correctly preserved as active.
 - **Observability** — optional structured JSON logs (`LOG_FORMAT=json`) with a per-request `X-Request-ID`, Prometheus `/metrics` endpoint (alerts processed, dedup suppressed, notifications sent, live WebSocket connections), and `/health` endpoint with background task liveness.
 - **Dedup correctness** — the window uses `max(event-time, monotonic)` elapsed so replayed/historical logs and backward clock steps are handled without mis-suppressing real alerts. Eviction logging tracks purged entries for operational visibility.
 - **Accessibility** — ARIA labels on form hints, chart containers, and emoji icons; keyboard focus indicators (`:focus-visible`) on all interactive elements; acknowledged alert contrast meets WCAG AA (opacity 0.6 + grayscale); responsive tablet breakpoint at 768px.
