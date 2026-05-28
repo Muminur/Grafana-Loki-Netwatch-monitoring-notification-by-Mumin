@@ -384,10 +384,20 @@ async def _on_syslog_line(raw_line: str) -> None:
     if will_notify:
         settings = get_settings()
 
+        # Build incident context for notification enrichment
+        _inc_ctx: dict[str, object] | None = None
+        if correlated is not None and correlated.incident_id:
+            _inc_ctx = {
+                "incident_id": correlated.incident_id,
+                "related_count": len(correlated.related_events),
+            }
+
         discord_ok = False
         discord_err = ""
         if settings.discord_enabled:
-            discord_ok = await send_discord_alert(enriched, settings)
+            discord_ok = await send_discord_alert(
+                enriched, settings, incident_context=_inc_ctx
+            )
             if discord_ok:
                 record_notification("discord")
             else:
@@ -396,7 +406,9 @@ async def _on_syslog_line(raw_line: str) -> None:
         telegram_ok = False
         telegram_err = ""
         if settings.telegram_enabled:
-            telegram_ok = await send_telegram_alert(enriched, settings)
+            telegram_ok = await send_telegram_alert(
+                enriched, settings, incident_context=_inc_ctx
+            )
             if telegram_ok:
                 record_notification("telegram")
             else:

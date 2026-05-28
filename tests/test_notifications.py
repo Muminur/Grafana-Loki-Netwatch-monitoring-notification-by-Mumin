@@ -625,3 +625,196 @@ class TestTelegramSender:
             result = await send_telegram_alert(enriched, settings)
 
         assert result is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Incident context tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestDiscordEmbedIncidentContext:
+    """Tests for format_discord_embed() with incident_context parameter."""
+
+    def test_discord_embed_with_incident_context_adds_fields(self) -> None:
+        """incident_context adds Incident and Related fields."""
+        from src.notifications.formatter import format_discord_embed
+
+        enriched = _make_enriched()
+        settings = _make_settings()
+        ctx = {
+            "incident_id": "INC-20260528-001",
+            "related_count": 5,
+        }
+        embed = format_discord_embed(enriched, settings, incident_context=ctx)
+
+        first = embed["embeds"][0]
+        field_names = [f["name"] for f in first["fields"]]
+        assert "Incident" in field_names
+        assert "Related Events" in field_names
+
+        # Verify the values
+        incident_field = next(f for f in first["fields"] if f["name"] == "Incident")
+        assert "INC-20260528-001" in incident_field["value"]
+
+        related_field = next(
+            f for f in first["fields"] if f["name"] == "Related Events"
+        )
+        assert "5" in related_field["value"]
+
+    def test_discord_embed_without_incident_context_unchanged(self) -> None:
+        """When incident_context is None (default), embed has no Incident field."""
+        from src.notifications.formatter import format_discord_embed
+
+        enriched = _make_enriched()
+        settings = _make_settings()
+        embed = format_discord_embed(enriched, settings)
+
+        first = embed["embeds"][0]
+        field_names = [f["name"] for f in first["fields"]]
+        assert "Incident" not in field_names
+        assert "Related Events" not in field_names
+
+    def test_discord_embed_incident_context_none_explicit(self) -> None:
+        """Explicitly passing incident_context=None behaves like omitting it."""
+        from src.notifications.formatter import format_discord_embed
+
+        enriched = _make_enriched()
+        settings = _make_settings()
+        embed = format_discord_embed(enriched, settings, incident_context=None)
+
+        first = embed["embeds"][0]
+        field_names = [f["name"] for f in first["fields"]]
+        assert "Incident" not in field_names
+
+
+class TestTelegramIncidentContext:
+    """Tests for format_telegram_message() with incident_context parameter."""
+
+    def test_telegram_with_incident_context_adds_text(self) -> None:
+        """When incident_context is provided, message includes incident info."""
+        from src.notifications.formatter import format_telegram_message
+
+        enriched = _make_enriched()
+        ctx = {
+            "incident_id": "INC-20260528-002",
+            "related_count": 3,
+        }
+        msg = format_telegram_message(enriched, incident_context=ctx)
+
+        assert "INC-20260528-002" in msg
+        assert "3" in msg
+
+    def test_telegram_without_incident_context_unchanged(self) -> None:
+        """When incident_context is None (default), message has no incident info."""
+        from src.notifications.formatter import format_telegram_message
+
+        enriched = _make_enriched()
+        msg = format_telegram_message(enriched)
+
+        assert "INC-" not in msg
+        assert "Incident" not in msg
+
+    def test_telegram_incident_context_none_explicit(self) -> None:
+        """Explicitly passing incident_context=None behaves like omitting it."""
+        from src.notifications.formatter import format_telegram_message
+
+        enriched = _make_enriched()
+        msg = format_telegram_message(enriched, incident_context=None)
+
+        assert "INC-" not in msg
+
+
+class TestDiscordSenderIncidentContext:
+    """Tests for send_discord_alert() with incident_context pass-through."""
+
+    @pytest.mark.asyncio
+    async def test_discord_sender_passes_incident_context(self) -> None:
+        """send_discord_alert passes incident_context to format_discord_embed."""
+        from src.notifications.discord import send_discord_alert
+
+        enriched = _make_enriched()
+        settings = _make_settings(discord_enabled=True)
+        ctx = {"incident_id": "INC-20260528-010", "related_count": 7}
+
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_client = _make_mock_client(mock_response)
+
+        with (
+            patch(_DISCORD_PATCH, return_value=mock_client),
+            patch("src.notifications.discord.format_discord_embed") as mock_fmt,
+        ):
+            mock_fmt.return_value = {"embeds": []}
+            await send_discord_alert(enriched, settings, incident_context=ctx)
+
+        mock_fmt.assert_called_once_with(enriched, settings, incident_context=ctx)
+
+    @pytest.mark.asyncio
+    async def test_discord_sender_default_no_incident_context(self) -> None:
+        """send_discord_alert without incident_context passes None to formatter."""
+        from src.notifications.discord import send_discord_alert
+
+        enriched = _make_enriched()
+        settings = _make_settings(discord_enabled=True)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_client = _make_mock_client(mock_response)
+
+        with (
+            patch(_DISCORD_PATCH, return_value=mock_client),
+            patch("src.notifications.discord.format_discord_embed") as mock_fmt,
+        ):
+            mock_fmt.return_value = {"embeds": []}
+            await send_discord_alert(enriched, settings)
+
+        mock_fmt.assert_called_once_with(enriched, settings, incident_context=None)
+
+
+class TestTelegramSenderIncidentContext:
+    """Tests for send_telegram_alert() with incident_context pass-through."""
+
+    @pytest.mark.asyncio
+    async def test_telegram_sender_passes_incident_context(self) -> None:
+        """send_telegram_alert passes incident_context to format_telegram_message."""
+        from src.notifications.telegram import send_telegram_alert
+
+        enriched = _make_enriched()
+        settings = _make_settings(telegram_enabled=True)
+        ctx = {"incident_id": "INC-20260528-020", "related_count": 2}
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": True, "result": {}}
+        mock_client = _make_mock_client(mock_response)
+
+        with (
+            patch(_TELEGRAM_PATCH, return_value=mock_client),
+            patch("src.notifications.telegram.format_telegram_message") as mock_fmt,
+        ):
+            mock_fmt.return_value = "test message"
+            await send_telegram_alert(enriched, settings, incident_context=ctx)
+
+        mock_fmt.assert_called_once_with(enriched, incident_context=ctx)
+
+    @pytest.mark.asyncio
+    async def test_telegram_sender_default_no_incident_context(self) -> None:
+        """send_telegram_alert without incident_context passes None to formatter."""
+        from src.notifications.telegram import send_telegram_alert
+
+        enriched = _make_enriched()
+        settings = _make_settings(telegram_enabled=True)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": True, "result": {}}
+        mock_client = _make_mock_client(mock_response)
+
+        with (
+            patch(_TELEGRAM_PATCH, return_value=mock_client),
+            patch("src.notifications.telegram.format_telegram_message") as mock_fmt,
+        ):
+            mock_fmt.return_value = "test message"
+            await send_telegram_alert(enriched, settings)
+
+        mock_fmt.assert_called_once_with(enriched, incident_context=None)
