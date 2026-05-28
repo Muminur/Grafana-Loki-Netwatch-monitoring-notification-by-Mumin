@@ -45,16 +45,20 @@ def anyio_backend() -> str:
 def clean_stores() -> Iterator[None]:
     """Snapshot and restore all module-globals mutated by these tests."""
     orig_maint = list(routes_mod._maintenance_store)
+    orig_incidents = list(routes_mod._incidents_store)
     orig_counter = routes_mod._maintenance_id_counter
     orig_noise = routes_mod._hardware_defects_as_noise
     orig_engine = routes_mod._db_engine
 
     routes_mod._maintenance_store.clear()
+    routes_mod._incidents_store.clear()
     try:
         yield
     finally:
         routes_mod._maintenance_store.clear()
         routes_mod._maintenance_store.extend(orig_maint)
+        routes_mod._incidents_store.clear()
+        routes_mod._incidents_store.extend(orig_incidents)
         routes_mod._maintenance_id_counter = orig_counter
         routes_mod._hardware_defects_as_noise = orig_noise
         routes_mod._db_engine = orig_engine
@@ -704,3 +708,115 @@ async def test_delete_db_failure_warns_and_still_returns_deleted(
     assert any(
         "may reappear after a restart" in rec.getMessage() for rec in caplog.records
     )
+
+
+# ---------------------------------------------------------------------------
+# ACK persistence across restart
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ack_survives_restart(
+    clean_stores: None, async_db: Any
+) -> None:
+    """Incident ACK marks must survive a simulated restart.
+
+    Steps:
+    1. Insert a CRITICAL alert into the DB
+    2. Populate the in-memory incident store (simulating live operation)
+    3. ACK the incident via the API
+    4. Clear _incidents_store (simulating a restart)
+    5. GET /api/incidents — should re-synthesize with ACK data from DB
+    """
+    from src.database.models import AlertLog, IncidentAck
+
+    routes_mod.set_db_engine(async_db)
+
+    now = datetime.now(UTC)
+    async with AsyncSession(async_db) as session:
+        alert = AlertLog(
+            timestamp=now,
+            source_ip="192.168.200.1",
+            device_name="EQ-RTR-01",
+            facility="local7",
+            severity_level=3,
+            mnemonic="ADJCHANGE",
+            classification="CRITICAL",
+            message="neighbor 10.0.0.1 Down - BGP Notification sent",
+            raw="raw log line",
+            interface_name="",
+            bgp_neighbor="10.0.0.1",
+            as_number=399077,
+            as_name="TCLOUD",
+        )
+        session.add(alert)
+        await session.flush()
+        alert_id = alert.id
+        await session.commit()
+
+    incident_id = f"ALERT-{alert_id}"
+    routes_mod._incidents_store.append(
+        {
+            "id": incident_id,
+            "title": "BGP DOWN",
+            "severity": "CRITICAL",
+            "device": "EQ-RTR-01",
+            "mnemonic": "ADJCHANGE",
+            "message": "neighbor 10.0.0.1 Down",
+            "status": "active",
+            "alert_count": 1,
+            "started_at": now.isoformat(),
+            "last_alert": now.isoformat(),
+            "interface": "",
+            "client": "",
+            "as_name": "TCLOUD",
+            "neighbor": "10.0.0.1",
+            "as_number": 399077,
+        }
+    )
+
+    from src.main import app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            f"/api/incidents/{incident_id}/acknowledge",
+            json={"operator_name": "mumin", "comment": "investigating"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "acknowledged"
+
+    async with AsyncSession(async_db) as session:
+        from sqlalchemy import select
+
+        ack_rows = (
+            await session.execute(
+                select(IncidentAck).where(
+                    IncidentAck.incident_id == incident_id
+                )
+            )
+        ).scalars().all()
+        assert len(ack_rows) == 1
+        assert ack_rows[0].operator_name == "mumin"
+
+        alert_row = await session.get(AlertLog, alert_id)
+        assert alert_row is not None
+        assert alert_row.acknowledged_at is not None
+
+    # Simulate restart: clear in-memory state
+    routes_mod._incidents_store.clear()
+
+    # GET /api/incidents should re-synthesize from DB with ACK restored
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/incidents")
+    assert resp.status_code == 200
+    incidents = resp.json()
+
+    our_inc = [i for i in incidents if i.get("id") == incident_id]
+    assert len(our_inc) == 1, f"Expected incident {incident_id} in {incidents}"
+    assert our_inc[0].get("acknowledged") is True
+    assert our_inc[0].get("acknowledged_by") == "mumin"
+    assert our_inc[0].get("ack_comment") == "investigating"

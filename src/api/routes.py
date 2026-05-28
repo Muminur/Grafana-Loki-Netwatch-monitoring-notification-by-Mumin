@@ -1662,6 +1662,48 @@ async def get_incidents() -> list[dict[str, Any]]:
             }
             seen[seen_key] = inc
 
+    # Restore ACK state from the incident_ack table so acknowledgments
+    # survive server restarts.
+    if seen and _db_engine is not None:
+        try:
+            from sqlalchemy import select as _ack_select  # noqa: PLC0415
+            from sqlalchemy.ext.asyncio import (  # noqa: PLC0415
+                AsyncSession as _AckRestoreSession,
+            )
+
+            from src.database.models import (  # noqa: PLC0415
+                IncidentAck as _RestoreAck,
+            )
+
+            inc_ids = [inc["id"] for inc in seen.values()]
+            async with _AckRestoreSession(_db_engine) as ack_session:
+                ack_rows = (
+                    (
+                        await ack_session.execute(
+                            _ack_select(_RestoreAck)
+                            .where(_RestoreAck.incident_id.in_(inc_ids))
+                            .order_by(_RestoreAck.created_at.desc())
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+
+            acked_map: dict[str, Any] = {}
+            for ack_row in ack_rows:
+                if ack_row.incident_id not in acked_map:
+                    acked_map[ack_row.incident_id] = ack_row
+
+            for inc in seen.values():
+                ack_data = acked_map.get(inc["id"])
+                if ack_data is not None:
+                    inc["acknowledged"] = True
+                    inc["acknowledged_at"] = ack_data.created_at.isoformat()
+                    inc["acknowledged_by"] = ack_data.operator_name
+                    inc["ack_comment"] = ack_data.comment
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to restore ACK state from DB", exc_info=True)
+
     # Cache synthesized incidents into the in-memory store so they are
     # available for acknowledge/resolve operations without another DB hit.
     if seen:
@@ -1746,6 +1788,30 @@ async def acknowledge_incident(
                             created_at=now,
                         )
                         session.add(ack)
+
+                        from sqlalchemy import update  # noqa: PLC0415
+
+                        from src.database.models import (  # noqa: PLC0415
+                            AlertLog as _AckAlertLog,
+                        )
+
+                        alert_id_str = incident_id.replace("ALERT-", "")
+                        if alert_id_str.isdigit():
+                            await session.execute(
+                                update(_AckAlertLog)
+                                .where(_AckAlertLog.id == int(alert_id_str))
+                                .values(acknowledged_at=now)
+                            )
+                        elif incident_id.startswith("INC-"):
+                            await session.execute(
+                                update(_AckAlertLog)
+                                .where(
+                                    _AckAlertLog.incident_id == incident_id,
+                                    _AckAlertLog.acknowledged_at.is_(None),
+                                )
+                                .values(acknowledged_at=now)
+                            )
+
                         await session.commit()
                 except Exception:  # noqa: BLE001
                     import logging  # noqa: PLC0415
