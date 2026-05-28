@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-995_passing-00ff88?style=flat-square" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-1086_passing-00ff88?style=flat-square" alt="Tests"/>
   <img src="https://img.shields.io/badge/coverage-96%25-00ff88?style=flat-square" alt="Coverage"/>
   <img src="https://img.shields.io/badge/ruff-clean-00f0ff?style=flat-square" alt="Ruff"/>
   <img src="https://img.shields.io/badge/mypy-strict-8b5cf6?style=flat-square" alt="Mypy"/>
@@ -109,7 +109,7 @@ The correlation engine uses the **network dependency tree** (11 backbone devices
 | Classification rules | **26** (15 CRITICAL, 2 WARNING, 6 INFO, 3 LOGIN) |
 | Syslog formats parsed | **4** (IOS-XR +06, BDT, ADMIN, bare) |
 | Dedup windows | **5 min** standard, **2 min** BGP flap, **60 sec** bundle |
-| Test suite | **995 tests**, 96% coverage |
+| Test suite | **1086 tests**, 96% coverage |
 
 ---
 
@@ -272,7 +272,7 @@ Three shifts aligned to BSCCL NOC operations (BDT timezone):
 - **Deduplication enforced** — DB storage, WebSocket broadcast, and in-memory store all respect the 5-minute dedup window
 - **Client-side dedup safety net** — 5-minute sliding-window check in the browser
 - **Web Audio API** sound alerts (critical alarm, warning chime, recovery arpeggio)
-- **Browser notifications** for CRITICAL events when the tab is in background (Web Notification API with permission management and dedup via `tag`)
+- **Browser notifications** for CRITICAL events when the tab is in background (Web Notification API with permission management, dedup via `tag`, and localStorage persistence so the toggle survives page reloads)
 - **Relative timestamps** — every alert card shows "5s ago", "2m ago" alongside the absolute timestamp, updated every 10 seconds without re-rendering the DOM
 - **Keyboard shortcuts** — `1-5` switch tabs, `A` acknowledge alert, `Shift+A` bulk-acknowledge incidents, `N` mute, `/` search — with **toast feedback** on each shortcut activation
 - **Search filter badge** — persistent visual indicator showing "Filtered: BGP ×" when search is active, with one-click clear
@@ -292,7 +292,7 @@ Three shifts aligned to BSCCL NOC operations (BDT timezone):
   hardware faults (`RX_FAULT` / `SIGNAL` / `RFI`) on backbone P2P bundle members as NOISE
   instead of CRITICAL. Exposed via `GET`/`POST /api/settings/hardware-noise`
 
-**Sound Settings** (client-side, localStorage):
+**Sound & UI Settings** (DB-backed, synced via `/api/settings/sound`):
 - **Alert Sounds** master toggle — enable/disable all sounds
 - **Critical Alarm** — toggle the critical event alarm sound
 - **Warning Chime** — toggle the warning event chime
@@ -458,7 +458,7 @@ A background task (`_hourly_aggregator`) runs every 5 minutes and pre-aggregates
 
 Production-hardening applied across the stack:
 
-- **HTTP security headers** on every response — `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`. CORS origins configurable via `CORS_ORIGINS`; `allow_headers` restricted to `content-type` and `x-api-key`.
+- **HTTP security headers** on every response — `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(), microphone=(), geolocation=()`. CORS origins configurable via `CORS_ORIGINS`; `allow_headers` restricted to `content-type` and `x-api-key`.
 - **SSRF guard** — `MONITOR_HOST` is validated at startup (rejects URI schemes and malformed IP addresses) with descriptive error messages including valid examples.
 - **Notification delivery** — Discord webhook URLs validated for HTTPS-only and length (2048 max); Telegram bot tokens validated for format and length (100 max). Sends retry with exponential backoff, honour HTTP 429 `Retry-After`, sanitise message fields; secrets never written to logs.
 - **Syslog ingest resilience** — Loki HTTP poll uses exponential backoff with a lag warning and page-boundary cursor de-duplication (no silent data loss); UDP rate limiting (1000 pkt/s default) with token bucket and guaranteed socket cleanup via `try/finally`; per-transport error counters exposed via `health_status()`.
@@ -466,7 +466,7 @@ Production-hardening applied across the stack:
 - **Input limits** — the parser caps line length (ReDoS/DoS guard); the API validates `severity`/`period` filters (HTTP 400) and bounds the in-memory maintenance store; the WebSocket manager caps connections and drops slow clients (backpressure); dedup engine validates `window_seconds > 0`.
 - **Database** — `incident_id` and silent-fault-resolution indexes, an idempotent index migration, and connection pre-ping.
 - **AS-cache** — tight timeout, bounded retry, timezone-correct TTL, and URL/key redaction in logs.
-- **Supply chain & image** — CI runs `pip-audit`; all dependencies pinned with upper bounds; Docker image is pinned and non-root with a `.dockerignore`, resource limits, and `no-new-privileges`.
+- **Supply chain & image** — CI runs `pip-audit`; all dependencies pinned to exact versions; Docker image is pinned and non-root with a `.dockerignore`, resource limits, `no-new-privileges`, read-only root filesystem (`read_only: true` + tmpfs), and persistent DB volume at `/app/data/`.
 - **Authentication (opt-in)** — set `API_KEY` to require an `X-API-Key` header (constant-time check, `WWW-Authenticate` challenge on 401) for mutating endpoints; empty = disabled, so existing deployments are unaffected. **WebSocket endpoints** (`/ws`, `/ws/filtered`) also enforce auth via `?token=` query parameter when `API_KEY` is set.
 - **REST API rate limiting** — per-IP rate limits via `slowapi`: 30 req/min for mutating endpoints, 200 req/min for reads. `/health` and `/metrics` are exempt.
 - **Startup resilience** — server starts successfully even when Loki is unreachable, with automatic reconnection via exponential backoff (1s → 60s). The dashboard serves cached data until Loki comes up.
@@ -588,9 +588,9 @@ bsccl-netwatch/
 │       └── static/
 │           ├── css/neon-theme.css  # Full neon design system
 │           └── js/                # WebSocket, charts, topology, sounds, shortcuts
-├── tests/                         # 995 tests (unit + integration + e2e)
+├── tests/                         # 1086 tests (unit + integration + e2e + Playwright)
 ├── Dockerfile                     # Multi-stage, non-root, pinned, healthcheck
-├── docker-compose.yml             # Production deployment (limits, no-new-privileges)
+├── docker-compose.yml             # Production (read-only fs, limits, no-new-privileges)
 └── .github/workflows/ci.yml       # CI: ruff + black + mypy + pytest + coverage + pip-audit
 ```
 
@@ -602,10 +602,10 @@ GitHub Actions runs on every push and PR across a **6-cell matrix**:
 
 | | Ubuntu | macOS | Windows |
 |---|---|---|---|
-| **Python 3.11** | ruff, black, mypy, pytest, coverage | ruff, black, mypy, pytest, coverage | pytest, coverage |
-| **Python 3.12** | ruff, black, mypy, pytest, coverage | ruff, black, mypy, pytest, coverage | pytest, coverage |
+| **Python 3.11** | ruff, black, mypy, pytest, coverage, security | ruff, black, mypy, pytest, coverage, security | ruff, black, mypy, pytest, coverage, security |
+| **Python 3.12** | ruff, black, mypy, pytest, coverage, security | ruff, black, mypy, pytest, coverage, security | ruff, black, mypy, pytest, coverage, security |
 
-**Security gates**: an automated grep over Python sources (no `shell=True`, `os.system(`, `eval(`, `exec(`, or bare `except:`) plus a **`pip-audit`** dependency-vulnerability scan. All dependencies pinned with both lower and upper bounds to prevent unexpected breakage. Runs cancel obsolete in-progress jobs on the same ref (`concurrency`) and cache pip via `setup-python`.
+**Security gates**: a cross-platform Python scanner (runs on all 3 OSes) checks for banned patterns (`shell=True`, `os.system(`, `eval(`, `exec(`, bare `except:`) plus a **`pip-audit`** dependency-vulnerability scan. All dependencies pinned to exact versions for reproducible builds. Runs cancel obsolete in-progress jobs on the same ref (`concurrency`) and cache pip via `setup-python`.
 
 ---
 
