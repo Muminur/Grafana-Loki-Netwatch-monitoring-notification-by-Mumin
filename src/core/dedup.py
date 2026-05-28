@@ -6,7 +6,7 @@ Implements three distinct suppression strategies:
   2. BGP flap detection — Down→Up→Down within ``flap_window`` (default
      120 s / 2 min) → mark the second Down as "flapping".
   3. Bundle-member grouping — multiple bundle-member events for the same
-     Bundle-Ether parent within ``bundle_window`` (default 30 s) → suppress
+     Bundle-Ether parent within ``bundle_window`` (default 60 s) → suppress
      all but the first.
 
 Time-basis semantics
@@ -48,7 +48,7 @@ This ``max`` rule guarantees four safety properties simultaneously:
 BGP flap detection and bundle-member grouping use *only* event timestamps
 (no monotonic component) because:
   - They are designed to be deterministic across log replays.
-  - Their windows (120 s flap, 30 s bundle) are short enough that the
+  - Their windows (120 s flap, 60 s bundle) are short enough that the
     difference between event-time and wall-time is operationally irrelevant
     for production live streams.
   - The existing tests for these two strategies exercise them with explicit
@@ -89,7 +89,7 @@ class DedupEngine:
     All three suppression strategies are implemented here:
       - Standard window dedup (5-min)
       - BGP flap detection (2-min)
-      - Bundle-member grouping (30-s)
+      - Bundle-member grouping (60-s)
 
     Parameters
     ----------
@@ -109,7 +109,7 @@ class DedupEngine:
         self,
         window_seconds: int = 300,
         flap_window: int = 120,
-        bundle_window: int = 30,
+        bundle_window: int = 60,
     ) -> None:
         if window_seconds <= 0:
             msg = f"window_seconds must be positive, got {window_seconds}"
@@ -215,6 +215,35 @@ class DedupEngine:
         self._seen[key] = event_ts
         self._seen_mono[key] = now_mono
         return True, "new"
+
+    def export_bgp_states(self) -> dict[str, list[list[str]]]:
+        """Serialize ``_bgp_states`` to a JSON-safe dictionary.
+
+        Returns a dict mapping BGP keys to lists of ``[state, iso_datetime]``
+        pairs.  Tuple entries are converted to lists and ``datetime`` objects
+        to ISO-8601 strings so the result can be passed through ``json.dumps``
+        without a custom encoder.
+        """
+        return {
+            key: [[state, ts.isoformat()] for state, ts in history]
+            for key, history in self._bgp_states.items()
+        }
+
+    def import_bgp_states(self, data: dict[str, list[list[str]]]) -> None:
+        """Restore ``_bgp_states`` from a previously exported dictionary.
+
+        Parameters
+        ----------
+        data:
+            Dictionary in the format produced by ``export_bgp_states()``:
+            ``{bgp_key: [[state, iso_datetime], ...]}``.  ISO datetime strings
+            are parsed back into ``datetime`` objects.
+        """
+        self._bgp_states.clear()
+        for key, history in data.items():
+            self._bgp_states[key] = [
+                (entry[0], datetime.fromisoformat(entry[1])) for entry in history
+            ]
 
     def _dedup_key(self, enriched: EnrichedLog) -> str:
         """Generate a dedup key: ``device:mnemonic:interface_or_neighbor``."""
