@@ -129,228 +129,155 @@ def test_rule_ids_are_unique() -> None:
 
 
 # ---------------------------------------------------------------------------
-# CRITICAL rules (1-10) — must classify + notify=True
+# CRITICAL rules — parametrized table (rule_id, fixture, classification,
+# notify).  All CRITICAL rules must have notify=True.
 # ---------------------------------------------------------------------------
 
 
-def test_classify_bgp_down(sample_bgp_down_log: str) -> None:
-    """Rule BGP_DOWN: ADJCHANGE … Down → CRITICAL."""
-    result = classify(_parse(sample_bgp_down_log))
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_rule_id"),
+    [
+        ("sample_bgp_down_log", "BGP_DOWN"),
+        ("sample_maxpfx_log", "BGP_MAXPFX"),
+        ("sample_lacp_expired_log", "LACP_EXPIRED"),
+        ("sample_remote_fault_log", "REMOTE_FAULT"),
+        ("sample_local_fault_log", "LOCAL_FAULT"),
+        ("sample_signal_failure_log", "SIGNAL_FAILURE"),
+        ("sample_sfp_alarm_set_log", "SFP_ALARM_SET"),
+        ("sample_duplicate_ipv6_log", "DUPLICATE_IPV6"),
+        ("sample_intf_down_log", "INTF_DOWN"),
+        ("sample_lineproto_down_log", "LINEPROTO_DOWN"),
+        ("sample_bgp_up_log", "BGP_UP"),
+        ("sample_interface_up_log", "INTF_UP"),
+        ("sample_lineproto_up_log", "LINEPROTO_UP"),
+        ("sample_lacp_active_log", "LACP_ACTIVE"),
+    ],
+    ids=[
+        "bgp-down",
+        "bgp-maxpfx",
+        "lacp-expired",
+        "remote-fault",
+        "local-fault",
+        "signal-failure",
+        "sfp-alarm-set",
+        "duplicate-ipv6",
+        "intf-down",
+        "lineproto-down",
+        "bgp-up",
+        "intf-up",
+        "lineproto-up",
+        "lacp-active",
+    ],
+)
+def test_classify_critical_rules(
+    fixture_name: str,
+    expected_rule_id: str,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Every CRITICAL rule fires on its corresponding log sample with notify=True."""
+    raw: str = request.getfixturevalue(fixture_name)
+    result = classify(_parse(raw))
     assert isinstance(result, ClassificationResult)
-    assert result.rule_id == "BGP_DOWN"
-    assert result.classification == "CRITICAL"
-    assert result.notify is True
-
-
-def test_classify_bgp_maxpfx(sample_maxpfx_log: str) -> None:
-    """Rule BGP_MAXPFX: %ROUTING-BGP-5-MAXPFX → CRITICAL."""
-    result = classify(_parse(sample_maxpfx_log))
-    assert result.rule_id == "BGP_MAXPFX"
-    assert result.classification == "CRITICAL"
-    assert result.notify is True
-
-
-def test_classify_lacp_expired(sample_lacp_expired_log: str) -> None:
-    """Rule LACP_EXPIRED: BM-6-ACTIVE … no longer Active → CRITICAL."""
-    result = classify(_parse(sample_lacp_expired_log))
-    assert result.rule_id == "LACP_EXPIRED"
-    assert result.classification == "CRITICAL"
-    assert result.notify is True
-
-
-def test_classify_remote_fault(sample_remote_fault_log: str) -> None:
-    """Rule REMOTE_FAULT: DPA-2-RX_FAULT … Remote Fault → CRITICAL."""
-    result = classify(_parse(sample_remote_fault_log))
-    assert result.rule_id == "REMOTE_FAULT"
-    assert result.classification == "CRITICAL"
-    assert result.notify is True
-
-
-def test_classify_local_fault(sample_local_fault_log: str) -> None:
-    """Rule LOCAL_FAULT: DPA-2-RX_FAULT … Local Fault → CRITICAL."""
-    result = classify(_parse(sample_local_fault_log))
-    assert result.rule_id == "LOCAL_FAULT"
-    assert result.classification == "CRITICAL"
-    assert result.notify is True
-
-
-def test_classify_signal_failure(sample_signal_failure_log: str) -> None:
-    """Rule SIGNAL_FAILURE: VIC-4-SIGNAL … Signal failure → CRITICAL."""
-    result = classify(_parse(sample_signal_failure_log))
-    assert result.rule_id == "SIGNAL_FAILURE"
-    assert result.classification == "CRITICAL"
-    assert result.notify is True
-
-
-def test_classify_sfp_alarm_set(sample_sfp_alarm_set_log: str) -> None:
-    """Rule SFP_ALARM_SET: LOW_RX_POWER_ALARM … Set → CRITICAL."""
-    result = classify(_parse(sample_sfp_alarm_set_log))
-    assert result.rule_id == "SFP_ALARM_SET"
-    assert result.classification == "CRITICAL"
-    assert result.notify is True
-
-
-def test_classify_duplicate_ipv6(sample_duplicate_ipv6_log: str) -> None:
-    """Rule DUPLICATE_IPV6: IPV6_ND-3-ADDRESS_DUPLICATE → CRITICAL."""
-    result = classify(_parse(sample_duplicate_ipv6_log))
-    assert result.rule_id == "DUPLICATE_IPV6"
-    assert result.classification == "CRITICAL"
-    assert result.notify is True
-
-
-def test_classify_intf_down(sample_intf_down_log: str) -> None:
-    """Rule INTF_DOWN: LINK-3-UPDOWN … changed state to Down → CRITICAL."""
-    result = classify(_parse(sample_intf_down_log))
-    assert result.rule_id == "INTF_DOWN"
-    assert result.classification == "CRITICAL"
-    assert result.notify is True
-
-
-def test_classify_lineproto_down(sample_lineproto_down_log: str) -> None:
-    """Rule LINEPROTO_DOWN: LINEPROTO-5-UPDOWN … changed state to Down → CRITICAL."""
-    result = classify(_parse(sample_lineproto_down_log))
-    assert result.rule_id == "LINEPROTO_DOWN"
+    assert result.rule_id == expected_rule_id
     assert result.classification == "CRITICAL"
     assert result.notify is True
 
 
 # ---------------------------------------------------------------------------
-# WARNING rules (11-16) — notify=False
+# WARNING rules — parametrized table
 # ---------------------------------------------------------------------------
 
 
-def test_classify_ber_clear(sample_ber_clear_log: str) -> None:
-    """Rule BER_CLEAR: REPORT_BER_CLEAR → WARNING."""
-    result = classify(_parse(sample_ber_clear_log))
-    assert result.rule_id == "BER_CLEAR"
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_rule_id"),
+    [
+        ("sample_ber_clear_log", "BER_CLEAR"),
+        ("sample_sfp_alarm_clear_log", "SFP_ALARM_CLEAR"),
+    ],
+    ids=["ber-clear", "sfp-alarm-clear"],
+)
+def test_classify_warning_rules(
+    fixture_name: str,
+    expected_rule_id: str,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Every WARNING rule fires on its corresponding log sample with notify=False."""
+    raw: str = request.getfixturevalue(fixture_name)
+    result = classify(_parse(raw))
+    assert isinstance(result, ClassificationResult)
+    assert result.rule_id == expected_rule_id
     assert result.classification == "WARNING"
     assert result.notify is False
 
 
-def test_classify_bgp_up(sample_bgp_up_log: str) -> None:
-    """Rule BGP_UP: ADJCHANGE … Up → CRITICAL."""
-    result = classify(_parse(sample_bgp_up_log))
-    assert result.rule_id == "BGP_UP"
-    assert result.classification == "CRITICAL"
-    assert result.notify is True
-
-
-def test_classify_intf_up(sample_interface_up_log: str) -> None:
-    """Rule INTF_UP: LINK-3-UPDOWN … changed state to Up → CRITICAL."""
-    result = classify(_parse(sample_interface_up_log))
-    assert result.rule_id == "INTF_UP"
-    assert result.classification == "CRITICAL"
-    assert result.notify is True
-
-
-def test_classify_lineproto_up(sample_lineproto_up_log: str) -> None:
-    """Rule LINEPROTO_UP: LINEPROTO-5-UPDOWN … changed state to Up → CRITICAL."""
-    result = classify(_parse(sample_lineproto_up_log))
-    assert result.rule_id == "LINEPROTO_UP"
-    assert result.classification == "CRITICAL"
-    assert result.notify is True
-
-
-def test_classify_sfp_alarm_clear(sample_sfp_alarm_clear_log: str) -> None:
-    """Rule SFP_ALARM_CLEAR: LOW_RX_POWER_ALARM … Clear → WARNING."""
-    result = classify(_parse(sample_sfp_alarm_clear_log))
-    assert result.rule_id == "SFP_ALARM_CLEAR"
-    assert result.classification == "WARNING"
-    assert result.notify is False
-
-
-def test_classify_lacp_active(sample_lacp_active_log: str) -> None:
-    """Rule LACP_ACTIVE: BM-6-ACTIVE … Active → CRITICAL."""
-    result = classify(_parse(sample_lacp_active_log))
-    assert result.rule_id == "LACP_ACTIVE"
-    assert result.classification == "CRITICAL"
-    assert result.notify is True
-
-
 # ---------------------------------------------------------------------------
-# INFO rules (17-22) — notify=False
+# INFO rules — parametrized table
 # ---------------------------------------------------------------------------
 
 
-def test_classify_port_creation_fail(sample_port_creation_failure_log: str) -> None:
-    """Rule PORT_CREATION_FAIL: BCMDPA_L1_PORT_CREATION_FAILURE → INFO."""
-    result = classify(_parse(sample_port_creation_failure_log))
-    assert result.rule_id == "PORT_CREATION_FAIL"
-    assert result.classification == "INFO"
-    assert result.notify is False
-
-
-def test_classify_operation_stalled(sample_operation_stalled_log: str) -> None:
-    """Rule OPERATION_STALLED: GLOBAL_OPERATION_STALLED → INFO."""
-    result = classify(_parse(sample_operation_stalled_log))
-    assert result.rule_id == "OPERATION_STALLED"
-    assert result.classification == "INFO"
-    assert result.notify is False
-
-
-def test_classify_hw_event_ok(sample_hw_event_log: str) -> None:
-    """Rule HW_EVENT_OK: HW_EVENT … HW_EVENT_OK → INFO."""
-    result = classify(_parse(sample_hw_event_log))
-    assert result.rule_id == "HW_EVENT_OK"
-    assert result.classification == "INFO"
-    assert result.notify is False
-
-
-def test_classify_eem_commit(sample_eem_commit_log: str) -> None:
-    """Rule EEM_COMMIT: DB_COMMIT … event_manager_user → INFO."""
-    result = classify(_parse(sample_eem_commit_log))
-    assert result.rule_id == "EEM_COMMIT"
-    assert result.classification == "INFO"
-    assert result.notify is False
-
-
-def test_classify_eem_script(sample_eem_script_log: str) -> None:
-    """Rule EEM_SCRIPT: ACTION_SYSLOG_LOG_INFO → INFO."""
-    result = classify(_parse(sample_eem_script_log))
-    assert result.rule_id == "EEM_SCRIPT"
-    assert result.classification == "INFO"
-    assert result.notify is False
-
-
-def test_classify_nsr_disabled(sample_nsr_disabled_log: str) -> None:
-    """Rule NSR_DISABLED: NBR_NSR_DISABLED_STANDBY → INFO."""
-    result = classify(_parse(sample_nsr_disabled_log))
-    assert result.rule_id == "NSR_DISABLED"
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_rule_id"),
+    [
+        ("sample_port_creation_failure_log", "PORT_CREATION_FAIL"),
+        ("sample_operation_stalled_log", "OPERATION_STALLED"),
+        ("sample_hw_event_log", "HW_EVENT_OK"),
+        ("sample_eem_commit_log", "EEM_COMMIT"),
+        ("sample_eem_script_log", "EEM_SCRIPT"),
+        ("sample_nsr_disabled_log", "NSR_DISABLED"),
+    ],
+    ids=[
+        "port-creation-fail",
+        "operation-stalled",
+        "hw-event-ok",
+        "eem-commit",
+        "eem-script",
+        "nsr-disabled",
+    ],
+)
+def test_classify_info_rules(
+    fixture_name: str,
+    expected_rule_id: str,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Every INFO rule fires on its corresponding log sample with notify=False."""
+    raw: str = request.getfixturevalue(fixture_name)
+    result = classify(_parse(raw))
+    assert isinstance(result, ClassificationResult)
+    assert result.rule_id == expected_rule_id
     assert result.classification == "INFO"
     assert result.notify is False
 
 
 # ---------------------------------------------------------------------------
-# USER_LOGIN rules (23-25) — notify=False
+# USER_LOGIN rules — parametrized table
 # ---------------------------------------------------------------------------
 
 
-def test_classify_ssh_login(sample_ssh_login_log: str) -> None:
-    """Rule SSH_LOGIN: SSHD-6-INFO_SUCCESS → USER_LOGIN."""
-    result = classify(_parse(sample_ssh_login_log))
-    assert result.rule_id == "SSH_LOGIN"
-    assert result.classification == "USER_LOGIN"
-    assert result.notify is False
-
-
-def test_classify_ssh_logout(sample_ssh_logout_log: str) -> None:
-    """Rule SSH_LOGOUT: SSHD-6-INFO_USER_LOGOUT → USER_LOGIN."""
-    result = classify(_parse(sample_ssh_logout_log))
-    assert result.rule_id == "SSH_LOGOUT"
-    assert result.classification == "USER_LOGIN"
-    assert result.notify is False
-
-
-def test_classify_config_commit_user(sample_config_commit_user_log: str) -> None:
-    """Rule CONFIG_COMMIT_USER: DB_COMMIT (non-EEM user) → USER_LOGIN."""
-    result = classify(_parse(sample_config_commit_user_log))
-    assert result.rule_id == "CONFIG_COMMIT_USER"
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_rule_id"),
+    [
+        ("sample_ssh_login_log", "SSH_LOGIN"),
+        ("sample_ssh_logout_log", "SSH_LOGOUT"),
+        ("sample_config_commit_user_log", "CONFIG_COMMIT_USER"),
+    ],
+    ids=["ssh-login", "ssh-logout", "config-commit-user"],
+)
+def test_classify_user_login_rules(
+    fixture_name: str,
+    expected_rule_id: str,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Every USER_LOGIN rule fires on its corresponding log sample with notify=False."""
+    raw: str = request.getfixturevalue(fixture_name)
+    result = classify(_parse(raw))
+    assert isinstance(result, ClassificationResult)
+    assert result.rule_id == expected_rule_id
     assert result.classification == "USER_LOGIN"
     assert result.notify is False
 
 
 # ---------------------------------------------------------------------------
-# Priority tests
+# Priority tests — ordering constraints within the rule list
 # ---------------------------------------------------------------------------
 
 
@@ -453,62 +380,67 @@ def test_sfp_alarm_set_before_clear(
 
 
 # ---------------------------------------------------------------------------
-# Word-boundary false-positive regression tests
+# Word-boundary false-positive regression tests — parametrized table
 # ---------------------------------------------------------------------------
 
 
-def test_bgp_down_no_false_positive_on_downloading() -> None:
-    """BGP_DOWN must NOT match a line containing 'Downloading' instead of 'Down'."""
-    raw = (
-        "May 22 21:12:21 192.168.203.1 9238766: BSCCL-EQ-RTR-01 "
-        "RP/0/RP0/CPU0:May 22 21:12:21.651 +06: bgp[1097]: "
-        "%ROUTING-BGP-5-ADJCHANGE : neighbor 2001:de8:4::39:9077:1 "
-        "Downloading update (VRF: network) (AS: 399077)"
-    )
+@pytest.mark.parametrize(
+    ("raw", "forbidden_rule_id", "description"),
+    [
+        (
+            (
+                "May 22 21:12:21 192.168.203.1 9238766: BSCCL-EQ-RTR-01 "
+                "RP/0/RP0/CPU0:May 22 21:12:21.651 +06: bgp[1097]: "
+                "%ROUTING-BGP-5-ADJCHANGE : neighbor 2001:de8:4::39:9077:1 "
+                "Downloading update (VRF: network) (AS: 399077)"
+            ),
+            "BGP_DOWN",
+            "BGP_DOWN must NOT match 'Downloading'",
+        ),
+        (
+            (
+                "May 22 05:27:59 192.168.200.8 29146: LC/0/0/CPU0:"
+                "May 22 05:27:59 : pfm_node_lc[298]: "
+                "%PLATFORM-SFP-2-LOW_RX_POWER_ALARM : "
+                "Setting|envmon_lc[172121]|0x1029004|GigE0/0/0/4"
+            ),
+            "SFP_ALARM_SET",
+            "SFP_ALARM_SET must NOT match 'Setting'",
+        ),
+        (
+            (
+                "May 22 19:11:24 192.168.203.1 9238458: BSCCL-EQ-RTR-01 "
+                "RP/0/RP0/CPU0:May 22 19:11:24.816 +06: bgp[1097]: "
+                "%ROUTING-BGP-5-ADJCHANGE : neighbor 2001:de8:4::39:9077:1 "
+                "Upload complete (VRF: network) (AS: 399077)"
+            ),
+            "BGP_UP",
+            "BGP_UP must NOT match 'Upload'",
+        ),
+        (
+            (
+                "May 22 12:57:48 192.168.200.8 29298: LC/0/0/CPU0:"
+                "May 22 12:57:48 : pfm_node_lc[298]: "
+                "%PLATFORM-SFP-2-LOW_RX_POWER_ALARM : "
+                "Cleared|envmon_lc[172121]|0x1029004|GigE0/0/0/4"
+            ),
+            "SFP_ALARM_CLEAR",
+            "SFP_ALARM_CLEAR must NOT match 'Cleared'",
+        ),
+    ],
+    ids=[
+        "bgp-down-no-false-positive-downloading",
+        "sfp-alarm-set-no-false-positive-setting",
+        "bgp-up-no-false-positive-upload",
+        "sfp-alarm-clear-no-false-positive-cleared",
+    ],
+)
+def test_word_boundary_false_positives(
+    raw: str, forbidden_rule_id: str, description: str
+) -> None:
+    """Word-boundary guard: near-match strings must NOT trigger the named rule."""
     result = classify(_parse(raw))
-    assert (
-        result.rule_id != "BGP_DOWN"
-    ), "BGP_DOWN matched 'Downloading' — missing word boundary"
-
-
-def test_sfp_alarm_no_false_positive_on_setting() -> None:
-    """SFP_ALARM_SET must NOT match a line containing 'Setting' instead of 'Set'."""
-    raw = (
-        "May 22 05:27:59 192.168.200.8 29146: LC/0/0/CPU0:"
-        "May 22 05:27:59 : pfm_node_lc[298]: "
-        "%PLATFORM-SFP-2-LOW_RX_POWER_ALARM : "
-        "Setting|envmon_lc[172121]|0x1029004|GigE0/0/0/4"
-    )
-    result = classify(_parse(raw))
-    assert (
-        result.rule_id != "SFP_ALARM_SET"
-    ), "SFP_ALARM_SET matched 'Setting' — missing word boundary"
-
-
-def test_bgp_up_no_false_positive_on_upload() -> None:
-    """BGP_UP must NOT match a line containing 'Upload' instead of 'Up'."""
-    raw = (
-        "May 22 19:11:24 192.168.203.1 9238458: BSCCL-EQ-RTR-01 "
-        "RP/0/RP0/CPU0:May 22 19:11:24.816 +06: bgp[1097]: "
-        "%ROUTING-BGP-5-ADJCHANGE : neighbor 2001:de8:4::39:9077:1 "
-        "Upload complete (VRF: network) (AS: 399077)"
-    )
-    result = classify(_parse(raw))
-    assert result.rule_id != "BGP_UP", "BGP_UP matched 'Upload' — missing word boundary"
-
-
-def test_sfp_alarm_clear_no_false_positive_on_cleared() -> None:
-    """SFP_ALARM_CLEAR must NOT match a line containing 'Cleared' instead of 'Clear'."""
-    raw = (
-        "May 22 12:57:48 192.168.200.8 29298: LC/0/0/CPU0:"
-        "May 22 12:57:48 : pfm_node_lc[298]: "
-        "%PLATFORM-SFP-2-LOW_RX_POWER_ALARM : "
-        "Cleared|envmon_lc[172121]|0x1029004|GigE0/0/0/4"
-    )
-    result = classify(_parse(raw))
-    assert (
-        result.rule_id != "SFP_ALARM_CLEAR"
-    ), "SFP_ALARM_CLEAR matched 'Cleared' — missing word boundary"
+    assert result.rule_id != forbidden_rule_id, description
 
 
 # ---------------------------------------------------------------------------
