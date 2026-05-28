@@ -1,6 +1,6 @@
 """Classification rules for BSCCL NetWatch syslog classifier.
 
-25 rules evaluated top-to-bottom; first match wins.
+26 rules evaluated top-to-bottom; first match wins.
 
 Rule ordering is critical:
   - BGP_DOWN   before BGP_UP   (both match ADJCHANGE)
@@ -87,13 +87,13 @@ CLASSIFICATION_RULES: list[ClassificationRule] = [
         extract=["neighbor", "as_number", "vrf"],
         summary_template="{device}: BGP peer {neighbor} Down (AS {as_number})",
     ),
-    # 2. BGP max-prefix limit reached — warning-level, not an outage
+    # 2. BGP max-prefix limit reached — CRITICAL path protection alert
     _rule(
         id="BGP_MAXPFX",
         pattern=r"%ROUTING-BGP-5-MAXPFX",
-        classification="WARNING",
+        classification="CRITICAL",
         event_type="BGP Max Prefix Reached",
-        notify=False,
+        notify=True,
         extract=["neighbor", "prefix_count", "max_prefixes"],
         summary_template=(
             "{device}: BGP max-prefix on {neighbor} ({prefix_count}/{max_prefixes})"
