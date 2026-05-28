@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 
 from src.database.models import AlertLog, AppSetting, HourlyStats, MaintenanceWindow
 
@@ -104,6 +104,87 @@ async def get_alerts_by_device(
     stmt = (
         select(AlertLog)
         .where(AlertLog.device_name == device_name)
+        .order_by(AlertLog.timestamp.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# Per-channel notification status
+# ---------------------------------------------------------------------------
+
+
+async def update_notification_status(
+    session: AsyncSession,
+    alert_id: int,
+    discord_sent: bool | None = None,
+    telegram_sent: bool | None = None,
+    discord_error: str | None = None,
+    telegram_error: str | None = None,
+) -> bool:
+    """Update per-channel notification delivery status on an ``AlertLog``.
+
+    Only the fields that are explicitly passed (not ``None``) are updated.
+    Error strings are truncated to 256 characters to match the column width.
+
+    Args:
+        session: An active async session.
+        alert_id: The primary key of the ``AlertLog`` to update.
+        discord_sent: Whether the Discord notification was delivered.
+        telegram_sent: Whether the Telegram notification was delivered.
+        discord_error: Error message from the Discord sender (if any).
+        telegram_error: Error message from the Telegram sender (if any).
+
+    Returns:
+        ``True`` if the row was found and updated, ``False`` if not found.
+    """
+    stmt = select(AlertLog).where(AlertLog.id == alert_id)
+    result = await session.execute(stmt)
+    alert = result.scalar_one_or_none()
+    if alert is None:
+        return False
+
+    if discord_sent is not None:
+        alert.discord_sent = discord_sent
+    if telegram_sent is not None:
+        alert.telegram_sent = telegram_sent
+    if discord_error is not None:
+        alert.discord_error = discord_error[:256]
+    if telegram_error is not None:
+        alert.telegram_error = telegram_error[:256]
+
+    await session.flush()
+    return True
+
+
+async def get_failed_notifications(
+    session: AsyncSession,
+    limit: int = 100,
+) -> list[AlertLog]:
+    """Return alerts where notification was attempted but at least one channel failed.
+
+    Selects ``AlertLog`` rows where ``notification_sent`` is True but either
+    ``discord_sent`` or ``telegram_sent`` is False.  Results are ordered
+    newest-first (descending ``timestamp``).
+
+    Args:
+        session: An active async session.
+        limit: Maximum number of rows to return (default 100).
+
+    Returns:
+        A list of ``AlertLog`` instances with at least one channel failure.
+    """
+    stmt = (
+        select(AlertLog)
+        .where(
+            AlertLog.notification_sent.is_(True),
+            or_(
+                AlertLog.discord_sent.is_(False),
+                AlertLog.telegram_sent.is_(False),
+            ),
+        )
         .order_by(AlertLog.timestamp.desc())
         .limit(limit)
     )
