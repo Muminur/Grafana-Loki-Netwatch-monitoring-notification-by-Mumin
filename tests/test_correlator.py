@@ -681,14 +681,14 @@ class TestPurgeStaleIncidentsEdgeCases:
         # Manually inject an incident with zero events
         inc_id = engine._generate_incident_id()  # noqa: SLF001
         engine._incidents[inc_id] = []  # noqa: SLF001
-        engine._device_incident["192.168.203.1"] = inc_id  # noqa: SLF001
+        engine._device_incidents["192.168.203.1"].append(inc_id)  # noqa: SLF001
 
         # Purge — the empty incident should be removed regardless of timestamp
         now = datetime.now(_UTC6)
         engine._purge_stale_incidents(now)  # noqa: SLF001
 
         assert inc_id not in engine._incidents  # noqa: SLF001
-        assert "192.168.203.1" not in engine._device_incident  # noqa: SLF001
+        assert "192.168.203.1" not in engine._device_incidents  # noqa: SLF001
 
 
 class TestFlapKeyFallback:
@@ -794,26 +794,26 @@ class TestIncidentMemoryBounds:
         assert ids[1] in engine._incidents  # noqa: SLF001
         assert ids[2] in engine._incidents  # noqa: SLF001
 
-    def test_eviction_cleans_device_incident_map(self) -> None:
-        """Eviction also removes entries from _device_incident."""
+    def test_eviction_cleans_device_incidents_map(self) -> None:
+        """Eviction also removes entries from _device_incidents."""
         engine = CorrelationEngine(max_incidents=2)
 
         # Inject 2 incidents and map them to device IPs
         id1 = engine._generate_incident_id()  # noqa: SLF001
         engine._incidents[id1] = []  # noqa: SLF001
-        engine._device_incident["192.168.0.1"] = id1  # noqa: SLF001
+        engine._device_incidents["192.168.0.1"].append(id1)  # noqa: SLF001
 
         id2 = engine._generate_incident_id()  # noqa: SLF001
         engine._incidents[id2] = []  # noqa: SLF001
-        engine._device_incident["192.168.0.2"] = id2  # noqa: SLF001
+        engine._device_incidents["192.168.0.2"].append(id2)  # noqa: SLF001
 
         # Enforce cap — should evict id1
         engine._enforce_incident_cap()  # noqa: SLF001
 
         assert id1 not in engine._incidents  # noqa: SLF001
-        assert "192.168.0.1" not in engine._device_incident  # noqa: SLF001
+        assert "192.168.0.1" not in engine._device_incidents  # noqa: SLF001
         assert id2 in engine._incidents  # noqa: SLF001
-        assert "192.168.0.2" in engine._device_incident  # noqa: SLF001
+        assert "192.168.0.2" in engine._device_incidents  # noqa: SLF001
 
     def test_eviction_logs_warning(self) -> None:
         """Eviction logs a warning with the incident ID and cap value."""
@@ -866,14 +866,84 @@ class TestIncidentMemoryBounds:
             vrf="network",
         )
         engine._incidents[inc_id] = [old_enriched]  # noqa: SLF001
-        engine._device_incident["192.168.0.1"] = inc_id  # noqa: SLF001
+        engine._device_incidents["192.168.0.1"].append(inc_id)  # noqa: SLF001
 
         # Purge should remove the stale incident
         now = datetime.now(_UTC6)
         engine._purge_stale_incidents(now)  # noqa: SLF001
 
         assert inc_id not in engine._incidents  # noqa: SLF001
-        assert "192.168.0.1" not in engine._device_incident  # noqa: SLF001
+        assert "192.168.0.1" not in engine._device_incidents  # noqa: SLF001
+
+
+class TestFirstMemberDownIsRootCause:
+    """The very first bundle member DOWN event should be tagged as root cause."""
+
+    def test_first_member_down_is_root_cause(self) -> None:
+        """Single bundle member DOWN -> is_root_cause is True, incident created."""
+        engine = CorrelationEngine()
+
+        member_down = _make_enriched(
+            source_ip="192.168.203.1",
+            interface_name="TenGigE0/0/0/0",
+            bundle_parent="Bundle-Ether500",
+            classification="CRITICAL",
+            event_type="Interface Down",
+            mnemonic="UPDOWN",
+            bgp_neighbor="",
+        )
+        result = engine.correlate(member_down)
+
+        assert result.is_root_cause is True
+        assert result.incident_id is not None
+        assert result.incident_id.startswith("INC-")
+        assert result.is_symptom is False
+        assert result.is_independent is False
+
+
+class TestDeviceMultipleOverlappingIncidents:
+    """A single device can host multiple distinct incidents at the same time."""
+
+    def test_device_multiple_overlapping_incidents(self) -> None:
+        """Backhaul + mass BGP -> 2 distinct incidents on same device."""
+        engine = CorrelationEngine()
+
+        member_down = _make_enriched(
+            source_ip="192.168.203.1",
+            interface_name="TenGigE0/0/0/0",
+            bundle_parent="Bundle-Ether500",
+            classification="CRITICAL",
+            event_type="Interface Down",
+            mnemonic="UPDOWN",
+            bgp_neighbor="",
+        )
+        bh_result = engine.correlate(member_down)
+        assert bh_result.is_root_cause is True
+        backhaul_incident_id = bh_result.incident_id
+        assert backhaul_incident_id is not None
+
+        mass_results = []
+        for i in range(5):
+            ev = _make_enriched(
+                source_ip="192.168.203.1",
+                bgp_neighbor=f"10.99.0.{i + 1}",
+                as_number=90000 + i,
+                classification="CRITICAL",
+                event_type="BGP Peer Down",
+                interface_name="",
+                bundle_parent="",
+            )
+            mass_results.append(engine.correlate(ev))
+
+        mass_incident_ids = {
+            r.incident_id
+            for r in mass_results
+            if r.incident_id is not None and r.incident_id != backhaul_incident_id
+        }
+        assert len(mass_incident_ids) >= 1, (
+            f"Expected a separate mass-event incident; "
+            f"got only backhaul id {backhaul_incident_id}"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -130,8 +130,15 @@ class CorrelationEngine:
         self._seq_day_offset: int = 0  # value of _incident_seq at start of current day
         self._seq_current_date: str = ""  # UTC date for which offset was last set
 
-        # Active incidents per device: device_ip → incident_id
-        self._device_incident: dict[str, str] = {}
+        # Active incidents per device: device_ip → list of incident_ids
+        # (a device can host multiple overlapping incidents, e.g. a backhaul
+        # failure AND a mass BGP event at the same time)
+        self._device_incidents: dict[str, list[str]] = defaultdict(list)
+
+        # Set of incident IDs that are backhaul-type (as opposed to
+        # mass-event-type).  Used by _find_mass_incident to distinguish
+        # the two kinds without relying on key-format heuristics.
+        self._backhaul_incident_ids: set[str] = set()
 
         # Active backhaul failures: (device_ip, bundle_name) → timestamp
         self._backhaul_failures: dict[tuple[str, str], datetime] = {}
@@ -224,6 +231,8 @@ class CorrelationEngine:
         # ── Backhaul member event ───────────────────────────────────────────
         # If this is a physical member of a backhaul bundle going down/up,
         # register it so later events can be correlated against it.
+        backhaul_root_cause = False
+        bundle_name = ""
         if enriched.interface_name and enriched.bundle_parent:
             is_member, bundle_name = is_backhaul_member(
                 device_ip, enriched.interface_name
@@ -232,11 +241,60 @@ class CorrelationEngine:
                 # Register or clear the backhaul failure
                 bh_key = (device_ip, bundle_name)
                 if "Down" in enriched.event_type or "Fault" in enriched.event_type:
+                    is_new_failure = bh_key not in self._backhaul_failures
                     self._backhaul_failures[bh_key] = now
+                    if is_new_failure:
+                        backhaul_root_cause = True
                 elif "Up" in enriched.event_type or "Clear" in enriched.event_type:
                     self._backhaul_failures.pop(bh_key, None)
+        # ── Mass BGP event detection (runs before symptom return) ────────────
+        # Mass-event detection runs early so that a device can host both a
+        # backhaul incident AND a mass BGP incident simultaneously.
+        mass_events = self._check_mass_event(enriched)
+        mass_incident_result: CorrelatedEvent | None = None
+        if len(mass_events) >= self.MASS_BGP_THRESHOLD - 1:
+            # We have reached the threshold (current event + prior events).
+            # Look for an existing *mass-event* incident on this device.
+            existing_mass_id = self._find_mass_incident(device_ip)
+            if existing_mass_id is None:
+                # Open a new mass-event incident
+                self._enforce_incident_cap()
+                new_id = self._generate_incident_id()
+                self._incidents[new_id] = mass_events + [enriched]
+                self._device_incidents[device_ip].append(new_id)
+                mass_incident_result = CorrelatedEvent(
+                    enriched=enriched,
+                    is_root_cause=True,
+                    incident_id=new_id,
+                    flap_count=flap_count,
+                    is_flapping=flap_count >= self.FLAP_THRESHOLD,
+                    related_events=list(mass_events),
+                )
+            else:
+                # Add to existing mass incident, suppress notification.
+                # Guard against stale reference after eviction.
+                if existing_mass_id in self._incidents:
+                    self._incidents[existing_mass_id].append(enriched)
+                mass_incident_result = CorrelatedEvent(
+                    enriched=enriched,
+                    is_symptom=True,
+                    incident_id=existing_mass_id,
+                    flap_count=flap_count,
+                    is_flapping=flap_count >= self.FLAP_THRESHOLD,
+                    suppress_notification=True,
+                    related_events=list(
+                        self._incidents.get(existing_mass_id, [])
+                    ),
+                )
+
         if incident_id is not None:
-            # This event is downstream of a backhaul failure
+            # This event is downstream of a backhaul failure.
+            # If a mass-event incident was ALSO created by this event,
+            # return the mass-event result (it carries more context).
+            if mass_incident_result is not None:
+                if incident_id in self._incidents:
+                    self._incidents[incident_id].append(enriched)
+                return mass_incident_result
             correlated = CorrelatedEvent(
                 enriched=enriched,
                 is_symptom=True,
@@ -250,51 +308,42 @@ class CorrelationEngine:
                 self._incidents[incident_id].append(enriched)
             return correlated
 
-        # ── Mass BGP event detection ────────────────────────────────────────
-        mass_events = self._check_mass_event(enriched)
-        if len(mass_events) >= self.MASS_BGP_THRESHOLD - 1:
-            # We have reached the threshold (current event + prior events)
-            existing_incident = self._device_incident.get(device_ip)
-            if existing_incident is None:
-                # Open a new mass-event incident
-                self._enforce_incident_cap()
-                new_id = self._generate_incident_id()
-                self._incidents[new_id] = mass_events + [enriched]
-                self._device_incident[device_ip] = new_id
-                correlated = CorrelatedEvent(
-                    enriched=enriched,
-                    is_root_cause=True,
-                    incident_id=new_id,
-                    flap_count=flap_count,
-                    is_flapping=flap_count >= self.FLAP_THRESHOLD,
-                    related_events=list(mass_events),
-                )
-            else:
-                # Add to existing incident, suppress notification
-                self._incidents[existing_incident].append(enriched)
-                correlated = CorrelatedEvent(
-                    enriched=enriched,
-                    is_symptom=True,
-                    incident_id=existing_incident,
-                    flap_count=flap_count,
-                    is_flapping=flap_count >= self.FLAP_THRESHOLD,
-                    suppress_notification=True,
-                    related_events=list(self._incidents[existing_incident]),
-                )
-            return correlated
+        # ── Backhaul root-cause event (first member failure opens incident) ─
+        if backhaul_root_cause:
+            bh_inc_key = f"{device_ip}:{bundle_name}"
+            self._enforce_incident_cap()
+            new_id = self._generate_incident_id()
+            self._incidents[new_id] = [enriched]
+            self._backhaul_incident_ids.add(new_id)
+            self._device_incidents[bh_inc_key].append(new_id)
+            self._device_incidents[device_ip].append(new_id)
+            return CorrelatedEvent(
+                enriched=enriched,
+                is_root_cause=True,
+                incident_id=new_id,
+                flap_count=flap_count,
+                is_flapping=flap_count >= self.FLAP_THRESHOLD,
+            )
 
-        # Check if a device incident already exists (threshold already crossed)
-        existing_incident = self._device_incident.get(device_ip)
-        if existing_incident is not None:
-            self._incidents[existing_incident].append(enriched)
+        # ── Mass BGP event result (no backhaul symptom overlay) ────────────
+        if mass_incident_result is not None:
+            return mass_incident_result
+
+        # Check if a mass-event incident already exists (threshold crossed)
+        existing_mass_id = self._find_mass_incident(device_ip)
+        if existing_mass_id is not None:
+            if existing_mass_id in self._incidents:
+                self._incidents[existing_mass_id].append(enriched)
             return CorrelatedEvent(
                 enriched=enriched,
                 is_symptom=True,
-                incident_id=existing_incident,
+                incident_id=existing_mass_id,
                 flap_count=flap_count,
                 is_flapping=flap_count >= self.FLAP_THRESHOLD,
                 suppress_notification=True,
-                related_events=list(self._incidents[existing_incident]),
+                related_events=list(
+                    self._incidents.get(existing_mass_id, [])
+                ),
             )
 
         # ── Flapping-only (no other correlation) ───────────────────────────
@@ -332,10 +381,14 @@ class CorrelationEngine:
                 oldest_id,
             )
             del self._incidents[oldest_id]
+            self._backhaul_incident_ids.discard(oldest_id)
             # Clean up reverse-map entries pointing to the evicted incident
-            for key in list(self._device_incident.keys()):
-                if self._device_incident[key] == oldest_id:
-                    del self._device_incident[key]
+            for key in list(self._device_incidents.keys()):
+                self._device_incidents[key] = [
+                    iid for iid in self._device_incidents[key] if iid != oldest_id
+                ]
+                if not self._device_incidents[key]:
+                    del self._device_incidents[key]
 
     def _generate_incident_id(self) -> str:
         """Generate a unique incident ID in INC-YYYYMMDD-NNN format.
@@ -416,13 +469,47 @@ class CorrelationEngine:
             if same_device or is_downstream:
                 # Create or reuse an incident for this backhaul event
                 bh_incident_key = f"{bh_device}:{bundle_name}"
-                if bh_incident_key not in self._device_incident:
+                existing_ids = self._device_incidents.get(bh_incident_key)
+                if not existing_ids:
                     self._enforce_incident_cap()
                     inc_id = self._generate_incident_id()
                     self._incidents[inc_id] = []
-                    self._device_incident[bh_incident_key] = inc_id
-                return self._device_incident[bh_incident_key]
+                    self._backhaul_incident_ids.add(inc_id)
+                    self._device_incidents[bh_incident_key].append(inc_id)
+                    self._device_incidents[bh_device].append(inc_id)
+                    return inc_id
+                return existing_ids[-1]
 
+        return None
+
+    def _find_mass_incident(self, device_ip: str) -> str | None:
+        """Find an existing mass-event incident for *device_ip*.
+
+        Searches the device's incident list for one that is NOT a backhaul
+        incident (i.e. its key is the bare device IP, not
+        ``device_ip:bundle_name``).  Returns the most recently added mass-event
+        incident ID, or ``None`` if none exists.
+
+        Parameters
+        ----------
+        device_ip:
+            Syslog source IP of the device.
+
+        Returns
+        -------
+        str | None
+            The incident ID if found, otherwise ``None``.
+        """
+        device_ids = self._device_incidents.get(device_ip)
+        if not device_ids:
+            return None
+
+        # Return the most recent non-backhaul incident (mass-event incident)
+        # using the explicit _backhaul_incident_ids set instead of key-format
+        # heuristics that could false-match on IPs sharing a common prefix.
+        for iid in reversed(device_ids):
+            if iid not in self._backhaul_incident_ids and iid in self._incidents:
+                return iid
         return None
 
     def _check_flap(self, enriched: EnrichedLog) -> int:
@@ -539,7 +626,7 @@ class CorrelationEngine:
         Incidents that have been open for more than 24 hours without new activity
         are unlikely to receive new correlated events and would cause unbounded
         memory growth if never evicted.  This method removes such incidents from
-        ``_incidents`` and clears the matching entries in ``_device_incident``.
+        ``_incidents`` and clears the matching entries in ``_device_incidents``.
 
         Parameters
         ----------
@@ -564,8 +651,12 @@ class CorrelationEngine:
 
         for inc_id in stale_ids:
             del self._incidents[inc_id]
+            self._backhaul_incident_ids.discard(inc_id)
 
         # Remove reverse-map entries that pointed to purged incidents
-        for key in list(self._device_incident.keys()):
-            if self._device_incident[key] in stale_ids:
-                del self._device_incident[key]
+        for key in list(self._device_incidents.keys()):
+            self._device_incidents[key] = [
+                iid for iid in self._device_incidents[key] if iid not in stale_ids
+            ]
+            if not self._device_incidents[key]:
+                del self._device_incidents[key]
