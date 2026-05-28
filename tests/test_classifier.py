@@ -453,6 +453,65 @@ def test_sfp_alarm_set_before_clear(
 
 
 # ---------------------------------------------------------------------------
+# Word-boundary false-positive regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_bgp_down_no_false_positive_on_downloading() -> None:
+    """BGP_DOWN must NOT match a line containing 'Downloading' instead of 'Down'."""
+    raw = (
+        "May 22 21:12:21 192.168.203.1 9238766: BSCCL-EQ-RTR-01 "
+        "RP/0/RP0/CPU0:May 22 21:12:21.651 +06: bgp[1097]: "
+        "%ROUTING-BGP-5-ADJCHANGE : neighbor 2001:de8:4::39:9077:1 "
+        "Downloading update (VRF: network) (AS: 399077)"
+    )
+    result = classify(_parse(raw))
+    assert (
+        result.rule_id != "BGP_DOWN"
+    ), "BGP_DOWN matched 'Downloading' — missing word boundary"
+
+
+def test_sfp_alarm_no_false_positive_on_set_top() -> None:
+    """SFP_ALARM_SET must NOT match a line containing 'Set-Top' instead of 'Set'."""
+    raw = (
+        "May 22 05:27:59 192.168.200.8 29146: LC/0/0/CPU0:"
+        "May 22 05:27:59 : pfm_node_lc[298]: "
+        "%PLATFORM-SFP-2-LOW_RX_POWER_ALARM : "
+        "Set-Top|envmon_lc[172121]|0x1029004|GigE0/0/0/4"
+    )
+    result = classify(_parse(raw))
+    assert (
+        result.rule_id != "SFP_ALARM_SET"
+    ), "SFP_ALARM_SET matched 'Set-Top' — missing word boundary"
+
+
+def test_bgp_up_no_false_positive_on_upload() -> None:
+    """BGP_UP must NOT match a line containing 'Upload' instead of 'Up'."""
+    raw = (
+        "May 22 19:11:24 192.168.203.1 9238458: BSCCL-EQ-RTR-01 "
+        "RP/0/RP0/CPU0:May 22 19:11:24.816 +06: bgp[1097]: "
+        "%ROUTING-BGP-5-ADJCHANGE : neighbor 2001:de8:4::39:9077:1 "
+        "Upload complete (VRF: network) (AS: 399077)"
+    )
+    result = classify(_parse(raw))
+    assert result.rule_id != "BGP_UP", "BGP_UP matched 'Upload' — missing word boundary"
+
+
+def test_sfp_alarm_clear_no_false_positive_on_cleared() -> None:
+    """SFP_ALARM_CLEAR must NOT match a line containing 'Cleared' instead of 'Clear'."""
+    raw = (
+        "May 22 12:57:48 192.168.200.8 29298: LC/0/0/CPU0:"
+        "May 22 12:57:48 : pfm_node_lc[298]: "
+        "%PLATFORM-SFP-2-LOW_RX_POWER_ALARM : "
+        "Cleared|envmon_lc[172121]|0x1029004|GigE0/0/0/4"
+    )
+    result = classify(_parse(raw))
+    assert (
+        result.rule_id != "SFP_ALARM_CLEAR"
+    ), "SFP_ALARM_CLEAR matched 'Cleared' — missing word boundary"
+
+
+# ---------------------------------------------------------------------------
 # Default / fallback classification
 # ---------------------------------------------------------------------------
 
