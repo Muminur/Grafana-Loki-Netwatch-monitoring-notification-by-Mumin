@@ -8,10 +8,13 @@ Falls back to a default INFO/UNKNOWN result for unrecognised lines.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from src.data.classification_rules import _COMPILED_RULES
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from src.core.parser import ParsedLog
@@ -61,7 +64,12 @@ def classify(parsed_log: ParsedLog) -> ClassificationResult:
     Returns:
         A frozen :class:`ClassificationResult`.
     """
-    raw = parsed_log.raw
+    try:
+        raw = parsed_log.raw
+    except (AttributeError, TypeError):
+        _log.warning("classify() received invalid input: %r", parsed_log)
+        return _DEFAULT_RESULT
+
     for compiled_pattern, rule in _COMPILED_RULES:
         if compiled_pattern.search(raw):
             return ClassificationResult(
@@ -71,4 +79,6 @@ def classify(parsed_log: ParsedLog) -> ClassificationResult:
                 notify=rule.notify,
                 summary_template=rule.summary_template,
             )
+
+    _log.debug("No classification rule matched: %.200s", raw)
     return _DEFAULT_RESULT

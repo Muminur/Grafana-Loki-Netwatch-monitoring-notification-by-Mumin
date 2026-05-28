@@ -146,7 +146,12 @@ def _build_discord_fields(enriched: EnrichedLog) -> list[dict[str, Any]]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def format_discord_embed(enriched: EnrichedLog, settings: Settings) -> dict[str, Any]:
+def format_discord_embed(
+    enriched: EnrichedLog,
+    settings: Settings,
+    *,
+    incident_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Format an EnrichedLog as a Discord webhook payload (embed dict).
 
     Parameters
@@ -156,6 +161,10 @@ def format_discord_embed(enriched: EnrichedLog, settings: Settings) -> dict[str,
     settings:
         Application settings (used to build Grafana deep-link URL and
         determine the monitor host).
+    incident_context:
+        Optional dict with ``incident_id`` and ``related_count`` keys.
+        When present, extra "Incident" and "Related Events" fields are
+        appended to the embed.
 
     Returns
     -------
@@ -177,6 +186,19 @@ def format_discord_embed(enriched: EnrichedLog, settings: Settings) -> dict[str,
 
     fields = _build_discord_fields(enriched)
 
+    if incident_context is not None:
+        inc_id = _sanitise(str(incident_context.get("incident_id", "")))
+        related = incident_context.get("related_count", 0)
+        if inc_id:
+            fields.append({"name": "Incident", "value": inc_id, "inline": True})
+        fields.append(
+            {
+                "name": "Related Events",
+                "value": str(related),
+                "inline": True,
+            }
+        )
+
     ts_iso = enriched.parsed.timestamp.isoformat()
 
     embed: dict[str, Any] = {
@@ -196,13 +218,21 @@ def format_discord_embed(enriched: EnrichedLog, settings: Settings) -> dict[str,
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def format_telegram_message(enriched: EnrichedLog) -> str:
+def format_telegram_message(
+    enriched: EnrichedLog,
+    *,
+    incident_context: dict[str, Any] | None = None,
+) -> str:
     """Format an EnrichedLog as a Telegram Markdown message string.
 
     Parameters
     ----------
     enriched:
         Fully enriched syslog event.
+    incident_context:
+        Optional dict with ``incident_id`` and ``related_count`` keys.
+        When present, extra incident lines are appended before the
+        timestamp footer.
 
     Returns
     -------
@@ -240,6 +270,13 @@ def format_telegram_message(enriched: EnrichedLog) -> str:
 
     if enriched.client_name:
         lines.append(f"*Client:* {_sanitise(enriched.client_name)}")
+
+    if incident_context is not None:
+        inc_id = _sanitise(str(incident_context.get("incident_id", "")))
+        related = incident_context.get("related_count", 0)
+        if inc_id:
+            lines.append(f"*Incident:* `{inc_id}`")
+        lines.append(f"*Related Events:* {related}")
 
     lines.append("")
     ts_str = enriched.parsed.timestamp.strftime("%Y-%m-%d %H:%M:%S %Z")

@@ -211,7 +211,7 @@ class Settings:
         default_factory=lambda: _safe_int("BGP_FLAP_WINDOW_SECONDS", "120")
     )
     bundle_group_window_seconds: int = field(
-        default_factory=lambda: _safe_int("BUNDLE_GROUP_WINDOW_SECONDS", "30")
+        default_factory=lambda: _safe_int("BUNDLE_GROUP_WINDOW_SECONDS", "60")
     )
     asn_api_key: str = field(
         default_factory=lambda: os.environ.get("ASN_API_KEY", ""),

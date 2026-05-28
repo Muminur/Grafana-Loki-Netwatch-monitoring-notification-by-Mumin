@@ -74,12 +74,18 @@ class TestTopologyDataStructure:
     """Verify the static topology data is correctly shaped."""
 
     def test_network_topology_has_expected_devices(self) -> None:
-        """NETWORK_TOPOLOGY must contain EQ-RTR-01, KKT-Core-01, etc."""
+        """NETWORK_TOPOLOGY must contain all core/aggregation routers."""
         assert "192.168.203.1" in NETWORK_TOPOLOGY  # EQ-RTR-01
         assert "192.168.202.2" in NETWORK_TOPOLOGY  # KKT-Core-01
         assert "192.168.202.130" in NETWORK_TOPOLOGY  # KKT-Core-02
         assert "192.168.200.11" in NETWORK_TOPOLOGY  # DHK-Core-03
         assert "192.168.200.8" in NETWORK_TOPOLOGY  # COX-Core-01
+        assert "192.168.203.3" in NETWORK_TOPOLOGY  # EQ-RTR-02
+        assert "192.168.202.153" in NETWORK_TOPOLOGY  # KKT-Core-03
+        assert "192.168.200.26" in NETWORK_TOPOLOGY  # COX-Core-03
+        assert "192.168.200.4" in NETWORK_TOPOLOGY  # DHK-Core-02
+        assert "192.168.200.6" in NETWORK_TOPOLOGY  # COX-Core-02
+        assert "192.168.200.27" in NETWORK_TOPOLOGY  # COX-Core-04
 
     def test_device_topology_fields(self) -> None:
         """Each DeviceTopology entry has name and upstreams dict."""
@@ -902,7 +908,6 @@ class TestDeviceMultipleOverlappingIncidents:
         """Backhaul + mass BGP -> 2 distinct incidents on same device."""
         engine = CorrelationEngine()
 
-        # Step 1: trigger a backhaul incident on EQ-RTR-01 via member down
         member_down = _make_enriched(
             source_ip="192.168.203.1",
             interface_name="TenGigE0/0/0/0",
@@ -917,7 +922,6 @@ class TestDeviceMultipleOverlappingIncidents:
         backhaul_incident_id = bh_result.incident_id
         assert backhaul_incident_id is not None
 
-        # Step 2: trigger a mass BGP event on the SAME device (5 BGP peers down)
         mass_results = []
         for i in range(5):
             ev = _make_enriched(
@@ -931,14 +935,165 @@ class TestDeviceMultipleOverlappingIncidents:
             )
             mass_results.append(engine.correlate(ev))
 
-        # At least one mass BGP result must create a NEW (distinct) incident
         mass_incident_ids = {
             r.incident_id
             for r in mass_results
             if r.incident_id is not None and r.incident_id != backhaul_incident_id
         }
-        # There must be at least one incident distinct from the backhaul incident
         assert len(mass_incident_ids) >= 1, (
             f"Expected a separate mass-event incident; "
             f"got only backhaul id {backhaul_incident_id}"
         )
+
+
+# ---------------------------------------------------------------------------
+# New topology entry existence tests
+# ---------------------------------------------------------------------------
+
+
+class TestNewTopologyEntries:
+    """Verify that all core/aggregation routers have topology entries."""
+
+    def test_eq_rtr02_topology_exists(self) -> None:
+        """EQ-RTR-02 (192.168.203.3) must exist in NETWORK_TOPOLOGY."""
+        assert "192.168.203.3" in NETWORK_TOPOLOGY
+        topo = NETWORK_TOPOLOGY["192.168.203.3"]
+        assert topo.name == "Equinix-RTR-2"
+
+    def test_eq_rtr02_has_upstream_to_eq_rtr01(self) -> None:
+        """EQ-RTR-02 must have an upstream bundle connecting to EQ-RTR-01."""
+        topo = NETWORK_TOPOLOGY["192.168.203.3"]
+        # EQ-RTR-02 calls its link to EQ-RTR-01 Bundle-Ether600
+        assert "Bundle-Ether600" in topo.upstreams
+        link = topo.upstreams["Bundle-Ether600"]
+        assert link.remote_device_ip == "192.168.203.1"  # EQ-RTR-01
+
+    def test_eq_rtr02_has_upstream_to_kkt01(self) -> None:
+        """EQ-RTR-02 must have an upstream bundle connecting to KKT-Core-01."""
+        topo = NETWORK_TOPOLOGY["192.168.203.3"]
+        assert "Bundle-Ether505" in topo.upstreams
+        link = topo.upstreams["Bundle-Ether505"]
+        assert link.remote_device_ip == "192.168.202.2"  # KKT-Core-01
+
+    def test_kkt_core03_topology_exists(self) -> None:
+        """KKT-Core-03 (192.168.202.153) must exist in NETWORK_TOPOLOGY."""
+        assert "192.168.202.153" in NETWORK_TOPOLOGY
+        topo = NETWORK_TOPOLOGY["192.168.202.153"]
+        assert topo.name == "KKT-Core-3"
+
+    def test_kkt_core03_has_upstream_to_eq_rtr01(self) -> None:
+        """KKT-Core-03 must have BE300 to EQ-RTR-01."""
+        topo = NETWORK_TOPOLOGY["192.168.202.153"]
+        assert "Bundle-Ether300" in topo.upstreams
+        link = topo.upstreams["Bundle-Ether300"]
+        assert link.remote_device_ip == "192.168.203.1"  # EQ-RTR-01
+
+    def test_cox_core03_topology_exists(self) -> None:
+        """COX-Core-03 (192.168.200.26) must exist in NETWORK_TOPOLOGY."""
+        assert "192.168.200.26" in NETWORK_TOPOLOGY
+        topo = NETWORK_TOPOLOGY["192.168.200.26"]
+        assert topo.name == "COX-Core-3"
+
+    def test_cox_core03_has_upstream_to_eq_rtr01(self) -> None:
+        """COX-Core-03 must have BE200 to EQ-RTR-01."""
+        topo = NETWORK_TOPOLOGY["192.168.200.26"]
+        assert "Bundle-Ether200" in topo.upstreams
+        link = topo.upstreams["Bundle-Ether200"]
+        assert link.remote_device_ip == "192.168.203.1"  # EQ-RTR-01
+
+    def test_cox_core03_has_upstream_to_dhk_core03(self) -> None:
+        """COX-Core-03 must have BE150 to DHK-Core-03."""
+        topo = NETWORK_TOPOLOGY["192.168.200.26"]
+        assert "Bundle-Ether150" in topo.upstreams
+        link = topo.upstreams["Bundle-Ether150"]
+        assert link.remote_device_ip == "192.168.200.11"  # DHK-Core-03
+
+    def test_dhk_core02_topology_exists(self) -> None:
+        """DHK-Core-02 (192.168.200.4) must exist in NETWORK_TOPOLOGY."""
+        assert "192.168.200.4" in NETWORK_TOPOLOGY
+        topo = NETWORK_TOPOLOGY["192.168.200.4"]
+        assert topo.name == "DHK-Core-2-Agg"
+
+    def test_dhk_core02_has_upstream_to_dhk_core03(self) -> None:
+        """DHK-Core-02 must have BE100 to DHK-Core-03."""
+        topo = NETWORK_TOPOLOGY["192.168.200.4"]
+        assert "Bundle-Ether100" in topo.upstreams
+        link = topo.upstreams["Bundle-Ether100"]
+        assert link.remote_device_ip == "192.168.200.11"  # DHK-Core-03
+
+    def test_cox_core02_topology_exists(self) -> None:
+        """COX-Core-02 (192.168.200.6) must exist in NETWORK_TOPOLOGY."""
+        assert "192.168.200.6" in NETWORK_TOPOLOGY
+        topo = NETWORK_TOPOLOGY["192.168.200.6"]
+        assert topo.name == "COX-Core-2"
+
+    def test_cox_core04_topology_exists(self) -> None:
+        """COX-Core-04 (192.168.200.27) must exist in NETWORK_TOPOLOGY."""
+        assert "192.168.200.27" in NETWORK_TOPOLOGY
+        topo = NETWORK_TOPOLOGY["192.168.200.27"]
+        assert topo.name == "COX-Core-4"
+
+
+# ---------------------------------------------------------------------------
+# Recursive downstream traversal tests
+# ---------------------------------------------------------------------------
+
+
+class TestRecursiveDownstream:
+    """Tests for recursive multi-hop downstream traversal."""
+
+    def test_recursive_downstream_eq_rtr01_be500(self) -> None:
+        """EQ-RTR-01 BE500 down returns KKT-Core-01 AND transitive devices.
+
+        Chain: EQ-RTR-01 BE500 -> KKT-Core-01 -> (BE400 -> DHK-Core-03,
+        BE505 -> EQ-RTR-02, ...).  DHK-Core-03 -> (BE100 -> DHK-Core-02,
+        BE150 -> COX-Core-03, ...).
+        """
+        downstream = get_downstream_devices("192.168.203.1", "Bundle-Ether500")
+        # Direct child
+        assert "192.168.202.2" in downstream  # KKT-Core-01
+        # Transitive via KKT-Core-01 BE400
+        assert "192.168.200.11" in downstream  # DHK-Core-03
+
+    def test_recursive_downstream_kkt01_be400(self) -> None:
+        """KKT-Core-01 BE400 down returns DHK-Core-03 AND DHK-Core-02.
+
+        Chain: KKT-Core-01 BE400 -> DHK-Core-03 -> (BE100 -> DHK-Core-02).
+        """
+        downstream = get_downstream_devices("192.168.202.2", "Bundle-Ether400")
+        assert "192.168.200.11" in downstream  # DHK-Core-03
+        assert "192.168.200.4" in downstream  # DHK-Core-02 (via DHK-Core-03)
+
+    def test_downstream_no_infinite_loop(self) -> None:
+        """Bidirectional links must not cause infinite recursion.
+
+        EQ-RTR-01 <-> KKT-Core-01 have links in both directions.
+        The function must terminate and return a finite result.
+        """
+        # This should complete without hanging or raising
+        downstream = get_downstream_devices("192.168.203.1", "Bundle-Ether500")
+        assert isinstance(downstream, list)
+        # Must not include the originating device itself
+        assert "192.168.203.1" not in downstream
+
+    def test_recursive_includes_multi_hop_dhk_core02(self) -> None:
+        """DHK-Core-03 BE100 -> DHK-Core-02 is reachable from EQ-RTR-01 BE500.
+
+        Full chain: EQ-RTR-01 -> KKT-Core-01 -> DHK-Core-03 -> DHK-Core-02.
+        """
+        downstream = get_downstream_devices("192.168.203.1", "Bundle-Ether500")
+        assert "192.168.200.4" in downstream  # DHK-Core-02
+
+    def test_leaf_device_returns_no_further_downstream(self) -> None:
+        """DHK-Core-02 BE100 -> DHK-Core-03, which then expands further.
+
+        But DHK-Core-02 itself as a starting point with an unknown bundle
+        should return empty.
+        """
+        downstream = get_downstream_devices("192.168.200.4", "Bundle-Ether999")
+        assert downstream == []
+
+    def test_recursive_result_is_list_of_unique_ips(self) -> None:
+        """Recursive traversal must not return duplicate IPs."""
+        downstream = get_downstream_devices("192.168.203.1", "Bundle-Ether500")
+        assert len(downstream) == len(set(downstream))

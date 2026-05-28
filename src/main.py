@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import secrets
 import time
@@ -35,6 +36,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -56,9 +58,18 @@ from src.core.dedup import DedupEngine
 from src.core.enricher import enrich
 from src.core.parser import parse_syslog
 from src.core.syslog_receiver import SyslogReceiver
-from src.database.crud import insert_alert, prune_old_alerts, prune_old_stats, vacuum_db
+from src.database.crud import (
+    create_incident,
+    get_incident,
+    insert_alert,
+    prune_old_alerts,
+    prune_old_stats,
+    update_incident,
+    update_notification_status,
+    vacuum_db,
+)
 from src.database.migrations import create_tables, get_engine
-from src.database.models import AlertLog
+from src.database.models import AlertLog, Incident
 from src.logging_config import configure_logging
 from src.metrics import (
     record_alert,
@@ -245,6 +256,7 @@ async def _on_syslog_line(raw_line: str) -> None:
     suppress = correlated.suppress_notification if correlated is not None else False
     will_notify = should_send and enriched.notify and not suppress
     incident_id = (correlated.incident_id or "") if correlated is not None else ""
+    alert_id: int | None = None
     if (should_send or is_recovery) and _engine is not None:
         try:
             alert = AlertLog(
@@ -271,9 +283,65 @@ async def _on_syslog_line(raw_line: str) -> None:
             )
             async with AsyncSession(_engine) as session:
                 await insert_alert(session, alert)
+                alert_id = alert.id
                 await session.commit()
         except Exception as exc:  # noqa: BLE001
             _log.error("DB insert failed: %s", exc)
+
+    # ── Persist incident to DB ────────────────────────────────────────────
+    if correlated is not None and correlated.incident_id and _engine is not None:
+        try:
+            async with AsyncSession(_engine) as session:
+                if correlated.is_root_cause:
+                    # Duplicate-key guard: on replay/restart the same
+                    # incident_id may already exist.  Only create if absent;
+                    # otherwise bump the alert count on the existing row.
+                    existing = await get_incident(session, correlated.incident_id)
+                    if existing is None:
+                        await create_incident(
+                            session,
+                            id=correlated.incident_id,
+                            title=(
+                                f"{enriched.device_name} "
+                                f"{enriched.parsed.mnemonic}"
+                            ),
+                            root_cause=enriched.parsed.message,
+                            affected_devices=f'["{enriched.device_name}"]',
+                            affected_clients=(
+                                f'["{enriched.client_name}"]'
+                                if enriched.client_name
+                                else "[]"
+                            ),
+                            alert_count=1,
+                            status="active",
+                            created_at=enriched.parsed.timestamp,
+                        )
+                    else:
+                        # Existing incident — atomic count bump
+                        from sqlalchemy import update as sql_update  # noqa: PLC0415
+
+                        stmt = (
+                            sql_update(Incident)
+                            .where(Incident.id == correlated.incident_id)
+                            .values(alert_count=Incident.alert_count + 1)
+                        )
+                        await session.execute(stmt)
+                elif correlated.is_symptom:
+                    # Symptom event — atomic increment avoids read-modify-write race
+                    from sqlalchemy import update as sql_update  # noqa: PLC0415
+
+                    stmt = (
+                        sql_update(Incident)
+                        .where(Incident.id == correlated.incident_id)
+                        .values(
+                            alert_count=Incident.alert_count + 1,
+                            symptom_count=Incident.symptom_count + 1,
+                        )
+                    )
+                    await session.execute(stmt)
+                await session.commit()
+        except Exception as exc:  # noqa: BLE001
+            _log.error("Incident DB persist failed: %s", exc)
 
     # ── Update in-memory API store ─────────────────────────────────────────
     # Recovery events and CRITICAL fault events always reach the incident
@@ -315,10 +383,53 @@ async def _on_syslog_line(raw_line: str) -> None:
     # ── Notify (Discord + Telegram) ────────────────────────────────────────
     if will_notify:
         settings = get_settings()
-        if settings.discord_enabled and await send_discord_alert(enriched, settings):
-            record_notification("discord")
-        if settings.telegram_enabled and await send_telegram_alert(enriched, settings):
-            record_notification("telegram")
+
+        # Build incident context for notification enrichment
+        _inc_ctx: dict[str, object] | None = None
+        if correlated is not None and correlated.incident_id:
+            _inc_ctx = {
+                "incident_id": correlated.incident_id,
+                "related_count": len(correlated.related_events),
+            }
+
+        discord_ok = False
+        discord_err = ""
+        if settings.discord_enabled:
+            discord_ok = await send_discord_alert(
+                enriched, settings, incident_context=_inc_ctx
+            )
+            if discord_ok:
+                record_notification("discord")
+            else:
+                discord_err = "delivery failed"
+
+        telegram_ok = False
+        telegram_err = ""
+        if settings.telegram_enabled:
+            telegram_ok = await send_telegram_alert(
+                enriched, settings, incident_context=_inc_ctx
+            )
+            if telegram_ok:
+                record_notification("telegram")
+            else:
+                telegram_err = "delivery failed"
+
+        # Persist per-channel delivery results
+        if alert_id is not None and _engine is not None:
+            try:
+                async with AsyncSession(_engine) as session:
+                    await update_notification_status(
+                        session,
+                        alert_id,
+                        discord_sent=discord_ok,
+                        telegram_sent=telegram_ok,
+                        discord_error=discord_err,
+                        telegram_error=telegram_err,
+                    )
+                    await session.commit()
+            except Exception as exc:  # noqa: BLE001
+                _log.error("Failed to update notification status: %s", exc)
+
         if _escalation is not None:
             _escalation.track_alert(enriched)
 
@@ -772,6 +883,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         settings.bundle_group_window_seconds,
     )
 
+    # ── Restore persisted BGP flap state from DB ──────────────────────────
+    try:
+        from src.database.crud import get_app_setting  # noqa: PLC0415
+
+        async with AsyncSession(engine) as session:
+            bgp_state_json = await get_app_setting(session, "bgp_flap_state")
+        if bgp_state_json is not None:
+            _dedup.import_bgp_states(json.loads(bgp_state_json))
+            _log.info("Restored persisted BGP flap state from DB")
+    except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+        _log.warning("Could not restore BGP flap state: %s", exc)
+    except SQLAlchemyError as exc:
+        _log.warning("Could not read BGP flap state from DB: %s", exc)
+
     # ── Restore in-flight escalation state from DB ─────────────────────────
     # Reconstruct _escalation from AlertLog rows so in-flight timers are
     # preserved across restarts.  The original tracked_at is approximated
@@ -924,6 +1049,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         await retention_task
     with contextlib.suppress(asyncio.CancelledError):
         await self_monitor_task
+
+    # ── Persist BGP flap state to DB ─────────────────────────────────────
+    if _dedup is not None:
+        try:
+            from src.database.crud import set_app_setting  # noqa: PLC0415
+
+            bgp_data = json.dumps(_dedup.export_bgp_states())
+            async with AsyncSession(engine) as session:
+                await set_app_setting(session, "bgp_flap_state", bgp_data)
+                await session.commit()
+            _log.info("Persisted BGP flap state to DB")
+        except (TypeError, ValueError) as exc:
+            _log.warning("Could not serialize BGP flap state: %s", exc)
+        except SQLAlchemyError as exc:
+            _log.warning("Could not persist BGP flap state to DB: %s", exc)
 
     _log.info("Disposing DB engine…")
     await engine.dispose()
