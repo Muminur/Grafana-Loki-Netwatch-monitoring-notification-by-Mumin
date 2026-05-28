@@ -53,10 +53,37 @@ jobs:
           coverage report --fail-under=85
 
       - name: Security gate
-        if: runner.os != 'Windows'
+        shell: python
         run: |
-          ! grep -rn --include=*.py "shell=True" src/ || { echo "BANNED: shell=True"; exit 1; }
-          ! grep -rn --include=*.py "os\.system(" src/ || { echo "BANNED: os.system"; exit 1; }
-          ! grep -rn --include=*.py "^[^#]*\bexcept:" src/ | grep -v "except [A-Z]" || { echo "BANNED: bare except"; exit 1; }
-          ! grep -rn --include=*.py "\beval(" src/ || { echo "BANNED: eval()"; exit 1; }
-          ! grep -rn --include=*.py "\bexec(" src/ || { echo "BANNED: exec()"; exit 1; }
+          import sys
+          import re
+          from pathlib import Path
+
+          BANNED = [
+              (r"shell\s*=\s*True",  "shell=True"),
+              (r"os\.system\(",       "os.system("),
+              (r"^\s*except\s*:",     "bare except:"),
+              (r"\beval\(",           "eval("),
+              (r"\bexec\(",           "exec("),
+          ]
+
+          violations = []
+          for path in Path("src").rglob("*.py"):
+              for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                  stripped = line.strip()
+                  # Skip comment-only lines for all checks
+                  if stripped.startswith("#"):
+                      continue
+                  # Remove inline comments for pattern matching
+                  code_part = re.sub(r"#.*$", "", line)
+                  for pattern, label in BANNED:
+                      if re.search(pattern, code_part):
+                          violations.append(f"BANNED [{label}]  {path}:{lineno}: {line.rstrip()}")
+
+          if violations:
+              print("Security gate FAILED -- banned patterns detected:", flush=True)
+              for v in violations:
+                  print(v, flush=True)
+              sys.exit(1)
+          else:
+              print("Security gate passed.", flush=True)
