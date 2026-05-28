@@ -628,6 +628,210 @@ class TestTelegramSender:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Resolution formatter tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestResolutionDiscordEmbed:
+    """Tests for format_resolution_discord_embed()."""
+
+    def test_resolution_discord_embed_is_green(self) -> None:
+        """RESOLVED embed has green color (0x00FF88)."""
+        from src.notifications.formatter import format_resolution_discord_embed
+
+        enriched = _make_enriched()
+        settings = _make_settings()
+        embed = format_resolution_discord_embed(enriched, "INC-20260528-001", settings)
+
+        assert "embeds" in embed
+        first = embed["embeds"][0]
+        assert first["color"] == 0x00FF88
+
+    def test_resolution_discord_embed_title_resolved(self) -> None:
+        """RESOLVED embed title contains 'RESOLVED'."""
+        from src.notifications.formatter import format_resolution_discord_embed
+
+        enriched = _make_enriched()
+        settings = _make_settings()
+        embed = format_resolution_discord_embed(enriched, "INC-20260528-001", settings)
+
+        first = embed["embeds"][0]
+        assert "RESOLVED" in first["title"]
+
+    def test_resolution_discord_embed_has_incident_id(self) -> None:
+        """RESOLVED embed includes the incident ID somewhere."""
+        from src.notifications.formatter import format_resolution_discord_embed
+
+        enriched = _make_enriched()
+        settings = _make_settings()
+        embed = format_resolution_discord_embed(enriched, "INC-20260528-001", settings)
+
+        full_text = json.dumps(embed)
+        assert "INC-20260528-001" in full_text
+
+    def test_resolution_discord_embed_has_device(self) -> None:
+        """RESOLVED embed includes the device name."""
+        from src.notifications.formatter import format_resolution_discord_embed
+
+        enriched = _make_enriched()
+        settings = _make_settings()
+        embed = format_resolution_discord_embed(enriched, "INC-20260528-001", settings)
+
+        full_text = json.dumps(embed)
+        assert enriched.device_name in full_text
+
+
+class TestResolutionTelegramMessage:
+    """Tests for format_resolution_telegram_message()."""
+
+    def test_resolution_telegram_message(self) -> None:
+        """RESOLVED Telegram message contains 'RESOLVED' and device name."""
+        from src.notifications.formatter import format_resolution_telegram_message
+
+        enriched = _make_enriched()
+        msg = format_resolution_telegram_message(enriched, "INC-20260528-001")
+
+        assert "RESOLVED" in msg
+        assert enriched.device_name in msg
+
+    def test_resolution_telegram_message_has_incident_id(self) -> None:
+        """RESOLVED Telegram message includes the incident ID."""
+        from src.notifications.formatter import format_resolution_telegram_message
+
+        enriched = _make_enriched()
+        msg = format_resolution_telegram_message(enriched, "INC-20260528-001")
+
+        assert "INC-20260528-001" in msg
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resolution sender tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestDiscordResolutionSender:
+    """Tests for send_discord_resolution()."""
+
+    @pytest.mark.asyncio
+    async def test_discord_resolution_send_success(self) -> None:
+        """Mock 204 response → returns True."""
+        from src.notifications.discord import send_discord_resolution
+
+        enriched = _make_enriched()
+        settings = _make_settings(discord_enabled=True)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_client = _make_mock_client(mock_response)
+
+        with patch(_DISCORD_PATCH, return_value=mock_client):
+            result = await send_discord_resolution(
+                enriched, "INC-20260528-001", settings
+            )
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_discord_resolution_disabled(self) -> None:
+        """discord_enabled=False → returns False."""
+        from src.notifications.discord import send_discord_resolution
+
+        enriched = _make_enriched()
+        settings = _make_settings(discord_enabled=False)
+
+        with patch(_DISCORD_PATCH) as mock_cls:
+            result = await send_discord_resolution(
+                enriched, "INC-20260528-001", settings
+            )
+
+        assert result is False
+        mock_cls.assert_not_called()
+
+
+class TestTelegramResolutionSender:
+    """Tests for send_telegram_resolution()."""
+
+    @pytest.mark.asyncio
+    async def test_telegram_resolution_send_success(self) -> None:
+        """Mock 200 JSON response → returns True."""
+        from src.notifications.telegram import send_telegram_resolution
+
+        enriched = _make_enriched()
+        settings = _make_settings(telegram_enabled=True)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": True, "result": {}}
+        mock_client = _make_mock_client(mock_response)
+
+        with patch(_TELEGRAM_PATCH, return_value=mock_client):
+            result = await send_telegram_resolution(
+                enriched, "INC-20260528-001", settings
+            )
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_telegram_resolution_disabled(self) -> None:
+        """telegram_enabled=False → returns False."""
+        from src.notifications.telegram import send_telegram_resolution
+
+        enriched = _make_enriched()
+        settings = _make_settings(telegram_enabled=False)
+
+        with patch(_TELEGRAM_PATCH) as mock_cls:
+            result = await send_telegram_resolution(
+                enriched, "INC-20260528-001", settings
+            )
+
+        assert result is False
+        mock_cls.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Escalation clear_incident tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestEscalationClearIncident:
+    """Tests for EscalationEngine.clear_incident()."""
+
+    def test_clear_incident_removes_tracked_entries(self) -> None:
+        """clear_incident() removes all tracked entries for a device."""
+        from src.notifications.escalation import EscalationEngine
+
+        engine = EscalationEngine()
+        enriched = _make_enriched(device_name="Equinix-RTR-1")
+        engine.track_alert(enriched)
+
+        engine.clear_incident("Equinix-RTR-1")
+
+        # After clear, no pending escalations for this device
+        pending = engine.get_pending_escalations()
+        device_pending = [e for e, _ in pending if e.device_name == "Equinix-RTR-1"]
+        assert len(device_pending) == 0
+
+    def test_clear_incident_returns_count(self) -> None:
+        """clear_incident() returns the number of entries cleared."""
+        from src.notifications.escalation import EscalationEngine
+
+        engine = EscalationEngine()
+        enriched = _make_enriched(device_name="Equinix-RTR-1")
+        engine.track_alert(enriched)
+
+        count = engine.clear_incident("Equinix-RTR-1")
+        assert count >= 1
+
+    def test_clear_incident_no_match_returns_zero(self) -> None:
+        """clear_incident() with no matching device returns 0."""
+        from src.notifications.escalation import EscalationEngine
+
+        engine = EscalationEngine()
+        count = engine.clear_incident("NonExistentDevice")
+        assert count == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Incident context tests
 # ─────────────────────────────────────────────────────────────────────────────
 

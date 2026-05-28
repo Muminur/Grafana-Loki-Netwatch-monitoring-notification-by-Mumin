@@ -190,6 +190,41 @@ class CorrelationEngine:
         if desired_global > self._incident_seq:
             self._incident_seq = desired_global
 
+    def resolve_incident(self, incident_id: str) -> str | None:
+        """Remove a resolved incident from the in-memory registries.
+
+        Deletes the incident from ``_incidents`` and removes matching entries
+        from ``_device_incidents`` lists.
+
+        Parameters
+        ----------
+        incident_id:
+            The ``INC-YYYYMMDD-NNN`` identifier of the incident to resolve.
+
+        Returns
+        -------
+        str | None
+            The *incident_id* if it was found and removed, ``None`` if the
+            incident was not in the registry (already resolved or expired).
+        """
+        if incident_id not in self._incidents:
+            _log.debug("resolve_incident: %s not in registry", incident_id)
+            return None
+
+        del self._incidents[incident_id]
+        self._backhaul_incident_ids.discard(incident_id)
+
+        # Remove this incident ID from all device lists
+        for key in list(self._device_incidents.keys()):
+            self._device_incidents[key] = [
+                iid for iid in self._device_incidents[key] if iid != incident_id
+            ]
+            if not self._device_incidents[key]:
+                del self._device_incidents[key]
+
+        _log.info("Incident %s resolved and removed from registry", incident_id)
+        return incident_id
+
     def correlate(self, enriched: EnrichedLog) -> CorrelatedEvent:
         """Correlate *enriched* against recent events.
 

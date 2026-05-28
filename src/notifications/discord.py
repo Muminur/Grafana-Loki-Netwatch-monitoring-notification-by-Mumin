@@ -30,6 +30,7 @@ import httpx
 from src.notifications.formatter import (
     format_discord_embed,
     format_escalation_discord_embed,
+    format_resolution_discord_embed,
 )
 
 if TYPE_CHECKING:
@@ -339,6 +340,128 @@ async def send_discord_escalation(
 
     _log.warning(
         "Discord escalation delivery failed after %d attempts for %s/%s: %s",
+        _MAX_ATTEMPTS,
+        enriched.device_name,
+        enriched.parsed.mnemonic,
+        last_error,
+    )
+    return False
+
+
+async def send_discord_resolution(
+    enriched: EnrichedLog, incident_id: str, settings: Settings
+) -> bool:
+    """Send a Discord resolution embed for a resolved incident.
+
+    Uses a green color (0x00FF88) to clearly indicate the incident has been
+    resolved.
+
+    Parameters
+    ----------
+    enriched:
+        The enriched syslog event that triggered the resolution (the
+        recovery event).
+    incident_id:
+        The ``INC-YYYYMMDD-NNN`` identifier of the resolved incident.
+    settings:
+        Application settings containing ``discord_webhook_url`` and
+        ``discord_enabled``.
+
+    Returns
+    -------
+    bool
+        ``True`` if the webhook was delivered successfully (HTTP 2xx),
+        ``False`` for any failure.  Never raises.
+    """
+    if not settings.discord_enabled:
+        _log.debug("Discord notifications disabled — skipping resolution.")
+        return False
+
+    if not settings.discord_webhook_url:
+        _log.warning("discord_webhook_url is empty — cannot send Discord resolution.")
+        return False
+
+    if not _is_valid_discord_url(settings.discord_webhook_url):
+        _log.error("discord_webhook_url has invalid format — skipping resolution.")
+        return False
+
+    payload = format_resolution_discord_embed(enriched, incident_id, settings)
+
+    last_error: str = ""
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    settings.discord_webhook_url,
+                    json=payload,
+                )
+        except httpx.TimeoutException as exc:
+            last_error = f"timeout: {type(exc).__name__}"
+            _log.warning(
+                "Discord resolution timed out (attempt %d/%d): %s",
+                attempt,
+                _MAX_ATTEMPTS,
+                type(exc).__name__,
+            )
+        except httpx.RequestError as exc:
+            last_error = f"request error: {type(exc).__name__}"
+            _log.warning(
+                "Discord resolution request failed (attempt %d/%d): %s",
+                attempt,
+                _MAX_ATTEMPTS,
+                type(exc).__name__,
+            )
+        else:
+            if response.status_code in (200, 204):
+                _log.debug(
+                    "Discord resolution sent for %s/%s incident %s (HTTP %d)",
+                    enriched.device_name,
+                    enriched.parsed.mnemonic,
+                    incident_id,
+                    response.status_code,
+                )
+                return True
+
+            if response.status_code == 429:
+                retry_after = min(
+                    _parse_retry_after(response.headers.get("Retry-After", "1")),
+                    _MAX_DELAY,
+                )
+                last_error = "HTTP 429 (rate-limited)"
+                _log.warning(
+                    "Discord resolution rate-limited (attempt %d/%d); "
+                    "sleeping %.1f s",
+                    attempt,
+                    _MAX_ATTEMPTS,
+                    retry_after,
+                )
+                if attempt < _MAX_ATTEMPTS:
+                    await asyncio.sleep(retry_after)
+                continue
+
+            if response.status_code >= 500:
+                last_error = f"HTTP {response.status_code}"
+                _log.warning(
+                    "Discord resolution returned HTTP %d (attempt %d/%d): %s",
+                    response.status_code,
+                    attempt,
+                    _MAX_ATTEMPTS,
+                    response.text[:200],
+                )
+            else:
+                _log.error(
+                    "Discord resolution returned HTTP %d: %s",
+                    response.status_code,
+                    response.text[:200],
+                )
+                return False
+
+        if attempt < _MAX_ATTEMPTS:
+            delay = min(_BASE_DELAY * (2 ** (attempt - 1)), _MAX_DELAY)
+            await asyncio.sleep(delay)
+
+    _log.warning(
+        "Discord resolution delivery failed after %d attempts for %s/%s: %s",
         _MAX_ATTEMPTS,
         enriched.device_name,
         enriched.parsed.mnemonic,
