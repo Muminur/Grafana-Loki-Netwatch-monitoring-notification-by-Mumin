@@ -58,11 +58,11 @@ def test_enrich_lacp_expired(sample_lacp_expired_log: str) -> None:
 
 
 def test_enrich_maxpfx(sample_maxpfx_log: str) -> None:
-    """Max Prefix log → KKT-Core-2 device, WARNING classification."""
+    """Max Prefix log → KKT-Core-2 device, CRITICAL classification."""
     result = enrich(_parse(sample_maxpfx_log))
 
     assert "KKT-Core-2" in result.device_name
-    assert result.classification == "WARNING"
+    assert result.classification == "CRITICAL"
 
 
 # ---------------------------------------------------------------------------

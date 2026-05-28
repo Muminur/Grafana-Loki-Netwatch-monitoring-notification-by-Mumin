@@ -10,9 +10,15 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 
-from src.database.models import AlertLog, AppSetting, HourlyStats, MaintenanceWindow
+from src.database.models import (
+    AlertLog,
+    AppSetting,
+    HourlyStats,
+    Incident,
+    MaintenanceWindow,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
@@ -104,6 +110,242 @@ async def get_alerts_by_device(
     stmt = (
         select(AlertLog)
         .where(AlertLog.device_name == device_name)
+        .order_by(AlertLog.timestamp.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# Incident CRUD
+# ---------------------------------------------------------------------------
+
+
+async def create_incident(
+    session: AsyncSession,
+    *,
+    id: str,  # noqa: A002
+    title: str,
+    root_cause: str,
+    affected_devices: str,
+    affected_clients: str,
+    alert_count: int,
+    status: str,
+    created_at: datetime,
+) -> Incident:
+    """Persist a new ``Incident`` and return the flushed instance.
+
+    All parameters are keyword-only to prevent accidental positional misuse.
+    The session is flushed so the row is immediately visible within the same
+    transaction.  The caller is responsible for committing.
+
+    Args:
+        session: An active async session.
+        id: Incident ID in ``INC-YYYYMMDD-NNN`` format.
+        title: Short human-readable incident summary.
+        root_cause: Description of the root cause (may be empty initially).
+        affected_devices: JSON-serialised list of device names.
+        affected_clients: JSON-serialised list of client names.
+        alert_count: Number of alerts grouped into this incident so far.
+        status: One of ``active`` / ``acknowledged`` / ``resolved``.
+        created_at: Timestamp when the incident was first created.
+
+    Returns:
+        The persisted ``Incident`` instance.
+    """
+    incident = Incident(
+        id=id,
+        title=title,
+        root_cause=root_cause,
+        affected_devices=affected_devices,
+        affected_clients=affected_clients,
+        alert_count=alert_count,
+        status=status,
+        created_at=created_at,
+    )
+    session.add(incident)
+    await session.flush()
+    await session.refresh(incident)
+    return incident
+
+
+async def get_incident(
+    session: AsyncSession,
+    incident_id: str,
+) -> Incident | None:
+    """Return an ``Incident`` by primary key, or ``None`` if not found.
+
+    Args:
+        session: An active async session.
+        incident_id: The ``INC-YYYYMMDD-NNN`` primary key.
+
+    Returns:
+        The matching ``Incident``, or ``None``.
+    """
+    stmt = select(Incident).where(Incident.id == incident_id)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def update_incident(
+    session: AsyncSession,
+    incident_id: str,
+    **kwargs: object,
+) -> Incident | None:
+    """Apply a partial update to an existing ``Incident``.
+
+    Only the columns present in *kwargs* are modified.  Unknown column names
+    are silently ignored (no ``AttributeError``).
+
+    Args:
+        session: An active async session.
+        incident_id: The ``INC-YYYYMMDD-NNN`` primary key to update.
+        **kwargs: Column-name → new-value pairs to apply.
+
+    Returns:
+        The updated ``Incident``, or ``None`` if not found.
+    """
+    incident = await get_incident(session, incident_id)
+    if incident is None:
+        return None
+    for key, value in kwargs.items():
+        if hasattr(incident, key):
+            setattr(incident, key, value)
+    await session.flush()
+    await session.refresh(incident)
+    return incident
+
+
+async def get_incidents_by_status(
+    session: AsyncSession,
+    status: str,
+    limit: int = 100,
+) -> list[Incident]:
+    """Return up to ``limit`` incidents matching ``status``, newest first.
+
+    Results are ordered by ``created_at`` descending so the most recent
+    incidents appear first.
+
+    Args:
+        session: An active async session.
+        status: One of ``active`` / ``acknowledged`` / ``resolved``.
+        limit: Maximum number of rows to return (default 100).
+
+    Returns:
+        A list of matching ``Incident`` instances.
+    """
+    stmt = (
+        select(Incident)
+        .where(Incident.status == status)
+        .order_by(Incident.created_at.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def get_alerts_by_incident(
+    session: AsyncSession,
+    incident_id: str,
+    limit: int = 500,
+) -> list[AlertLog]:
+    """Return up to ``limit`` alerts belonging to a specific incident.
+
+    Results are ordered by ``timestamp`` descending (newest first).
+
+    Args:
+        session: An active async session.
+        incident_id: The ``INC-YYYYMMDD-NNN`` incident identifier.
+        limit: Maximum number of rows to return (default 500).
+
+    Returns:
+        A list of ``AlertLog`` instances whose ``incident_id`` matches.
+    """
+    stmt = (
+        select(AlertLog)
+        .where(AlertLog.incident_id == incident_id)
+        .order_by(AlertLog.timestamp.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# Per-channel notification status
+# ---------------------------------------------------------------------------
+
+
+async def update_notification_status(
+    session: AsyncSession,
+    alert_id: int,
+    discord_sent: bool | None = None,
+    telegram_sent: bool | None = None,
+    discord_error: str | None = None,
+    telegram_error: str | None = None,
+) -> bool:
+    """Update per-channel notification delivery status on an ``AlertLog``.
+
+    Only the fields that are explicitly passed (not ``None``) are updated.
+    Error strings are truncated to 256 characters to match the column width.
+
+    Args:
+        session: An active async session.
+        alert_id: The primary key of the ``AlertLog`` to update.
+        discord_sent: Whether the Discord notification was delivered.
+        telegram_sent: Whether the Telegram notification was delivered.
+        discord_error: Error message from the Discord sender (if any).
+        telegram_error: Error message from the Telegram sender (if any).
+
+    Returns:
+        ``True`` if the row was found and updated, ``False`` if not found.
+    """
+    stmt = select(AlertLog).where(AlertLog.id == alert_id)
+    result = await session.execute(stmt)
+    alert = result.scalar_one_or_none()
+    if alert is None:
+        return False
+
+    if discord_sent is not None:
+        alert.discord_sent = discord_sent
+    if telegram_sent is not None:
+        alert.telegram_sent = telegram_sent
+    if discord_error is not None:
+        alert.discord_error = discord_error[:256]
+    if telegram_error is not None:
+        alert.telegram_error = telegram_error[:256]
+
+    await session.flush()
+    return True
+
+
+async def get_failed_notifications(
+    session: AsyncSession,
+    limit: int = 100,
+) -> list[AlertLog]:
+    """Return alerts where notification was attempted but at least one channel failed.
+
+    Selects ``AlertLog`` rows where ``notification_sent`` is True but either
+    ``discord_sent`` or ``telegram_sent`` is False.  Results are ordered
+    newest-first (descending ``timestamp``).
+
+    Args:
+        session: An active async session.
+        limit: Maximum number of rows to return (default 100).
+
+    Returns:
+        A list of ``AlertLog`` instances with at least one channel failure.
+    """
+    stmt = (
+        select(AlertLog)
+        .where(
+            AlertLog.notification_sent.is_(True),
+            or_(
+                AlertLog.discord_sent.is_(False),
+                AlertLog.telegram_sent.is_(False),
+            ),
+        )
         .order_by(AlertLog.timestamp.desc())
         .limit(limit)
     )
