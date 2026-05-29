@@ -45,6 +45,8 @@ from src.api.routes import (
     add_alert_to_store,
     get_maintenance_store,
     increment_alerts_processed,
+    is_alert_acknowledged,
+    is_maxpfx_alerts_enabled,
     load_persisted_state,
     router,
     set_background_tasks,
@@ -222,6 +224,21 @@ _templates.env.globals["app_version"] = _APP_VERSION
 # Ingestion callback
 # ---------------------------------------------------------------------------
 
+# Severity ranking for the ``notify_severity`` floor.  Higher = more severe.
+# Classifications absent from this map (NOISE, USER_LOGIN) rank 0 and therefore
+# never clear any floor, so they are never notified.
+_NOTIFY_SEVERITY_RANK = {"INFO": 1, "WARNING": 2, "CRITICAL": 3}
+
+
+def _meets_notify_threshold(classification: str, min_severity: str) -> bool:
+    """Return True if *classification* is at or above the *min_severity* floor.
+
+    The floor is the operator-configured "Minimum Alert Severity" setting.  An
+    unrecognised floor falls back to CRITICAL — the safest, quietest default.
+    """
+    floor = _NOTIFY_SEVERITY_RANK.get(min_severity, _NOTIFY_SEVERITY_RANK["CRITICAL"])
+    return _NOTIFY_SEVERITY_RANK.get(classification, 0) >= floor
+
 
 async def _on_syslog_line(raw_line: str) -> None:
     """Process a raw syslog line through the full pipeline.
@@ -266,7 +283,23 @@ async def _on_syslog_line(raw_line: str) -> None:
     # handled exclusively in add_alert_to_store() (routes.py) to avoid the
     # logic being duplicated in two places with potential divergence.
     suppress = correlated.suppress_notification if correlated is not None else False
-    will_notify = should_send and enriched.notify and not suppress
+    # MAXPFX mute toggle: when the operator turns MAXPFX alerts off, mute the
+    # event across all live surfaces (notify, audio, incident card, broadcast)
+    # but still persist it to the DB for audit/history.
+    maxpfx_muted = (
+        enriched.parsed.mnemonic == "MAXPFX" and not is_maxpfx_alerts_enabled()
+    )
+    # The per-rule ``notify`` flag is True only for CRITICAL rules, so gating on
+    # it ignored the operator's "Minimum Alert Severity" choice.  Gate on the
+    # configured floor instead — at the default CRITICAL floor this is identical
+    # to the old behaviour, but lower floors now actually surface WARNING/INFO.
+    _min_severity = getattr(get_settings(), "notify_severity", "CRITICAL")
+    will_notify = (
+        should_send
+        and _meets_notify_threshold(enriched.classification, _min_severity)
+        and not suppress
+        and not maxpfx_muted
+    )
     incident_id = (correlated.incident_id or "") if correlated is not None else ""
     alert_id: int | None = None
     if (should_send or is_recovery) and _engine is not None:
@@ -360,7 +393,9 @@ async def _on_syslog_line(raw_line: str) -> None:
     # auto-resolution; CRITICAL events need it so that a DOWN→UP→DOWN
     # sequence within the dedup window still recreates the incident after
     # the UP event resolved the first one.
-    if should_send or is_recovery or enriched.classification == "CRITICAL":
+    if (
+        should_send or is_recovery or enriched.classification == "CRITICAL"
+    ) and not maxpfx_muted:
         if correlated is None:
             correlated = CorrelatedEvent(enriched=enriched)
         try:
@@ -390,6 +425,23 @@ async def _on_syslog_line(raw_line: str) -> None:
                     break
             except (ValueError, AttributeError, TypeError):
                 continue
+
+    # ── Acknowledged-incident suppression ──────────────────────────────────
+    # Once an operator ACKs an incident, stop notifying for subsequent alerts
+    # that fold onto the same incident card.  The card's acknowledged flag is
+    # set by the /acknowledge endpoint and preserved as new matching alerts
+    # bump the existing card in add_alert_to_store(), so the lookup here
+    # mirrors that grouping exactly.
+    if will_notify and is_alert_acknowledged(
+        enriched.device_name,
+        enriched.parsed.mnemonic,
+        enriched.interface_name,
+        enriched.bgp_neighbor,
+        enriched.as_number or 0,
+        enriched.parsed.message,
+        incident_id,
+    ):
+        will_notify = False
 
     # ── Notify (Discord + Telegram) ────────────────────────────────────────
     if will_notify:
@@ -444,6 +496,18 @@ async def _on_syslog_line(raw_line: str) -> None:
         if _escalation is not None:
             _escalation.track_alert(enriched)
 
+    # ── Cancel escalation on recovery (independent of correlator state) ────
+    # A CRITICAL fault that recovers before a human acknowledges it must never
+    # escalate.  Run this for EVERY recovery event — not only when the
+    # correlator happens to hold an active incident — so an ADJCHANGE/UPDOWN
+    # flap that never formed a correlated incident still cancels its escalation.
+    # NOTE: resolve_alert keys on (device, mnemonic, discriminator), so it only
+    # cancels recoveries that share the fault's mnemonic (BGP/interface up, SFP
+    # alarm clear).  Cross-mnemonic pairs (e.g. LACP_EXPIRED→LACP_ACTIVE) are
+    # cancelled by the correlator's clear_incident path below, not here.
+    if is_recovery and _escalation is not None:
+        _escalation.resolve_alert(enriched)
+
     # ── Incident resolution on recovery event ─────────────────────────────
     # When a recovery event (Interface Up, BGP Up, etc.) is detected and
     # the device has an active incident in the correlator, resolve it:
@@ -488,7 +552,7 @@ async def _on_syslog_line(raw_line: str) -> None:
                     await send_telegram_resolution(enriched, resolved_id, settings)
 
     # ── Broadcast to WebSocket clients ─────────────────────────────────────
-    if should_send:
+    if should_send and not maxpfx_muted:
         await _ws_manager.broadcast_filtered(
             {
                 "type": "alert",
@@ -556,32 +620,47 @@ async def _digest_scheduler(engine: object) -> None:
             _log.error("Digest scheduler error: %s", exc)
 
 
+async def _dispatch_pending_escalations() -> None:
+    """Dispatch one cycle of pending escalations to Discord/Telegram.
+
+    Skips MAXPFX alerts while the operator has MAXPFX alerts muted, leaving the
+    entry pending (not marked escalated) so it still escalates if MAXPFX is
+    re-enabled before the underlying issue is resolved.
+    """
+    if _escalation is None:
+        return
+    for alert, elapsed_minutes in _escalation.get_pending_escalations():
+        if alert.parsed.mnemonic == "MAXPFX" and not is_maxpfx_alerts_enabled():
+            _log.debug(
+                "Suppressing MAXPFX escalation for %s — MAXPFX alerts muted",
+                alert.device_name,
+            )
+            continue
+        _log.warning(
+            "ESCALATION: %s/%s unacknowledged for >%d min",
+            alert.device_name,
+            alert.parsed.mnemonic,
+            elapsed_minutes,
+        )
+        settings = get_settings()
+        if settings.discord_enabled:
+            await send_discord_escalation(alert, elapsed_minutes, settings)
+        if settings.telegram_enabled:
+            await send_telegram_escalation(alert, elapsed_minutes, settings)
+        _escalation.mark_escalated(alert.device_name, alert.parsed.mnemonic)
+
+
 async def _escalation_checker() -> None:
     """Background task: check for pending escalations every 60 seconds.
 
-    Alerts that have been tracked by the escalation engine for longer than
-    the escalation delay (default 15 min) without acknowledgement are sent
-    as escalation notifications to Discord and Telegram, then marked as
-    escalated so they are not re-sent on every subsequent check cycle.
+    Alerts tracked for longer than the escalation delay (default 15 min)
+    without acknowledgement are dispatched by :func:`_dispatch_pending_escalations`,
+    then marked as escalated so they are not re-sent every cycle.
     """
     while True:
         try:
             await asyncio.sleep(60)
-            if _escalation is not None:
-                pending = _escalation.get_pending_escalations()
-                for alert, elapsed_minutes in pending:
-                    _log.warning(
-                        "ESCALATION: %s/%s unacknowledged for >%d min",
-                        alert.device_name,
-                        alert.parsed.mnemonic,
-                        elapsed_minutes,
-                    )
-                    settings = get_settings()
-                    if settings.discord_enabled:
-                        await send_discord_escalation(alert, elapsed_minutes, settings)
-                    if settings.telegram_enabled:
-                        await send_telegram_escalation(alert, elapsed_minutes, settings)
-                    _escalation.mark_escalated(alert.device_name, alert.parsed.mnemonic)
+            await _dispatch_pending_escalations()
         except asyncio.CancelledError:
             break
         except Exception as exc:  # noqa: BLE001

@@ -1291,7 +1291,7 @@
             .then(function(data) {
                 _browserNotifEnabled = !!data.browser_notif;
                 try { localStorage.setItem('netwatch_browser_notif', data.browser_notif ? '1' : '0'); } catch(e) {}
-                _repeatAlarmEnabled = data.repeat_alarm !== false;
+                _setRepeatAlarm(data.repeat_alarm !== false);
                 if (window.NetwatchSounds) {
                     window.NetwatchSounds.setEnabled(data.sound_enabled !== false);
                     window.NetwatchSounds.setPrefs({
