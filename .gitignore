@@ -11,6 +11,10 @@ PLAN.md
 *.omc
 .serena/
 *.docx
+# Internal PRD drafts, appendices & research scratch (root-level, never pushed)
+PRD-*.md
+APPENDIX-*.txt
+autoresearch/
 
 # ── Secrets / config (NEVER commit) ──────────────────────────────
 .env
@@ -82,6 +86,7 @@ htmlcov/
 *.stackdump
 log.txt
 preview-*
+preview.webp
 
 # ── OS cruft ─────────────────────────────────────────────────────
 .DS_Store

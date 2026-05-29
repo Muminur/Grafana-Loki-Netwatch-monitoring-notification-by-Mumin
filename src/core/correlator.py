@@ -317,9 +317,7 @@ class CorrelationEngine:
                     flap_count=flap_count,
                     is_flapping=flap_count >= self.FLAP_THRESHOLD,
                     suppress_notification=True,
-                    related_events=list(
-                        self._incidents.get(existing_mass_id, [])
-                    ),
+                    related_events=list(self._incidents.get(existing_mass_id, [])),
                 )
 
         if incident_id is not None:
@@ -376,9 +374,7 @@ class CorrelationEngine:
                 flap_count=flap_count,
                 is_flapping=flap_count >= self.FLAP_THRESHOLD,
                 suppress_notification=True,
-                related_events=list(
-                    self._incidents.get(existing_mass_id, [])
-                ),
+                related_events=list(self._incidents.get(existing_mass_id, [])),
             )
 
         # ── Flapping-only (no other correlation) ───────────────────────────
@@ -676,11 +672,10 @@ class CorrelationEngine:
                 stale_ids.add(inc_id)
                 continue
             # Use the timestamp of the most-recent correlated event as the
-            # last-activity marker for the incident.
-            last_ts = max(
-                (ev.parsed.timestamp for ev in events),
-                default=datetime.min.replace(tzinfo=UTC),
-            )
+            # last-activity marker for the incident.  ``events`` is guaranteed
+            # non-empty here (the empty case is handled by the guard above), so
+            # ``max`` needs no default sentinel.
+            last_ts = max(ev.parsed.timestamp for ev in events)
             if last_ts < cutoff:
                 stale_ids.add(inc_id)
 

@@ -716,9 +716,7 @@ async def test_delete_db_failure_warns_and_still_returns_deleted(
 
 
 @pytest.mark.asyncio
-async def test_ack_survives_restart(
-    clean_stores: None, async_db: Any
-) -> None:
+async def test_ack_survives_restart(clean_stores: None, async_db: Any) -> None:
     """Incident ACK marks must survive a simulated restart.
 
     Steps:
@@ -791,12 +789,14 @@ async def test_ack_survives_restart(
         from sqlalchemy import select
 
         ack_rows = (
-            await session.execute(
-                select(IncidentAck).where(
-                    IncidentAck.incident_id == incident_id
+            (
+                await session.execute(
+                    select(IncidentAck).where(IncidentAck.incident_id == incident_id)
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(ack_rows) == 1
         assert ack_rows[0].operator_name == "mumin"
 
