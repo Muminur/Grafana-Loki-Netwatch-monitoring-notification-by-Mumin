@@ -229,8 +229,10 @@ async def test_hourly_aggregation(session: AsyncSession):
     """Insert alerts, run aggregator, verify hourly HourlyStats rows exist."""
     from src.statistics.aggregator import aggregate_hourly
 
-    # Insert 3 CRITICAL + 2 WARNING for EQ-RTR-01 in the same hour
-    hour_ts = datetime(2026, 5, 22, 15, 0, 0, tzinfo=UTC)
+    # Insert 3 CRITICAL + 2 WARNING for EQ-RTR-01 in the same hour.
+    # Anchor to the current hour so the alerts always fall inside
+    # aggregate_hourly's lookback window regardless of the wall-clock date.
+    hour_ts = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     alerts = [
         _make_alert(
             classification="CRITICAL",
@@ -357,7 +359,8 @@ async def test_device_stats(session: AsyncSession):
     from src.statistics.engine import get_device_stats
 
     device = "BSCCL-EQ-RTR-01"
-    now = datetime(2026, 5, 22, 15, 0, 0, tzinfo=UTC)
+    # Anchor to now so the alerts stay inside get_device_stats' 7-day window.
+    now = datetime.now(UTC)
 
     # 5 alerts for target device, 3 for another
     for i in range(5):
@@ -505,7 +508,8 @@ async def test_hourly_aggregation_multiple_devices(session: AsyncSession):
     """Aggregator creates separate rows for different devices in same hour."""
     from src.statistics.aggregator import aggregate_hourly
 
-    hour_ts = datetime(2026, 5, 22, 14, 0, 0, tzinfo=UTC)
+    # Anchor to the current hour so alerts stay inside the lookback window.
+    hour_ts = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     session.add(
         _make_alert(
             classification="CRITICAL", device_name="Device-A", timestamp=hour_ts
@@ -545,7 +549,8 @@ async def test_hourly_aggregation_upsert_idempotent(session: AsyncSession):
     """
     from src.statistics.aggregator import aggregate_hourly
 
-    hour_ts = datetime(2026, 5, 22, 16, 0, 0, tzinfo=UTC)
+    # Anchor to the current hour so alerts stay inside the lookback window.
+    hour_ts = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     alerts = [
         _make_alert(
             classification="CRITICAL",
