@@ -65,7 +65,6 @@ from src.database.crud import (
     prune_old_alerts,
     prune_old_stats,
     resolve_incident,
-    update_incident,
     update_notification_status,
     vacuum_db,
 )
@@ -315,7 +314,7 @@ async def _on_syslog_line(raw_line: str) -> None:
                             session,
                             id=correlated.incident_id,
                             title=(
-                                f"{enriched.device_name} " f"{enriched.parsed.mnemonic}"
+                                f"{enriched.device_name} {enriched.parsed.mnemonic}"
                             ),
                             root_cause=enriched.parsed.message,
                             affected_devices=f'["{enriched.device_name}"]',

@@ -12,7 +12,7 @@ Scheduled to run at 08:00 BDT (02:00 UTC) via the background task scheduler.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import httpx
@@ -65,9 +65,7 @@ async def generate_daily_digest(session: AsyncSession) -> str:
 
     # Flapping peers: count distinct device+neighbor pairs with state='FLAPPING'
     # within the current day (UTC midnight boundary).
-    _utc_midnight = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    _utc_midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     flap_stmt = (
         select(
             func.count(

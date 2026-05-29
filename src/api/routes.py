@@ -34,6 +34,7 @@ from src.auth import require_api_key
 from src.data.bgp_bundle_map import lookup_bundle_for_bgp_peer
 from src.data.device_map import DEVICE_MAP
 from src.data.topology import NETWORK_TOPOLOGY
+from src.database.timeutils import now_bdt_naive
 from src.rate_limit import RATE_LIMIT_MUTATING, RATE_LIMIT_READ, limiter
 
 if TYPE_CHECKING:
@@ -177,6 +178,102 @@ def _shorten_iface(name: str) -> str:
 def _extract_bundle_from_msg(message: str) -> str:
     m = re.search(r"Bundle-Ether(\d+)", message)
     return f"BE{m.group(1)}" if m else ""
+
+
+def _to_naive_iso(ts: Any) -> str:
+    """Return ``ts`` as ISO-8601 with any UTC offset stripped (naive BDT face value).
+
+    A tz-aware ``parsed.timestamp`` serialises as ``...+06:00``, which breaks the
+    lexicographic timestamp comparisons in the recovery-prune helpers.
+
+    Args:
+        ts: A datetime object (tz-aware or naive) or any object with
+            ``.isoformat()``.
+
+    Returns:
+        An ISO-8601 string with tzinfo stripped (naive BDT face value).
+    """
+    if isinstance(ts, datetime):
+        return ts.replace(tzinfo=None).isoformat()
+    raw: str = ts.isoformat()
+    try:
+        return datetime.fromisoformat(raw).replace(tzinfo=None).isoformat()
+    except (TypeError, ValueError):
+        return raw
+
+
+_BGP_NEIGHBOR_RE = re.compile(r"neighbor\s+(\S+)", re.IGNORECASE)
+
+
+def _extract_bgp_neighbor_from_msg(message: str) -> str:
+    """Extract the BGP neighbor address from a syslog message body.
+
+    Args:
+        message: Raw syslog message text.
+
+    Returns:
+        The neighbor IP/address string, or an empty string if not found.
+    """
+    # Cap scan length: the BGP neighbor always appears early;
+    # bounds work on huge messages.
+    m = _BGP_NEIGHBOR_RE.search(message[:500])
+    return m.group(1) if m else ""
+
+
+def _bgp_discriminator(neighbor: str, as_number: int, message: str) -> str:
+    """Stable BGP-peer identity used to dedup ADJCHANGE incidents.
+
+    A DOWN event usually carries ``bgp_neighbor``; its matching UP event
+    sometimes omits it but still names the neighbor in the message text, or
+    carries only the AS number. Falling back neighbor -> message -> AS keeps
+    a DOWN and its UP under one key so the UP can supersede the DOWN.
+
+    Args:
+        neighbor: The ``bgp_neighbor`` field value (may be empty).
+        as_number: The ``as_number`` field value (may be 0).
+        message: The raw syslog message text.
+
+    Returns:
+        A stable string discriminator for the BGP peer identity.
+    """
+    # Empty result is an accepted edge case: an anonymous ADJCHANGE with no
+    # neighbor and AS 0 (extremely rare) collapses onto the per-device key.
+    return (
+        neighbor
+        or _extract_bgp_neighbor_from_msg(message)
+        or (str(as_number) if as_number else "")
+    )
+
+
+def _incident_group_key(
+    device: str,
+    mnemonic: str,
+    interface: str,
+    neighbor: str,
+    as_number: int,
+    message: str,
+) -> str:
+    """Logical identity of an incident card, independent of the alert counter.
+
+    Two alerts describing the same fault (same device + mnemonic +
+    interface/BGP-peer) collapse onto one card instead of spawning a new
+    ALERT-N card per occurrence.
+
+    Args:
+        device: Device name.
+        mnemonic: Syslog mnemonic (e.g. ``ADJCHANGE``, ``UPDOWN``).
+        interface: Interface name (may be empty).
+        neighbor: BGP neighbor address (may be empty).
+        as_number: BGP AS number (may be 0).
+        message: Raw syslog message text.
+
+    Returns:
+        A stable string key identifying this fault/peer combination.
+    """
+    if mnemonic == "ADJCHANGE":
+        return f"{device}:ADJCHANGE:{_bgp_discriminator(neighbor, as_number, message)}"
+    iface = interface or _extract_iface_from_msg(message)
+    return f"{device}:{mnemonic}:{iface}"
 
 
 def _prune_recovered_incidents() -> None:
@@ -551,7 +648,7 @@ async def resolve_silent_faults_in_db(
 
     from src.database.models import AlertLog  # noqa: PLC0415
 
-    now = datetime.now(UTC)
+    now = now_bdt_naive()
     cutoff = now - timedelta(hours=24)
     async with AsyncSession(engine) as session:
         stmt = (
@@ -592,8 +689,7 @@ async def resolve_recovery_alerts_in_db(
 
     from src.database.models import AlertLog  # noqa: PLC0415
 
-    _bdt_tz = timezone(timedelta(hours=6))
-    now = datetime.now(_bdt_tz).replace(tzinfo=None)
+    now = now_bdt_naive()
     cutoff = now - timedelta(hours=24)
 
     iface = interface_name or _extract_iface_from_msg(message)
@@ -639,7 +735,7 @@ async def _resolve_noise_alerts_on_startup(engine: AsyncEngine) -> int:
 
     from src.database.models import AlertLog  # noqa: PLC0415
 
-    now = datetime.now(UTC)
+    now = now_bdt_naive()
     async with AsyncSession(engine) as session:
         stmt = (
             update(AlertLog)
@@ -743,7 +839,7 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
     """
     alert: dict[str, Any] = {
         "id": next(_alert_id_counter),
-        "timestamp": enriched.parsed.timestamp.isoformat(),
+        "timestamp": _to_naive_iso(enriched.parsed.timestamp),
         "source_ip": enriched.parsed.source_ip,
         "device": enriched.device_name,
         "hostname": enriched.parsed.hostname,
@@ -939,8 +1035,39 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
             or (correlated.incident_id and not correlated.is_symptom)
         )
     ):
-        inc_id = correlated.incident_id or f"ALERT-{alert['id']}"
-        existing = next((i for i in _incidents_store if i["id"] == inc_id), None)
+        if correlated.incident_id:
+            inc_id = correlated.incident_id
+            existing = next((i for i in _incidents_store if i["id"] == inc_id), None)
+        else:
+            group_key = _incident_group_key(
+                enriched.device_name,
+                enriched.parsed.mnemonic,
+                enriched.interface_name,
+                enriched.bgp_neighbor,
+                enriched.as_number or 0,
+                enriched.parsed.message,
+            )
+            # Skip correlator-owned cards (id "INC-..."): those are grouped by
+            # the correlation engine via correlated.incident_id above, so the
+            # ungrouped fallback must never fold a standalone alert into one.
+            existing = next(
+                (
+                    i
+                    for i in _incidents_store
+                    if not str(i.get("id", "")).startswith("INC-")
+                    and _incident_group_key(
+                        i.get("device", ""),
+                        i.get("mnemonic", ""),
+                        i.get("interface", ""),
+                        i.get("neighbor", ""),
+                        i.get("as_number", 0),
+                        i.get("message", ""),
+                    )
+                    == group_key
+                ),
+                None,
+            )
+            inc_id = existing["id"] if existing else f"ALERT-{alert['id']}"
         if existing:
             existing["alert_count"] = existing.get("alert_count", 0) + 1
             existing["last_alert"] = alert["timestamp"]
@@ -1539,8 +1666,7 @@ async def get_incidents() -> list[dict[str, Any]]:
 
     _engine = _db_engine  # narrowed: not None (checked above)
 
-    _bdt_tz = timezone(timedelta(hours=6))
-    _now_bdt = datetime.now(_bdt_tz).replace(tzinfo=None)
+    _now_bdt = now_bdt_naive()
     _cutoff_24h = _now_bdt - timedelta(hours=24)
 
     async with AsyncSession(_engine) as session:
@@ -1601,13 +1727,19 @@ async def get_incidents() -> list[dict[str, Any]]:
     latest_state: dict[str, str] = {}  # key → "recovery" | "active"
     key_rows: dict[str, list[Any]] = {}  # key → list of non-recovery rows
 
+    # NOTE: this first-pass key tracks RECOVERY STATE per fault and is
+    # intentionally NOT the same as the second-pass card-dedup key. It is
+    # broader for the non-interface else-branch (it folds in bgp_neighbor) so
+    # a DOWN and its later UP land in the same recovery bucket. The UI card
+    # grouping below keys via _incident_group_key, matching the live path.
     for row in rows:
         is_recov = _is_recovery_event(row.mnemonic, row.message or "")
         iface = row.interface_name or _extract_iface_from_msg(row.message or "")
-        if row.mnemonic == "ADJCHANGE" and row.bgp_neighbor:
-            key = f"{row.device_name}:BGP:{row.bgp_neighbor}"
-        elif row.mnemonic == "ADJCHANGE" and row.as_number:
-            key = f"{row.device_name}:BGP:{row.as_number}"
+        if row.mnemonic == "ADJCHANGE":
+            disc = _bgp_discriminator(
+                row.bgp_neighbor or "", row.as_number or 0, row.message or ""
+            )
+            key = f"{row.device_name}:BGP:{disc}"
         elif iface:
             key = f"{row.device_name}:{iface}"
         else:
@@ -1625,15 +1757,16 @@ async def get_incidents() -> list[dict[str, Any]]:
         if state == "recovery":
             continue
         for row in key_rows.get(key, []):
-            discriminator = ""
-            if row.mnemonic == "ADJCHANGE" and row.bgp_neighbor:
-                discriminator = row.bgp_neighbor
-            elif row.mnemonic == "ADJCHANGE" and row.as_number:
-                discriminator = str(row.as_number)
-            else:
-                iface = row.interface_name or _extract_iface_from_msg(row.message or "")
-                discriminator = row.bgp_neighbor or iface or ""
-            seen_key = f"{row.device_name}:{row.mnemonic}:{discriminator}"
+            # Use the same canonical key as the live path (add_alert_to_store)
+            # so card grouping/counts are identical before and after a restart.
+            seen_key = _incident_group_key(
+                row.device_name,
+                row.mnemonic,
+                row.interface_name or "",
+                row.bgp_neighbor or "",
+                row.as_number or 0,
+                row.message or "",
+            )
             if seen_key in seen:
                 seen[seen_key]["alert_count"] = seen[seen_key].get("alert_count", 0) + 1
                 continue
@@ -1762,7 +1895,7 @@ async def acknowledge_incident(
         401 if API-key auth is enabled and the header is missing/wrong.
         404 if the incident is not found.
     """
-    now = datetime.now(UTC)
+    now = now_bdt_naive()
     ack_body = body or IncidentAckRequest()
     for incident in _incidents_store:
         if str(incident.get("id")) == incident_id:
@@ -2021,7 +2154,7 @@ async def create_shift_handoff(
     HTTPException
         500 if the DB write fails.
     """
-    now = datetime.now(UTC)
+    now = now_bdt_naive()
     if not _db_engine:
         return {"status": "error", "detail": "Database not available"}
     from sqlalchemy.ext.asyncio import (  # noqa: PLC0415

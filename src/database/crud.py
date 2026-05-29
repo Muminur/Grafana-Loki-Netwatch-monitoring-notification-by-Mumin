@@ -19,6 +19,7 @@ from src.database.models import (
     Incident,
     MaintenanceWindow,
 )
+from src.database.timeutils import now_bdt_naive
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
@@ -235,15 +236,15 @@ async def resolve_incident(
             committing the transaction.
         incident_id: The ``INC-YYYYMMDD-NNN`` incident identifier.
         status: New status string (default ``"resolved"``).
-        resolved_at: Optional timestamp; defaults to ``datetime.now(UTC)``
-            when not supplied.
+        resolved_at: Optional timestamp; defaults to the current Bangladesh
+            local time (naive, via ``now_bdt_naive()``) when not supplied.
 
     Returns:
         ``True`` if an ``Incident`` row was found and updated (or if
         ``AlertLog`` rows were updated), ``False`` if nothing matched.
     """
     if resolved_at is None:
-        resolved_at = datetime.now(UTC)
+        resolved_at = now_bdt_naive()
 
     updated = False
 

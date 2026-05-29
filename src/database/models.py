@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from sqlalchemy import Index, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from src.database.timeutils import now_bdt_naive
+
 
 class Base(DeclarativeBase):
     """Shared declarative base for all models."""
@@ -66,9 +68,12 @@ class AlertLog(Base):
     telegram_sent: Mapped[bool] = mapped_column(default=False)
     discord_error: Mapped[str] = mapped_column(String(256), default="")
     telegram_error: Mapped[str] = mapped_column(String(256), default="")
+    # User-facing times: when set by the app they hold naive Bangladesh-local
+    # (UTC+6) face values via now_bdt_naive(), matching the dashboard clock.
     resolved_at: Mapped[datetime | None] = mapped_column(default=None)
     resolution_reason: Mapped[str] = mapped_column(String(64), default="")
     acknowledged_at: Mapped[datetime | None] = mapped_column(default=None)
+    # Intentionally UTC: machine/audit timestamp, not a user-facing BDT field.
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
@@ -144,6 +149,7 @@ class MaintenanceWindow(Base):
     end_time: Mapped[datetime]
     reason: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[str] = mapped_column(String(64), default="")
+    # Intentionally UTC: machine/audit timestamp, not a user-facing BDT field.
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
@@ -159,6 +165,7 @@ class AppSetting(Base):
 
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value: Mapped[str] = mapped_column(String(1024), default="")
+    # Intentionally UTC: machine/audit timestamp, not a user-facing BDT field.
     updated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
@@ -190,7 +197,7 @@ class ShiftHandoff(Base):
     open_incidents: Mapped[int] = mapped_column(default=0)
     critical_count: Mapped[int] = mapped_column(default=0)
     warning_count: Mapped[int] = mapped_column(default=0)
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    created_at: Mapped[datetime] = mapped_column(default=now_bdt_naive)
 
 
 class IncidentAck(Base):
@@ -203,4 +210,4 @@ class IncidentAck(Base):
     incident_id: Mapped[str] = mapped_column(String(32))
     operator_name: Mapped[str] = mapped_column(String(64))
     comment: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    created_at: Mapped[datetime] = mapped_column(default=now_bdt_naive)
