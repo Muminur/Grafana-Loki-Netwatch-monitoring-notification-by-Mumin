@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from src.core.correlator import CorrelatedEvent
     from src.core.enricher import EnrichedLog
     from src.core.syslog_receiver import SyslogReceiver
+    from src.notifications.escalation import EscalationEngine
 
 router = APIRouter()
 
@@ -67,6 +68,9 @@ _db_engine: AsyncEngine | None = None
 
 # Syslog receiver — set during lifespan startup via set_receiver()
 _receiver: SyslogReceiver | None = None
+
+# Escalation engine — set during lifespan startup via set_escalation_engine()
+_escalation_engine: EscalationEngine | None = None
 
 # Background task references — set during lifespan startup via set_background_tasks()
 _background_tasks: dict[str, asyncio.Task[None]] = {}
@@ -562,13 +566,24 @@ def build_incident_title(
     return ", ".join(parts)
 
 
-def set_db_engine(engine: AsyncEngine) -> None:
-    """Register the async DB engine for use by /api/alerts.
+def set_db_engine(engine: AsyncEngine | None) -> None:
+    """Register (or clear) the async DB engine for use by /api/alerts.
 
-    Called from ``main.py`` lifespan after the engine is created.
+    Called from ``main.py`` lifespan after the engine is created, and again
+    with ``None`` on shutdown so handlers stop using the disposed engine.
     """
     global _db_engine  # noqa: PLW0603
     _db_engine = engine
+
+
+def set_escalation_engine(engine: EscalationEngine | None) -> None:
+    """Register (or clear) the escalation engine for the ack endpoint.
+
+    Called from ``main.py`` lifespan so that acknowledging an incident can
+    cancel its pending escalation (the 15-minute unacked timer).
+    """
+    global _escalation_engine  # noqa: PLW0603
+    _escalation_engine = engine
 
 
 def set_receiver(receiver: SyslogReceiver) -> None:
@@ -1977,6 +1992,13 @@ async def acknowledge_incident(
             incident["acknowledged_at"] = now.isoformat()
             incident["acknowledged_by"] = ack_body.operator_name
             incident["ack_comment"] = ack_body.comment
+            # Cancel any pending escalation for this incident's device+mnemonic
+            # so a human ACK actually stops the 15-minute unacked escalation timer.
+            if _escalation_engine is not None:
+                _escalation_engine.acknowledge(
+                    str(incident.get("device", "")),
+                    str(incident.get("mnemonic", "")),
+                )
             if _db_engine:
                 from sqlalchemy.ext.asyncio import (  # noqa: PLC0415
                     AsyncSession as _AckSession,
@@ -2558,6 +2580,39 @@ async def get_stats_heatmap(
     return {"data": data, "max_count": max_count, "period": period}
 
 
+async def _db_period_counts(fmt: str) -> dict[str, dict[str, int]] | None:
+    """Group ``AlertLog`` counts by classification within ``strftime(fmt)`` buckets.
+
+    Returns ``{bucket_key: {classification: count}}`` from the DB, or ``None``
+    when no DB engine is configured (the caller then falls back to the in-memory
+    store).  ``fmt`` is a SQLite strftime format, e.g. ``"%Y-%m"`` (month) or
+    ``"%Y"`` (year).
+    """
+    if _db_engine is None:
+        return None
+    from sqlalchemy import func, select  # noqa: PLC0415
+    from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+    from src.database.models import AlertLog  # noqa: PLC0415
+
+    classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
+    buckets: dict[str, dict[str, int]] = {}
+    async with AsyncSession(_db_engine) as session:
+        stmt = select(
+            func.strftime(fmt, AlertLog.timestamp).label("bucket"),
+            AlertLog.classification,
+            func.count(AlertLog.id),
+        ).group_by("bucket", AlertLog.classification)
+        rows = (await session.execute(stmt)).all()
+    for bucket, cls, cnt in rows:
+        if bucket is None:
+            continue
+        b = buckets.setdefault(str(bucket), dict.fromkeys(classifications, 0))
+        if cls in b:
+            b[cls] = cnt
+    return buckets
+
+
 @router.get("/api/stats/monthly")
 @limiter.limit(RATE_LIMIT_READ)
 async def get_stats_monthly(request: Request) -> dict[str, Any]:
@@ -2572,22 +2627,26 @@ async def get_stats_monthly(request: Request) -> dict[str, Any]:
         ``period`` set to ``"monthly"``, ``months`` list (each with
         ``year``, ``month``, and per-classification ``counts``), ``total``.
     """
-    classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
-    monthly: dict[str, dict[str, int]] = {}
-
-    for alert in _alerts_store:
-        raw_ts = alert.get("timestamp", "")
-        try:
-            ts = datetime.fromisoformat(raw_ts) if isinstance(raw_ts, str) else raw_ts
-            key = f"{ts.year}-{ts.month:02d}"
-        except (ValueError, AttributeError, TypeError):
-            key = "unknown"
-
-        if key not in monthly:
-            monthly[key] = dict.fromkeys(classifications, 0)
-        cls = alert.get("classification", "")
-        if cls in monthly[key]:
-            monthly[key][cls] += 1
+    monthly = await _db_period_counts("%Y-%m")
+    if monthly is None:
+        classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
+        monthly = {}
+        for alert in _alerts_store:
+            raw_ts = alert.get("timestamp", "")
+            try:
+                ts = (
+                    datetime.fromisoformat(raw_ts)
+                    if isinstance(raw_ts, str)
+                    else raw_ts
+                )
+                key = f"{ts.year}-{ts.month:02d}"
+            except (ValueError, AttributeError, TypeError):
+                key = "unknown"
+            if key not in monthly:
+                monthly[key] = dict.fromkeys(classifications, 0)
+            cls = alert.get("classification", "")
+            if cls in monthly[key]:
+                monthly[key][cls] += 1
 
     months_list = [
         {"month": k, "counts": v, "total": sum(v.values())}
@@ -2614,22 +2673,26 @@ async def get_stats_yearly(request: Request) -> dict[str, Any]:
         ``period`` set to ``"yearly"``, ``years`` list (each with
         ``year`` and per-classification ``counts``), ``total``.
     """
-    classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
-    yearly: dict[str, dict[str, int]] = {}
-
-    for alert in _alerts_store:
-        raw_ts = alert.get("timestamp", "")
-        try:
-            ts = datetime.fromisoformat(raw_ts) if isinstance(raw_ts, str) else raw_ts
-            key = str(ts.year)
-        except (ValueError, AttributeError, TypeError):
-            key = "unknown"
-
-        if key not in yearly:
-            yearly[key] = dict.fromkeys(classifications, 0)
-        cls = alert.get("classification", "")
-        if cls in yearly[key]:
-            yearly[key][cls] += 1
+    yearly = await _db_period_counts("%Y")
+    if yearly is None:
+        classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
+        yearly = {}
+        for alert in _alerts_store:
+            raw_ts = alert.get("timestamp", "")
+            try:
+                ts = (
+                    datetime.fromisoformat(raw_ts)
+                    if isinstance(raw_ts, str)
+                    else raw_ts
+                )
+                key = str(ts.year)
+            except (ValueError, AttributeError, TypeError):
+                key = "unknown"
+            if key not in yearly:
+                yearly[key] = dict.fromkeys(classifications, 0)
+            cls = alert.get("classification", "")
+            if cls in yearly[key]:
+                yearly[key][cls] += 1
 
     years_list = [
         {"year": k, "counts": v, "total": sum(v.values())}

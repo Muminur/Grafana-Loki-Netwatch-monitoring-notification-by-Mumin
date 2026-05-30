@@ -171,3 +171,43 @@ async def test_pool_pre_ping_no_error() -> None:
 
     await engine.dispose()
     assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# 4. Migration restores model indexes on a pre-existing DB
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_migration_recreates_model_indexes_on_existing_db() -> None:
+    """On a pre-existing DB (create_all is a no-op for the existing table), the
+    migration must (re)create *every* index declared on the model — not a subset.
+
+    The other tests use a fresh DB where ``create_all`` builds all indexes from
+    the ORM metadata, masking gaps in the migration's own DDL. Here we drop the
+    model-declared indexes the migration is responsible for and confirm it
+    restores them.
+    """
+    from sqlalchemy import text  # noqa: PLC0415
+
+    from src.database.migrations import _migrate_alert_log_indexes  # noqa: PLC0415
+
+    engine = await get_engine(IN_MEMORY_URL)
+    await create_tables(engine)
+
+    model_indexes = {
+        "ix_alertlog_classification_ts",
+        "ix_alertlog_device_ts",
+        "ix_alertlog_mnemonic",
+    }
+    # Simulate a DB created before these indexes were added to the model.
+    async with engine.begin() as conn:
+        for name in model_indexes:
+            await conn.execute(text(f"DROP INDEX IF EXISTS {name}"))
+
+    await _migrate_alert_log_indexes(engine)  # noqa: SLF001
+
+    names = await _index_names(engine)
+    await engine.dispose()
+    missing = model_indexes - names
+    assert not missing, f"Migration did not recreate model indexes: {missing}"
