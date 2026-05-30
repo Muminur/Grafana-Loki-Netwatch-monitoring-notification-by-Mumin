@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from src.core.correlator import CorrelatedEvent
     from src.core.enricher import EnrichedLog
     from src.core.syslog_receiver import SyslogReceiver
+    from src.notifications.escalation import EscalationEngine
 
 router = APIRouter()
 
@@ -67,6 +68,9 @@ _db_engine: AsyncEngine | None = None
 
 # Syslog receiver — set during lifespan startup via set_receiver()
 _receiver: SyslogReceiver | None = None
+
+# Escalation engine — set during lifespan startup via set_escalation_engine()
+_escalation_engine: EscalationEngine | None = None
 
 # Background task references — set during lifespan startup via set_background_tasks()
 _background_tasks: dict[str, asyncio.Task[None]] = {}
@@ -569,6 +573,16 @@ def set_db_engine(engine: AsyncEngine) -> None:
     """
     global _db_engine  # noqa: PLW0603
     _db_engine = engine
+
+
+def set_escalation_engine(engine: EscalationEngine | None) -> None:
+    """Register (or clear) the escalation engine for the ack endpoint.
+
+    Called from ``main.py`` lifespan so that acknowledging an incident can
+    cancel its pending escalation (the 15-minute unacked timer).
+    """
+    global _escalation_engine  # noqa: PLW0603
+    _escalation_engine = engine
 
 
 def set_receiver(receiver: SyslogReceiver) -> None:
@@ -1977,6 +1991,13 @@ async def acknowledge_incident(
             incident["acknowledged_at"] = now.isoformat()
             incident["acknowledged_by"] = ack_body.operator_name
             incident["ack_comment"] = ack_body.comment
+            # Cancel any pending escalation for this incident's device+mnemonic
+            # so a human ACK actually stops the 15-minute unacked escalation timer.
+            if _escalation_engine is not None:
+                _escalation_engine.acknowledge(
+                    str(incident.get("device", "")),
+                    str(incident.get("mnemonic", "")),
+                )
             if _db_engine:
                 from sqlalchemy.ext.asyncio import (  # noqa: PLC0415
                     AsyncSession as _AckSession,
