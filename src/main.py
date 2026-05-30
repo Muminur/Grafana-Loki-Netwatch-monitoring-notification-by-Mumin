@@ -198,6 +198,34 @@ def _rate_limit_exceeded_handler(
     )
 
 
+def _device_under_maintenance(device_name: str) -> bool:
+    """Return True if *device_name* has an active maintenance window now.
+
+    Shared by every notification path (alert, resolution, …) so that a device
+    the operator scheduled into maintenance is suppressed consistently.
+    """
+    from datetime import UTC  # noqa: PLC0415
+    from datetime import datetime as _dt  # noqa: PLC0415
+
+    _now = _dt.now(UTC)
+    for m in get_maintenance_store():
+        if m.get("device_name") != device_name:
+            continue
+        try:
+            s_raw, e_raw = m.get("start_time", ""), m.get("end_time", "")
+            m_start = _dt.fromisoformat(s_raw) if isinstance(s_raw, str) else s_raw
+            m_end = _dt.fromisoformat(e_raw) if isinstance(e_raw, str) else e_raw
+            if m_start.tzinfo is None:
+                m_start = m_start.replace(tzinfo=UTC)
+            if m_end.tzinfo is None:
+                m_end = m_end.replace(tzinfo=UTC)
+            if m_start <= _now <= m_end:
+                return True
+        except (ValueError, AttributeError, TypeError):
+            continue
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Application-level singletons
 # ---------------------------------------------------------------------------
@@ -404,27 +432,8 @@ async def _on_syslog_line(raw_line: str) -> None:
             _log.error("add_alert_to_store failed: %s", exc)
 
     # ── Maintenance window suppression ────────────────────────────────────
-    if will_notify:
-        from datetime import UTC  # noqa: PLC0415
-        from datetime import datetime as _dt  # noqa: PLC0415
-
-        _now = _dt.now(UTC)
-        for m in get_maintenance_store():
-            if m.get("device_name") != enriched.device_name:
-                continue
-            try:
-                s_raw, e_raw = m.get("start_time", ""), m.get("end_time", "")
-                m_start = _dt.fromisoformat(s_raw) if isinstance(s_raw, str) else s_raw
-                m_end = _dt.fromisoformat(e_raw) if isinstance(e_raw, str) else e_raw
-                if m_start.tzinfo is None:
-                    m_start = m_start.replace(tzinfo=UTC)
-                if m_end.tzinfo is None:
-                    m_end = m_end.replace(tzinfo=UTC)
-                if m_start <= _now <= m_end:
-                    will_notify = False
-                    break
-            except (ValueError, AttributeError, TypeError):
-                continue
+    if will_notify and _device_under_maintenance(enriched.device_name):
+        will_notify = False
 
     # ── Acknowledged-incident suppression ──────────────────────────────────
     # Once an operator ACKs an incident, stop notifying for subsequent alerts
@@ -544,12 +553,14 @@ async def _on_syslog_line(raw_line: str) -> None:
                             "DB resolve_incident failed for %s: %s", resolved_id, exc
                         )
 
-                # Send RESOLVED notifications
+                # Send RESOLVED notifications — unless the device is under an
+                # active maintenance window (same suppression as alerts).
                 settings = get_settings()
-                if settings.discord_enabled:
-                    await send_discord_resolution(enriched, resolved_id, settings)
-                if settings.telegram_enabled:
-                    await send_telegram_resolution(enriched, resolved_id, settings)
+                if not _device_under_maintenance(enriched.device_name):
+                    if settings.discord_enabled:
+                        await send_discord_resolution(enriched, resolved_id, settings)
+                    if settings.telegram_enabled:
+                        await send_telegram_resolution(enriched, resolved_id, settings)
 
     # ── Broadcast to WebSocket clients ─────────────────────────────────────
     if should_send and not maxpfx_muted:
