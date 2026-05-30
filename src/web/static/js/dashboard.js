@@ -54,8 +54,11 @@
         var total = Object.values(_counters).reduce(function (a, b) { return a + b; }, 0);
         _el('countTotal') && (_el('countTotal').textContent = total);
 
-        // Tab badges
-        _el('tabCountAll')      && (_el('tabCountAll').textContent      = _alerts.length);
+        // Tab badges — all derive from _counters (DB-backed) so the ALL badge
+        // equals countTotal and the sum of the per-severity badges. Using
+        // _alerts.length here showed 0 on load (the live array is empty until
+        // WS events arrive) while the severity badges showed real counts.
+        _el('tabCountAll')      && (_el('tabCountAll').textContent      = total);
         _el('tabCountCritical') && (_el('tabCountCritical').textContent = _counters.CRITICAL);
         _el('tabCountWarning')  && (_el('tabCountWarning').textContent  = _counters.WARNING);
         _el('tabCountInfo')     && (_el('tabCountInfo').textContent     = _counters.INFO);
