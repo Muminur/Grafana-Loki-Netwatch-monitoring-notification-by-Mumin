@@ -142,7 +142,19 @@
         chart.data.datasets[0].backgroundColor[0] = _healthColor(score);
         chart.update('none');
         var disp = document.getElementById(displayId);
-        if (disp) disp.textContent = score;
+        if (disp) {
+            disp.textContent = score;
+            // Match the number's colour + glow to the gauge arc (the score band)
+            // instead of a fixed green that contradicts a degraded/critical arc.
+            var col = _healthColor(score);
+            disp.style.color = col;
+            // rgba(), not 8-digit hex — text-shadow rejects #RRGGBBAA in
+            // Firefox/Safari. _healthColor always returns 6-digit hex.
+            var r = parseInt(col.slice(1, 3), 16);
+            var g = parseInt(col.slice(3, 5), 16);
+            var b = parseInt(col.slice(5, 7), 16);
+            disp.style.textShadow = '0 0 16px rgba(' + r + ',' + g + ',' + b + ',0.4)';
+        }
     }
 
     // ── Timeline chart ────────────────────────────────────────────────────────
