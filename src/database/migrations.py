@@ -125,6 +125,21 @@ async def _migrate_alert_log_indexes(engine: AsyncEngine) -> None:
             "CREATE INDEX IF NOT EXISTS ix_alertlog_timestamp "
             "ON alert_log (timestamp)"
         ),
+        # (classification, timestamp) — classification-filtered count/stats
+        # queries (WHERE classification = ? AND timestamp >= ?)
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_alertlog_classification_ts "
+            "ON alert_log (classification, timestamp)"
+        ),
+        # (device_name, timestamp) — per-device stats range scans
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_alertlog_device_ts "
+            "ON alert_log (device_name, timestamp)"
+        ),
+        # mnemonic — recovery-prune / BGP-UP resolution lookups by mnemonic
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_alertlog_mnemonic " "ON alert_log (mnemonic)"
+        ),
     ]
 
     async with engine.begin() as conn:
