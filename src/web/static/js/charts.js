@@ -115,6 +115,9 @@
                 }],
             },
             options: Object.assign({}, CHART_DEFAULTS, {
+                // Stats-page gauge fills a height-bounded wrapper instead of
+                // forcing a 1:1 square that overflows the panel.
+                maintainAspectRatio: !small,
                 plugins: Object.assign({}, CHART_DEFAULTS.plugins, {
                     legend: { display: false },
                     tooltip: { enabled: false },
@@ -200,6 +203,7 @@
         if (!canvas) return null;
         if (_charts[canvasId]) { _charts[canvasId].destroy(); }
 
+        var isStats = canvasId.indexOf('stats') === 0;
         var chart = new Chart(canvas, {
             type: 'doughnut',
             data: {
@@ -224,6 +228,9 @@
                 }],
             },
             options: Object.assign({}, CHART_DEFAULTS, {
+                // Stats-page donut fills a height-bounded wrapper instead of
+                // forcing a 1:1 square that overflows the panel.
+                maintainAspectRatio: !isStats,
                 plugins: Object.assign({}, CHART_DEFAULTS.plugins, {
                     legend: { position: 'right' },
                 }),
@@ -274,20 +281,28 @@
     }
 
     // ── Updaters called on each new alert ─────────────────────────────────────
+    function _setDonutData(id, counters) {
+        var chart = _charts[id];
+        if (!chart) return;
+        chart.data.datasets[0].data = [
+            counters.CRITICAL || 0,
+            counters.WARNING  || 0,
+            counters.INFO     || 0,
+            counters.NOISE    || 0,
+            counters.USER_LOGIN || 0,
+        ];
+        chart.update('none');
+    }
+
+    // Live (dashboard) donut — driven by onAlert counters.
     function _updateCategoryDonut(counters) {
-        var ids = ['categoryDonutChart', 'statsCategoryDonut'];
-        ids.forEach(function (id) {
-            var chart = _charts[id];
-            if (!chart) return;
-            chart.data.datasets[0].data = [
-                counters.CRITICAL || 0,
-                counters.WARNING  || 0,
-                counters.INFO     || 0,
-                counters.NOISE    || 0,
-                counters.USER_LOGIN || 0,
-            ];
-            chart.update('none');
-        });
+        _setDonutData('categoryDonutChart', counters);
+    }
+
+    // Statistics-page donut — driven by the API for the selected period, so it
+    // stays consistent with the timeline/top-devices charts (not live alerts).
+    function _updateStatsCategoryDonut(counts) {
+        _setDonutData('statsCategoryDonut', counts);
     }
 
     function _updateTopDevices() {
@@ -296,7 +311,9 @@
             .sort(function (a, b) { return b.count - a.count; })
             .slice(0, 8);
 
-        var ids = ['topDevicesChart', 'statsTopDevicesChart'];
+        // Live updates target only the dashboard chart; the statistics-page
+        // chart is historical and driven by the API (per_device).
+        var ids = ['topDevicesChart'];
         ids.forEach(function (id) {
             var chart = _charts[id];
             if (!chart) return;
@@ -309,7 +326,9 @@
     function _updateTimeline() {
         _ensureBuckets();
         var classifications = ['CRITICAL', 'WARNING', 'INFO', 'NOISE', 'USER_LOGIN'];
-        var ids = ['timelineChart', 'statsTimelineChart'];
+        // Live updates target only the dashboard chart; the statistics-page
+        // chart is historical and driven by the API (hourly_buckets).
+        var ids = ['timelineChart'];
         ids.forEach(function (id) {
             var chart = _charts[id];
             if (!chart) return;
@@ -318,6 +337,33 @@
             });
             chart.update('none');
         });
+    }
+
+    // ── Statistics page: historical charts driven by the stats API ───────────
+    function _updateStatsTimeline(hourlyBuckets) {
+        var chart = _charts['statsTimelineChart'];
+        if (!chart || !Array.isArray(hourlyBuckets)) return;
+        var classifications = ['CRITICAL', 'WARNING', 'INFO', 'NOISE', 'USER_LOGIN'];
+        // b.hour is already BDT — the API buckets on strftime('%H', timestamp)
+        // and timestamps are stored as naive BDT face values, so no UTC offset
+        // is applied here (unlike the live dashboard window which uses Date.now).
+        chart.data.labels = hourlyBuckets.map(function (b) {
+            return String(b.hour).padStart(2, '0') + ':00';
+        });
+        chart.data.datasets.forEach(function (ds, i) {
+            var cls = classifications[i];
+            ds.data = hourlyBuckets.map(function (b) { return b[cls] || 0; });
+        });
+        chart.update('none');
+    }
+
+    function _updateStatsTopDevices(perDevice) {
+        var chart = _charts['statsTopDevicesChart'];
+        if (!chart || !Array.isArray(perDevice)) return;
+        // The API (_finalize_per_device) already caps this at the top 10.
+        chart.data.labels = perDevice.map(function (d) { return d.device; });
+        chart.data.datasets[0].data = perDevice.map(function (d) { return d.count; });
+        chart.update('none');
     }
 
     // ── Public: called when new alert arrives ─────────────────────────────────
@@ -478,7 +524,9 @@
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 if (data && data.counts) {
-                    _updateCategoryDonut(data.counts);
+                    _updateStatsCategoryDonut(data.counts);
+                    _updateStatsTimeline(data.hourly_buckets);
+                    _updateStatsTopDevices(data.per_device);
                     var healthEl = document.getElementById('statsHealthNumber');
                     if (healthEl) {
                         var total = data.total || 0;
@@ -523,8 +571,13 @@
         fetch(apiBase + endpoint)
             .then(function (r) { return r.json(); })
             .then(function (data) {
+                // monthly/yearly endpoints return {months|years,...} with no
+                // top-level counts/hourly_buckets/per_device, so this guard
+                // skips them and the charts retain the prior period's data.
                 if (data && data.counts) {
-                    _updateCategoryDonut(data.counts);
+                    _updateStatsCategoryDonut(data.counts);
+                    _updateStatsTimeline(data.hourly_buckets);
+                    _updateStatsTopDevices(data.per_device);
                 }
             })
             .catch(function () { /* non-fatal */ });
