@@ -167,6 +167,21 @@ black --check .
 mypy src/
 ```
 
+### Notification Smoke Test
+
+Send a clearly-marked **TEST-DRILL** alert through the real parse → enrich → correlate → dedup pipeline to confirm end-to-end Discord/Telegram delivery. Dry-run by default (no network); pass `--send` to deliver to the channels enabled in `.env`:
+
+```bash
+# Dry-run — preview what would be sent, no network calls
+python -m scripts.test_notifications
+
+# Deliver a [TEST-DRILL] alert + escalation + resolution to enabled channels
+python -m scripts.test_notifications --send
+python -m scripts.test_notifications --send --channel discord
+```
+
+Every message is tagged `[TEST-DRILL]` so on-call NOC staff immediately see it is not a real outage. The webhook URL and bot token are read from `.env` at runtime — never hardcoded.
+
 ---
 
 ## Configuration
