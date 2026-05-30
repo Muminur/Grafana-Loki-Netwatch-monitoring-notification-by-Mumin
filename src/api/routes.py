@@ -1867,6 +1867,14 @@ async def get_incidents() -> list[dict[str, Any]]:
                 "neighbor": getattr(row, "bgp_neighbor", "") or "",
                 "as_number": getattr(row, "as_number", 0) or 0,
             }
+            # Restore ack state from the alert row itself. acknowledge_incident
+            # sets AlertLog.acknowledged_at for both ALERT- and INC- ids, so this
+            # survives a restart even though the synthesized id is ALERT-{row.id}
+            # while a correlator incident was acked under its INC- id (which the
+            # incident_ack-table lookup below would never match).
+            if row.acknowledged_at is not None:
+                inc["acknowledged"] = True
+                inc["acknowledged_at"] = row.acknowledged_at.isoformat()
             seen[seen_key] = inc
 
     # Restore ACK state from the incident_ack table so acknowledgments
