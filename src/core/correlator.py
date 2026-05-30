@@ -5,7 +5,7 @@ recent events to detect:
 
   - SYMPTOM: event is a downstream consequence of a known backhaul failure
   - FLAPPING: same device+neighbor/interface has ≥3 state changes in 5 min
-  - MASS_EVENT: ≥5 BGP peers down on the same device within 60 s (mass outage)
+  - MASS_EVENT: ≥3 BGP peers down on the same device within 60 s (mass outage)
   - INDEPENDENT: none of the above — standalone event
 
 The engine is intentionally synchronous — it operates on an in-memory ring
@@ -102,7 +102,16 @@ class CorrelationEngine:
     CORRELATION_WINDOW: int = 60  # seconds — backhaul / mass-event window
     FLAP_THRESHOLD: int = 3  # min state changes to declare flapping
     FLAP_WINDOW: int = 300  # seconds — flap detection window
-    MASS_BGP_THRESHOLD: int = 5  # min BGP peer downs to declare a mass event
+    MASS_BGP_THRESHOLD: int = 3  # min BGP peer downs to declare a mass event (PRD E1.2)
+
+    # Event types that count toward a mass BGP event (a non-BGP event must
+    # never open or join a mass-BGP incident as its root cause).
+    _MASS_BGP_EVENT_TYPES: tuple[str, ...] = (
+        "BGP Peer Down",
+        "BGP Down",
+        "Max Prefix",
+        "BGP Max Prefix Reached",
+    )
 
     def __init__(self, max_incidents: int = 10_000) -> None:
         self._max_incidents = max_incidents
@@ -288,7 +297,10 @@ class CorrelationEngine:
         # backhaul incident AND a mass BGP incident simultaneously.
         mass_events = self._check_mass_event(enriched)
         mass_incident_result: CorrelatedEvent | None = None
-        if len(mass_events) >= self.MASS_BGP_THRESHOLD - 1:
+        if (
+            enriched.event_type in self._MASS_BGP_EVENT_TYPES
+            and len(mass_events) >= self.MASS_BGP_THRESHOLD - 1
+        ):
             # We have reached the threshold (current event + prior events).
             # Look for an existing *mass-event* incident on this device.
             existing_mass_id = self._find_mass_incident(device_ip)
@@ -655,13 +667,7 @@ class CorrelationEngine:
                 ev is not enriched
                 and ev.parsed.source_ip == device_ip
                 and ts >= cutoff
-                and ev.event_type
-                in (
-                    "BGP Peer Down",
-                    "BGP Down",
-                    "Max Prefix",
-                    "BGP Max Prefix Reached",
-                )
+                and ev.event_type in self._MASS_BGP_EVENT_TYPES
                 and ev.classification in ("CRITICAL", "WARNING")
             )
         ]
@@ -706,6 +712,16 @@ class CorrelationEngine:
         for key in list(self._backhaul_failures.keys()):
             if self._backhaul_failures[key] < bh_cutoff:
                 del self._backhaul_failures[key]
+
+        # Purge stale flap history: trim each key to the flap window and drop
+        # keys with no remaining events, so the dict cannot grow without bound
+        # (one entry per peer/interface ever seen) over a long-running process.
+        for key in list(self._flap_history.keys()):
+            recent = [ts for ts in self._flap_history[key] if ts >= cutoff]
+            if recent:
+                self._flap_history[key] = recent
+            else:
+                del self._flap_history[key]
 
     def _purge_stale_incidents(self, now: datetime) -> None:
         """Remove incidents older than 24 hours from the in-memory registry.

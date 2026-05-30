@@ -1,7 +1,8 @@
 """Network health score calculator for BSCCL NetWatch.
 
-Produces a 0-100 score reflecting the current health of the BSCCL backbone.
-Pure function — no I/O, no database, no side effects.
+Produces a 0-100 score reflecting the current health of the BSCCL backbone,
+following the PRD-SUPPLEMENT §E5.2 rubric.  Kept as a pure function — no I/O,
+no database, no side effects; the caller supplies the counts.
 """
 
 from __future__ import annotations
@@ -10,24 +11,24 @@ from __future__ import annotations
 def calculate_health_score(
     critical_count: int,
     warning_count: int,
-    active_incidents: int,
-    flapping_peers: int,
-    total_devices: int = 34,
-    reporting_devices: int = 0,
+    bgp_down_count: int = 0,
+    flapping_peers: int = 0,
+    degraded_backhauls: int = 0,
+    pni_healthy: bool = True,
 ) -> float:
-    """Calculate network health score 0-100.
+    """Calculate the network health score (0-100) per PRD-SUPPLEMENT §E5.2.
 
-    Deductions (applied to a 100-point base):
-    - Each active CRITICAL alert: -5 points
-    - Each active WARNING alert: -1 point
-    - Each active incident: -10 points
-    - Each flapping BGP peer: -3 points
+    Base 100, with capped deductions and bonuses::
 
-    Bonuses:
-    - No CRITICALs present: +5 points
-    - All devices reporting: +5 points (only when reporting_devices >= total_devices)
+        - Active CRITICAL alerts:    -15 each (cap -60)
+        - Active WARNING alerts:     -2 each  (cap -20)
+        - BGP peers currently DOWN:  -3 each  (cap -30)
+        - Flapping peers:            -5 each  (cap -25)
+        - Degraded backhaul bundles: -10 each (cap -40)
+        + All PNI links healthy:     +5
+        + No CRITICAL alerts:        +5
 
-    The result is clamped to the [0, 100] range.
+    The result is clamped to [0, 100].
 
     Parameters
     ----------
@@ -35,16 +36,15 @@ def calculate_health_score(
         Number of currently active CRITICAL alerts.
     warning_count:
         Number of currently active WARNING alerts.
-    active_incidents:
-        Number of active (unresolved) incidents.
+    bgp_down_count:
+        Number of BGP peers currently in the DOWN state.
     flapping_peers:
-        Number of BGP peers currently in a FLAPPING state.
-    total_devices:
-        Total number of expected devices in the network.
-    reporting_devices:
-        Number of devices currently reporting syslog.  The "all devices
-        reporting" bonus is only applied when this equals or exceeds
-        ``total_devices``.
+        Number of BGP peers currently flapping.
+    degraded_backhauls:
+        Number of backhaul bundles currently degraded (a member is down).
+    pni_healthy:
+        ``True`` when all PNI (private interconnect) links are healthy, which
+        grants the +5 bonus.
 
     Returns
     -------
@@ -53,16 +53,17 @@ def calculate_health_score(
     """
     score: float = 100.0
 
-    # Deductions
-    score -= critical_count * 5.0
-    score -= warning_count * 1.0
-    score -= active_incidents * 10.0
-    score -= flapping_peers * 3.0
+    # Capped deductions
+    score -= min(critical_count * 15.0, 60.0)
+    score -= min(warning_count * 2.0, 20.0)
+    score -= min(bgp_down_count * 3.0, 30.0)
+    score -= min(flapping_peers * 5.0, 25.0)
+    score -= min(degraded_backhauls * 10.0, 40.0)
 
     # Bonuses
-    if critical_count == 0:
+    if pni_healthy:
         score += 5.0
-    if total_devices > 0 and reporting_devices >= total_devices:
+    if critical_count == 0:
         score += 5.0
 
     # Clamp to [0, 100]
