@@ -1,26 +1,11 @@
-"""Tests for src/data/topology.py and src/core/correlator.py — TDD: RED first.
+"""Tests for src/data/topology.py and src/core/correlator.py.
 
-Covers:
-  1.  test_eq_rtr01_be500_downstream
-  2.  test_eq_rtr01_be200_downstream
-  3.  test_kkt01_be400_downstream
-  4.  test_backhaul_member_down_then_bgp_down
-  5.  test_independent_bgp_down
-  6.  test_mass_bgp_event
-  7.  test_incident_suppresses_downstream
-  8.  test_flapping_peer
-  9.  test_incident_id_format
-  10. test_incident_affected_clients
-  11. test_is_backhaul_member
-  12. test_be300_downstream (EQ-RTR-01 BE300 → KKT-Core-3)
-  13. test_be600_downstream (EQ-RTR-01 BE600 → EQ-RTR-02)
-  14. test_kkt02_be150_downstream (KKT-Core-2 BE150 → KKT-Core-1)
-  15. test_dhk03_multiple_upstreams
-  16. test_bundle_member_is_backhaul_member
-  17. test_non_backhaul_interface_is_not_member
-  18. test_correlate_returns_correlated_event_type
-  19. test_flap_count_increments
-  20. test_independent_event_no_incident
+Covers the per-link correlation model: topology link lookups
+(``get_link_remote``), backhaul-member detection, and the correlation engine
+(backhaul symptom grouping, mass-BGP events, flapping, incident IDs, memory
+bounds).  Correlation is device-to-device per physical link — a backhaul
+failure only correlates events that ride that exact link, never a transitive
+downstream subtree (the network is multi-homed).
 """
 
 from __future__ import annotations
@@ -38,7 +23,7 @@ from src.data.topology import (
     NETWORK_TOPOLOGY,
     BackhaulLink,
     DeviceTopology,
-    get_downstream_devices,
+    get_link_remote,
     is_backhaul_member,
 )
 
@@ -172,7 +157,7 @@ class TestTopologyDataStructure:
 
 
 # ---------------------------------------------------------------------------
-# get_downstream_devices tests
+# get_link_remote tests
 # ---------------------------------------------------------------------------
 
 
@@ -252,65 +237,28 @@ class TestDeviceTopologyEquality:
         assert len({a, b}) == 1
 
 
-class TestGetDownstreamDevices:
-    """Tests for get_downstream_devices()."""
+class TestGetLinkRemote:
+    """Tests for get_link_remote() — direct per-link remote lookup."""
 
-    def test_eq_rtr01_be500_downstream(self) -> None:
-        """EQ-RTR-01 BE500 down → downstream includes KKT-Core-01."""
-        downstream = get_downstream_devices("192.168.203.1", "Bundle-Ether500")
-        assert "192.168.202.2" in downstream
+    def test_eq_rtr01_be500_remote(self) -> None:
+        """EQ-RTR-01 BE500 → remote is KKT-Core-01."""
+        assert get_link_remote("192.168.203.1", "Bundle-Ether500") == "192.168.202.2"
 
-    def test_eq_rtr01_be200_downstream(self) -> None:
-        """EQ-RTR-01 BE200 down → downstream includes COX-Core-03."""
-        downstream = get_downstream_devices("192.168.203.1", "Bundle-Ether200")
-        assert "192.168.200.26" in downstream
+    def test_kkt01_be500_remote_symmetric(self) -> None:
+        """KKT-Core-01 BE500 → remote is EQ-RTR-01 (the symmetric far end)."""
+        assert get_link_remote("192.168.202.2", "Bundle-Ether500") == "192.168.203.1"
 
-    def test_kkt01_be400_downstream(self) -> None:
-        """KKT-Core-01 BE400 down → downstream includes DHK-Core-03."""
-        downstream = get_downstream_devices("192.168.202.2", "Bundle-Ether400")
-        assert "192.168.200.11" in downstream
+    def test_eq_rtr01_be200_remote(self) -> None:
+        """EQ-RTR-01 BE200 → remote is COX-Core-03."""
+        assert get_link_remote("192.168.203.1", "Bundle-Ether200") == "192.168.200.26"
 
-    def test_eq_rtr01_be300_downstream(self) -> None:
-        """EQ-RTR-01 BE300 down → downstream includes KKT-Core-03."""
-        downstream = get_downstream_devices("192.168.203.1", "Bundle-Ether300")
-        assert "192.168.202.153" in downstream
+    def test_unknown_device_returns_none(self) -> None:
+        """Unknown device IP → None."""
+        assert get_link_remote("10.0.0.99", "Bundle-Ether500") is None
 
-    def test_eq_rtr01_be600_downstream(self) -> None:
-        """EQ-RTR-01 BE600 down → downstream includes EQ-RTR-02."""
-        downstream = get_downstream_devices("192.168.203.1", "Bundle-Ether600")
-        assert "192.168.203.3" in downstream
-
-    def test_kkt02_be150_downstream(self) -> None:
-        """KKT-Core-02 BE150 down → downstream includes KKT-Core-01."""
-        downstream = get_downstream_devices("192.168.202.130", "Bundle-Ether150")
-        assert "192.168.202.2" in downstream
-
-    def test_unknown_device_returns_empty(self) -> None:
-        """Unknown device IP → empty list."""
-        downstream = get_downstream_devices("10.0.0.99", "Bundle-Ether500")
-        assert downstream == []
-
-    def test_unknown_interface_returns_empty(self) -> None:
-        """Unknown interface on known device → empty list."""
-        downstream = get_downstream_devices("192.168.203.1", "Bundle-Ether999")
-        assert downstream == []
-
-    def test_dhk03_multiple_upstreams(self) -> None:
-        """DHK-Core-03 has upstreams to KKT-Core-01, COX-Core-03, DHK-Core-02."""
-        for bundle, expected_ip in [
-            ("Bundle-Ether400", "192.168.202.2"),
-            ("Bundle-Ether150", "192.168.200.26"),
-            ("Bundle-Ether100", "192.168.200.4"),
-        ]:
-            downstream = get_downstream_devices("192.168.200.11", bundle)
-            assert (
-                expected_ip in downstream
-            ), f"Expected {expected_ip} in downstream for DHK-Core-03 {bundle}"
-
-    def test_returns_list_type(self) -> None:
-        """get_downstream_devices must always return a list."""
-        result = get_downstream_devices("192.168.203.1", "Bundle-Ether500")
-        assert isinstance(result, list)
+    def test_unknown_bundle_returns_none(self) -> None:
+        """Unknown bundle on a known device → None."""
+        assert get_link_remote("192.168.203.1", "Bundle-Ether999") is None
 
 
 # ---------------------------------------------------------------------------
@@ -507,11 +455,13 @@ class TestBackhaulCorrelation:
         # First event — no prior context, should not be marked as symptom
         assert first.is_root_cause or first.is_independent
 
-        # Step 2: BGP peer down on same device, same bundle
+        # Step 2: BGP peer down on same device that rides the failed bundle.
+        # Neighbor 103.16.153.22 → EQ-RTR-01 Bundle-Ether500 (the failed link).
         bgp_down = _make_enriched(
             source_ip="192.168.203.1",
             interface_name="",
             bundle_parent="",
+            bgp_neighbor="103.16.153.22",
             classification="CRITICAL",
             event_type="BGP Peer Down",
             mnemonic="ADJCHANGE",
@@ -558,7 +508,7 @@ class TestBackhaulCorrelation:
             source_ip="192.168.203.1",
             interface_name="",
             bundle_parent="",
-            bgp_neighbor="10.0.0.1",
+            bgp_neighbor="103.16.153.22",
             classification="CRITICAL",
             event_type="BGP Peer Down",
             mnemonic="ADJCHANGE",
@@ -567,6 +517,196 @@ class TestBackhaulCorrelation:
         # The returned incident id must be a live incident, never the evicted one.
         assert second.incident_id is not None
         assert second.incident_id in engine._incidents  # noqa: SLF001
+
+    def test_pni_peer_same_device_not_suppressed(self) -> None:
+        """A backhaul failure must NOT suppress an unrelated PNI/IX peer on the
+        SAME device — the PNI peer does not ride on the failed bundle.
+
+        Multi-homed network: correlation is per physical link, so only events on
+        the failed link are symptoms.  A Google/AWS-style peer (not in
+        bgp_bundle_map) is independent and must still alert.
+        """
+        engine = CorrelationEngine()
+        # BE500 member down on EQ-RTR-01 → backhaul failure registered
+        engine.correlate(
+            _make_enriched(
+                source_ip="192.168.203.1",
+                interface_name="TenGigE0/0/0/0",
+                bundle_parent="Bundle-Ether500",
+                classification="CRITICAL",
+                event_type="Interface Down",
+                mnemonic="UPDOWN",
+            )
+        )
+        # A PNI peer on the SAME device — neighbor NOT in bgp_bundle_map
+        pni = _make_enriched(
+            source_ip="192.168.203.1",
+            interface_name="",
+            bundle_parent="",
+            bgp_neighbor="203.0.113.7",
+            classification="CRITICAL",
+            event_type="BGP Peer Down",
+            mnemonic="ADJCHANGE",
+        )
+        result = engine.correlate(pni)
+        assert result.is_symptom is False
+        assert result.is_independent is True
+
+    def test_transitive_downstream_device_not_suppressed(self) -> None:
+        """One upstream link down must NOT suppress alerts on a device that is
+        only *transitively* downstream (multi-homed → it is not isolated)."""
+        engine = CorrelationEngine()
+        # BE500 member down on EQ-RTR-01 (link EQ-RTR-01 ↔ KKT-Core-01)
+        engine.correlate(
+            _make_enriched(
+                source_ip="192.168.203.1",
+                interface_name="TenGigE0/0/0/0",
+                bundle_parent="Bundle-Ether500",
+                classification="CRITICAL",
+                event_type="Interface Down",
+                mnemonic="UPDOWN",
+            )
+        )
+        # CRITICAL on DHK-Core-02 (192.168.200.4) — NOT directly linked to EQ-RTR-01
+        far = _make_enriched(
+            source_ip="192.168.200.4",
+            interface_name="",
+            bundle_parent="",
+            bgp_neighbor="198.51.100.9",
+            classification="CRITICAL",
+            event_type="BGP Peer Down",
+            mnemonic="ADJCHANGE",
+            device_name="DHK-Core-2-Agg",
+        )
+        result = engine.correlate(far)
+        assert result.is_symptom is False
+        assert result.is_independent is True
+
+    def test_remote_end_onlink_symptom_suppressed(self) -> None:
+        """The remote end of the failed link IS correlated: a BGP session on the
+        directly-linked neighbor that rides the failed bundle is a SYMPTOM."""
+        engine = CorrelationEngine()
+        # BE500 member down on EQ-RTR-01 (link to KKT-Core-01)
+        engine.correlate(
+            _make_enriched(
+                source_ip="192.168.203.1",
+                interface_name="TenGigE0/0/0/0",
+                bundle_parent="Bundle-Ether500",
+                classification="CRITICAL",
+                event_type="Interface Down",
+                mnemonic="UPDOWN",
+            )
+        )
+        # KKT-Core-01's BGP session to EQ-RTR-01 over its BE500 drops.
+        # Neighbor 103.16.153.21 → KKT-01 Bundle-Ether500 → remote EQ-RTR-01.
+        remote = _make_enriched(
+            source_ip="192.168.202.2",
+            interface_name="",
+            bundle_parent="",
+            bgp_neighbor="103.16.153.21",
+            classification="CRITICAL",
+            event_type="BGP Peer Down",
+            mnemonic="ADJCHANGE",
+            device_name="KKT-Core-01",
+        )
+        result = engine.correlate(remote)
+        assert result.is_symptom is True
+
+    def test_other_bundle_same_device_is_own_root_cause(self) -> None:
+        """A second, DIFFERENT backhaul bundle failing on the same device is its
+        own root cause — not a symptom of the first bundle's failure."""
+        engine = CorrelationEngine()
+        # BE500 member down on EQ-RTR-01
+        engine.correlate(
+            _make_enriched(
+                source_ip="192.168.203.1",
+                interface_name="TenGigE0/0/0/0",
+                bundle_parent="Bundle-Ether500",
+                classification="CRITICAL",
+                event_type="Interface Down",
+                mnemonic="UPDOWN",
+            )
+        )
+        # BE200 member down on the SAME device (different link → COX-Core-03)
+        other = _make_enriched(
+            source_ip="192.168.203.1",
+            interface_name="HundredGigE0/3/1/1",
+            bundle_parent="Bundle-Ether200",
+            classification="CRITICAL",
+            event_type="Interface Down",
+            mnemonic="UPDOWN",
+        )
+        result = engine.correlate(other)
+        assert result.is_symptom is False
+        assert result.is_root_cause is True
+
+    def test_other_link_to_same_failed_device_not_suppressed(self) -> None:
+        """A failure on EQ-RTR-01's BE500 link (to KKT-01) must NOT suppress an
+        event on COX-Core-03's *separate* BE200 link to EQ-RTR-01.
+
+        Both links terminate on EQ-RTR-01, but they are different physical
+        links: correlating COX-03's BE200 event with the BE500 failure would be
+        a false suppression.
+        """
+        engine = CorrelationEngine()
+        # BE500 member down on EQ-RTR-01 (the EQ-RTR-01 ↔ KKT-Core-01 link)
+        engine.correlate(
+            _make_enriched(
+                source_ip="192.168.203.1",
+                interface_name="TenGigE0/0/0/0",
+                bundle_parent="Bundle-Ether500",
+                classification="CRITICAL",
+                event_type="Interface Down",
+                mnemonic="UPDOWN",
+            )
+        )
+        # COX-Core-03's BGP session over its OWN BE200 link to EQ-RTR-01 drops.
+        # Neighbor 103.16.153.45 → COX-03 Bundle-Ether200 (a different link).
+        other_link = _make_enriched(
+            source_ip="192.168.200.26",
+            interface_name="",
+            bundle_parent="",
+            bgp_neighbor="103.16.153.45",
+            classification="CRITICAL",
+            event_type="BGP Peer Down",
+            mnemonic="ADJCHANGE",
+            device_name="COX-Core-3",
+        )
+        result = engine.correlate(other_link)
+        assert result.is_symptom is False
+        assert result.is_independent is True
+
+    def test_dual_end_member_down_single_incident(self) -> None:
+        """Both physical ends of a link reporting a member down collapse into
+        ONE incident; the far end is a symptom, not a second incident."""
+        engine = CorrelationEngine()
+        first = engine.correlate(
+            _make_enriched(
+                source_ip="192.168.203.1",  # EQ-RTR-01
+                interface_name="TenGigE0/0/0/0",
+                bundle_parent="Bundle-Ether500",
+                classification="CRITICAL",
+                event_type="Interface Down",
+                mnemonic="UPDOWN",
+            )
+        )
+        assert first.is_root_cause is True
+        # The OTHER end of the same physical link (KKT-Core-01) reports a member
+        # of its own Bundle-Ether500 (facing EQ-RTR-01) going down.
+        second = engine.correlate(
+            _make_enriched(
+                source_ip="192.168.202.2",  # KKT-Core-01
+                interface_name="TenGigE0/0/1/5",
+                bundle_parent="Bundle-Ether500",
+                classification="CRITICAL",
+                event_type="Interface Down",
+                mnemonic="UPDOWN",
+                device_name="KKT-Core-01",
+            )
+        )
+        assert second.is_symptom is True
+        assert second.incident_id == first.incident_id
+        assert len(engine._incidents) == 1  # noqa: SLF001
 
 
 class TestMassBGPEvent:
@@ -1206,68 +1346,3 @@ class TestNewTopologyEntries:
         assert "192.168.200.27" in NETWORK_TOPOLOGY
         topo = NETWORK_TOPOLOGY["192.168.200.27"]
         assert topo.name == "COX-Core-4"
-
-
-# ---------------------------------------------------------------------------
-# Recursive downstream traversal tests
-# ---------------------------------------------------------------------------
-
-
-class TestRecursiveDownstream:
-    """Tests for recursive multi-hop downstream traversal."""
-
-    def test_recursive_downstream_eq_rtr01_be500(self) -> None:
-        """EQ-RTR-01 BE500 down returns KKT-Core-01 AND transitive devices.
-
-        Chain: EQ-RTR-01 BE500 -> KKT-Core-01 -> (BE400 -> DHK-Core-03,
-        BE505 -> EQ-RTR-02, ...).  DHK-Core-03 -> (BE100 -> DHK-Core-02,
-        BE150 -> COX-Core-03, ...).
-        """
-        downstream = get_downstream_devices("192.168.203.1", "Bundle-Ether500")
-        # Direct child
-        assert "192.168.202.2" in downstream  # KKT-Core-01
-        # Transitive via KKT-Core-01 BE400
-        assert "192.168.200.11" in downstream  # DHK-Core-03
-
-    def test_recursive_downstream_kkt01_be400(self) -> None:
-        """KKT-Core-01 BE400 down returns DHK-Core-03 AND DHK-Core-02.
-
-        Chain: KKT-Core-01 BE400 -> DHK-Core-03 -> (BE100 -> DHK-Core-02).
-        """
-        downstream = get_downstream_devices("192.168.202.2", "Bundle-Ether400")
-        assert "192.168.200.11" in downstream  # DHK-Core-03
-        assert "192.168.200.4" in downstream  # DHK-Core-02 (via DHK-Core-03)
-
-    def test_downstream_no_infinite_loop(self) -> None:
-        """Bidirectional links must not cause infinite recursion.
-
-        EQ-RTR-01 <-> KKT-Core-01 have links in both directions.
-        The function must terminate and return a finite result.
-        """
-        # This should complete without hanging or raising
-        downstream = get_downstream_devices("192.168.203.1", "Bundle-Ether500")
-        assert isinstance(downstream, list)
-        # Must not include the originating device itself
-        assert "192.168.203.1" not in downstream
-
-    def test_recursive_includes_multi_hop_dhk_core02(self) -> None:
-        """DHK-Core-03 BE100 -> DHK-Core-02 is reachable from EQ-RTR-01 BE500.
-
-        Full chain: EQ-RTR-01 -> KKT-Core-01 -> DHK-Core-03 -> DHK-Core-02.
-        """
-        downstream = get_downstream_devices("192.168.203.1", "Bundle-Ether500")
-        assert "192.168.200.4" in downstream  # DHK-Core-02
-
-    def test_leaf_device_returns_no_further_downstream(self) -> None:
-        """DHK-Core-02 BE100 -> DHK-Core-03, which then expands further.
-
-        But DHK-Core-02 itself as a starting point with an unknown bundle
-        should return empty.
-        """
-        downstream = get_downstream_devices("192.168.200.4", "Bundle-Ether999")
-        assert downstream == []
-
-    def test_recursive_result_is_list_of_unique_ips(self) -> None:
-        """Recursive traversal must not return duplicate IPs."""
-        downstream = get_downstream_devices("192.168.203.1", "Bundle-Ether500")
-        assert len(downstream) == len(set(downstream))
