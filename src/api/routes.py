@@ -2160,22 +2160,45 @@ async def get_current_shift() -> dict[str, Any]:
     if shift_name == "night" and current_time_minutes < 480:
         shift_start_today = shift_start_today - timedelta(days=1)
 
-    shift_start_utc = shift_start_today.astimezone(UTC)
     shift_start_iso = shift_start_today.isoformat()
-    shift_start_utc_iso = shift_start_utc.isoformat()
+    # The DB stores naive BDT face values; anchor the shift window with a naive
+    # BDT shift-start so the comparison is correct (the old aware-ISO string OR
+    # over-counted pre-shift alerts) and survives a restart (DB, not the store).
+    shift_start_naive = shift_start_today.replace(tzinfo=None)
+    shift_start_naive_iso = shift_start_naive.isoformat()
     critical_since_shift = 0
     warning_since_shift = 0
     info_since_shift = 0
-    for alert in _alerts_store:
-        ts = alert.get("timestamp", "")
-        if ts >= shift_start_utc_iso or ts >= shift_start_iso:
-            cls = alert.get("classification", "")
-            if cls == "CRITICAL":
-                critical_since_shift += 1
-            elif cls == "WARNING":
-                warning_since_shift += 1
-            elif cls == "INFO":
-                info_since_shift += 1
+
+    if _db_engine is not None:
+        from sqlalchemy import func, select  # noqa: PLC0415
+        from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+        from src.database.models import AlertLog  # noqa: PLC0415
+
+        async with AsyncSession(_db_engine) as session:
+            _shift_stmt = (
+                select(AlertLog.classification, func.count(AlertLog.id))
+                .where(AlertLog.timestamp >= shift_start_naive)
+                .group_by(AlertLog.classification)
+            )
+            _shift_counts: dict[str, int] = {}
+            for _cls, _cnt in (await session.execute(_shift_stmt)).all():
+                _shift_counts[_cls] = _cnt
+        critical_since_shift = _shift_counts.get("CRITICAL", 0)
+        warning_since_shift = _shift_counts.get("WARNING", 0)
+        info_since_shift = _shift_counts.get("INFO", 0)
+    else:
+        for alert in _alerts_store:
+            ts = alert.get("timestamp", "")
+            if isinstance(ts, str) and ts >= shift_start_naive_iso:
+                cls = alert.get("classification", "")
+                if cls == "CRITICAL":
+                    critical_since_shift += 1
+                elif cls == "WARNING":
+                    warning_since_shift += 1
+                elif cls == "INFO":
+                    info_since_shift += 1
 
     open_incidents = sum(1 for inc in _incidents_store if not inc.get("acknowledged"))
 
