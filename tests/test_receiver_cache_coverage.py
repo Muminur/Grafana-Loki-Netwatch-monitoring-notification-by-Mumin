@@ -517,8 +517,13 @@ async def test_http_poll_loop_swallows_exception() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_poll_once_non_200_returns_zero() -> None:
-    """A non-200 Loki response logs a warning and returns 0 (no callback)."""
+async def test_http_poll_once_non_200_raises() -> None:
+    """A non-200 Loki response logs a warning and raises (no callback).
+
+    Raising (rather than returning 0) ensures the poll loop marks the receiver
+    disconnected and backs off, instead of mistaking a non-200 — e.g. a 401
+    from an expired Grafana API key — for a healthy empty poll.
+    """
     settings = Settings(monitor_host="127.0.0.1")
     received: list[str] = []
 
@@ -531,9 +536,9 @@ async def test_http_poll_once_non_200_returns_zero() -> None:
 
     with patch("src.core.syslog_receiver.httpx.AsyncClient", return_value=client):
         receiver = SyslogReceiver(settings, callback)
-        count = await receiver._http_poll_once()  # noqa: SLF001
+        with pytest.raises(RuntimeError):
+            await receiver._http_poll_once()  # noqa: SLF001
 
-    assert count == 0
     assert received == []
 
 
