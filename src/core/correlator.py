@@ -103,6 +103,15 @@ class CorrelationEngine:
     FLAP_WINDOW: int = 300  # seconds — flap detection window
     MASS_BGP_THRESHOLD: int = 5  # min BGP peer downs to declare a mass event
 
+    # Event types that count toward a mass BGP event (a non-BGP event must
+    # never open or join a mass-BGP incident as its root cause).
+    _MASS_BGP_EVENT_TYPES: tuple[str, ...] = (
+        "BGP Peer Down",
+        "BGP Down",
+        "Max Prefix",
+        "BGP Max Prefix Reached",
+    )
+
     def __init__(self, max_incidents: int = 10_000) -> None:
         self._max_incidents = max_incidents
 
@@ -287,7 +296,10 @@ class CorrelationEngine:
         # backhaul incident AND a mass BGP incident simultaneously.
         mass_events = self._check_mass_event(enriched)
         mass_incident_result: CorrelatedEvent | None = None
-        if len(mass_events) >= self.MASS_BGP_THRESHOLD - 1:
+        if (
+            enriched.event_type in self._MASS_BGP_EVENT_TYPES
+            and len(mass_events) >= self.MASS_BGP_THRESHOLD - 1
+        ):
             # We have reached the threshold (current event + prior events).
             # Look for an existing *mass-event* incident on this device.
             existing_mass_id = self._find_mass_incident(device_ip)
@@ -599,13 +611,7 @@ class CorrelationEngine:
                 ev is not enriched
                 and ev.parsed.source_ip == device_ip
                 and ts >= cutoff
-                and ev.event_type
-                in (
-                    "BGP Peer Down",
-                    "BGP Down",
-                    "Max Prefix",
-                    "BGP Max Prefix Reached",
-                )
+                and ev.event_type in self._MASS_BGP_EVENT_TYPES
                 and ev.classification in ("CRITICAL", "WARNING")
             )
         ]
