@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import func, select
 
 from src.database.models import AlertLog
+from src.database.timeutils import now_bdt_naive
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -179,7 +180,10 @@ async def get_device_stats(
         Keys: ``device_name``, ``days``, ``total_alerts``, ``by_classification``
         (dict with counts per severity), ``daily`` (list of per-day counts).
     """
-    end = datetime.now(UTC)
+    # The DB stores naive BDT face values; use a BDT-naive "now" so the window
+    # upper bound is not 6 hours behind, which would drop the most recent
+    # ~6 hours of a device's alerts.
+    end = now_bdt_naive()
     start = end - timedelta(days=days)
 
     stmt = (

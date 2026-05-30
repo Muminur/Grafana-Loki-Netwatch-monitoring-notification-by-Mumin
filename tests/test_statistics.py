@@ -377,6 +377,27 @@ async def test_device_stats(session: AsyncSession):
     assert stats["total_alerts"] == 5
 
 
+@pytest.mark.asyncio
+async def test_device_stats_counts_recent_bdt_alerts(session: AsyncSession):
+    """A device alert at the current BDT wall-clock must be counted.
+
+    The real pipeline stores naive BDT face values. The previous ``end =
+    datetime.now(UTC)`` bound was 6 hours behind BDT 'now', so it silently
+    dropped the most recent ~6 hours of a device's alerts from the window.
+    """
+    from src.database.timeutils import now_bdt_naive  # noqa: PLC0415
+    from src.statistics.engine import get_device_stats  # noqa: PLC0415
+
+    device = "BSCCL-EQ-RTR-01"
+    # 3 hours ago in BDT — inside the recent-6h band a UTC end-bound excludes.
+    ts = now_bdt_naive() - timedelta(hours=3)
+    session.add(_make_alert(device_name=device, timestamp=ts))
+    await session.flush()
+
+    stats = await get_device_stats(session, device, days=7)
+    assert stats["total_alerts"] == 1
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 14. test_digest_format
 # ─────────────────────────────────────────────────────────────────────────────
