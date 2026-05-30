@@ -2558,6 +2558,39 @@ async def get_stats_heatmap(
     return {"data": data, "max_count": max_count, "period": period}
 
 
+async def _db_period_counts(fmt: str) -> dict[str, dict[str, int]] | None:
+    """Group ``AlertLog`` counts by classification within ``strftime(fmt)`` buckets.
+
+    Returns ``{bucket_key: {classification: count}}`` from the DB, or ``None``
+    when no DB engine is configured (the caller then falls back to the in-memory
+    store).  ``fmt`` is a SQLite strftime format, e.g. ``"%Y-%m"`` (month) or
+    ``"%Y"`` (year).
+    """
+    if _db_engine is None:
+        return None
+    from sqlalchemy import func, select  # noqa: PLC0415
+    from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+
+    from src.database.models import AlertLog  # noqa: PLC0415
+
+    classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
+    buckets: dict[str, dict[str, int]] = {}
+    async with AsyncSession(_db_engine) as session:
+        stmt = select(
+            func.strftime(fmt, AlertLog.timestamp).label("bucket"),
+            AlertLog.classification,
+            func.count(AlertLog.id),
+        ).group_by("bucket", AlertLog.classification)
+        rows = (await session.execute(stmt)).all()
+    for bucket, cls, cnt in rows:
+        if bucket is None:
+            continue
+        b = buckets.setdefault(str(bucket), dict.fromkeys(classifications, 0))
+        if cls in b:
+            b[cls] = cnt
+    return buckets
+
+
 @router.get("/api/stats/monthly")
 @limiter.limit(RATE_LIMIT_READ)
 async def get_stats_monthly(request: Request) -> dict[str, Any]:
@@ -2572,22 +2605,26 @@ async def get_stats_monthly(request: Request) -> dict[str, Any]:
         ``period`` set to ``"monthly"``, ``months`` list (each with
         ``year``, ``month``, and per-classification ``counts``), ``total``.
     """
-    classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
-    monthly: dict[str, dict[str, int]] = {}
-
-    for alert in _alerts_store:
-        raw_ts = alert.get("timestamp", "")
-        try:
-            ts = datetime.fromisoformat(raw_ts) if isinstance(raw_ts, str) else raw_ts
-            key = f"{ts.year}-{ts.month:02d}"
-        except (ValueError, AttributeError, TypeError):
-            key = "unknown"
-
-        if key not in monthly:
-            monthly[key] = dict.fromkeys(classifications, 0)
-        cls = alert.get("classification", "")
-        if cls in monthly[key]:
-            monthly[key][cls] += 1
+    monthly = await _db_period_counts("%Y-%m")
+    if monthly is None:
+        classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
+        monthly = {}
+        for alert in _alerts_store:
+            raw_ts = alert.get("timestamp", "")
+            try:
+                ts = (
+                    datetime.fromisoformat(raw_ts)
+                    if isinstance(raw_ts, str)
+                    else raw_ts
+                )
+                key = f"{ts.year}-{ts.month:02d}"
+            except (ValueError, AttributeError, TypeError):
+                key = "unknown"
+            if key not in monthly:
+                monthly[key] = dict.fromkeys(classifications, 0)
+            cls = alert.get("classification", "")
+            if cls in monthly[key]:
+                monthly[key][cls] += 1
 
     months_list = [
         {"month": k, "counts": v, "total": sum(v.values())}
@@ -2614,22 +2651,26 @@ async def get_stats_yearly(request: Request) -> dict[str, Any]:
         ``period`` set to ``"yearly"``, ``years`` list (each with
         ``year`` and per-classification ``counts``), ``total``.
     """
-    classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
-    yearly: dict[str, dict[str, int]] = {}
-
-    for alert in _alerts_store:
-        raw_ts = alert.get("timestamp", "")
-        try:
-            ts = datetime.fromisoformat(raw_ts) if isinstance(raw_ts, str) else raw_ts
-            key = str(ts.year)
-        except (ValueError, AttributeError, TypeError):
-            key = "unknown"
-
-        if key not in yearly:
-            yearly[key] = dict.fromkeys(classifications, 0)
-        cls = alert.get("classification", "")
-        if cls in yearly[key]:
-            yearly[key][cls] += 1
+    yearly = await _db_period_counts("%Y")
+    if yearly is None:
+        classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
+        yearly = {}
+        for alert in _alerts_store:
+            raw_ts = alert.get("timestamp", "")
+            try:
+                ts = (
+                    datetime.fromisoformat(raw_ts)
+                    if isinstance(raw_ts, str)
+                    else raw_ts
+                )
+                key = str(ts.year)
+            except (ValueError, AttributeError, TypeError):
+                key = "unknown"
+            if key not in yearly:
+                yearly[key] = dict.fromkeys(classifications, 0)
+            cls = alert.get("classification", "")
+            if cls in yearly[key]:
+                yearly[key][cls] += 1
 
     years_list = [
         {"year": k, "counts": v, "total": sum(v.values())}
