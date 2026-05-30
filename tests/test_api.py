@@ -1208,3 +1208,29 @@ async def test_stats_daily_db_path_hourly_and_per_device() -> None:
     finally:
         routes_mod.set_db_engine(original_engine)
         await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# 40. test_favicon_returns_200
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_favicon_returns_200() -> None:
+    """GET /favicon.ico must return 200 with an icon content-type and a body.
+
+    Browsers request /favicon.ico at the site root (not under /static), so a
+    dedicated route is required to avoid a 404 on every page load.
+    """
+    from src.main import app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/favicon.ico")
+
+    assert response.status_code == 200
+    assert (
+        "icon" in response.headers.get("content-type", "").lower()
+    ), f"unexpected content-type: {response.headers.get('content-type')!r}"
+    assert len(response.content) > 0
