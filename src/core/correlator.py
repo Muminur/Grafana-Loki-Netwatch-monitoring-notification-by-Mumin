@@ -5,7 +5,7 @@ recent events to detect:
 
   - SYMPTOM: event is a downstream consequence of a known backhaul failure
   - FLAPPING: same device+neighbor/interface has ≥3 state changes in 5 min
-  - MASS_EVENT: ≥5 BGP peers down on the same device within 60 s (mass outage)
+  - MASS_EVENT: ≥3 BGP peers down on the same device within 60 s (mass outage)
   - INDEPENDENT: none of the above — standalone event
 
 The engine is intentionally synchronous — it operates on an in-memory ring
@@ -101,7 +101,7 @@ class CorrelationEngine:
     CORRELATION_WINDOW: int = 60  # seconds — backhaul / mass-event window
     FLAP_THRESHOLD: int = 3  # min state changes to declare flapping
     FLAP_WINDOW: int = 300  # seconds — flap detection window
-    MASS_BGP_THRESHOLD: int = 5  # min BGP peer downs to declare a mass event
+    MASS_BGP_THRESHOLD: int = 3  # min BGP peer downs to declare a mass event (PRD E1.2)
 
     def __init__(self, max_incidents: int = 10_000) -> None:
         self._max_incidents = max_incidents

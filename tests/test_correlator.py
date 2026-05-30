@@ -583,6 +583,29 @@ class TestMassBGPEvent:
         # Should belong to existing incident and be suppressed
         assert result.suppress_notification is True or result.incident_id is not None
 
+    def test_three_bgp_downs_form_mass_incident(self) -> None:
+        """3 BGP peers down within 60 s on one router form a mass incident.
+
+        The mass-event threshold is 3 (PRD-SUPPLEMENT §E1.2), not 5: a 3-peer
+        simultaneous drop must collapse into one incident rather than firing
+        three separate notifications.
+        """
+        engine = CorrelationEngine()
+        results = []
+        for i in range(3):
+            ev = _make_enriched(
+                source_ip="192.168.203.1",
+                bgp_neighbor=f"10.7.0.{i + 1}",
+                as_number=70000 + i,
+                classification="CRITICAL",
+                event_type="BGP Peer Down",
+            )
+            results.append(engine.correlate(ev))
+
+        # The 3rd distinct peer-down opens a single mass incident.
+        assert results[2].incident_id is not None
+        assert results[2].is_root_cause is True
+
 
 class TestFlappingDetection:
     """Test flapping detection (≥3 state changes in 5 min)."""
