@@ -43,6 +43,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from src.api.routes import (
     _is_recovery_event,
     add_alert_to_store,
+    drain_pending_db_tasks,
     get_maintenance_store,
     increment_alerts_processed,
     is_alert_acknowledged,
@@ -1202,6 +1203,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
             _log.warning("Could not serialize BGP flap state: %s", exc)
         except SQLAlchemyError as exc:
             _log.warning("Could not persist BGP flap state to DB: %s", exc)
+
+    # Drain in-flight fire-and-forget DB tasks (recovery/resolution persistence)
+    # so they finish against the live engine before it is disposed.
+    await drain_pending_db_tasks()
 
     _log.info("Disposing DB engine…")
     await engine.dispose()

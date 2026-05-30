@@ -71,6 +71,29 @@ _receiver: SyslogReceiver | None = None
 # Background task references — set during lifespan startup via set_background_tasks()
 _background_tasks: dict[str, asyncio.Task[None]] = {}
 
+# Fire-and-forget DB-persist tasks (recovery / resolution writes spawned from the
+# synchronous add_alert_to_store). Tracked so the lifespan shutdown can drain
+# them before the engine is disposed — otherwise a pending task could run a
+# session against a disposed engine and silently lose the write.
+_pending_db_tasks: set[asyncio.Task[None]] = set()
+
+
+def _track_db_task(task: asyncio.Task[None]) -> None:
+    """Register a fire-and-forget DB-persist task so shutdown can await it."""
+    _pending_db_tasks.add(task)
+    task.add_done_callback(_pending_db_tasks.discard)
+
+
+async def drain_pending_db_tasks() -> None:
+    """Await any in-flight fire-and-forget DB tasks.
+
+    Called from the lifespan shutdown before ``engine.dispose()`` so recovery /
+    resolution persistence finishes against a live engine.
+    """
+    if _pending_db_tasks:
+        await asyncio.gather(*list(_pending_db_tasks), return_exceptions=True)
+
+
 # ---------------------------------------------------------------------------
 # Input validation allowlists
 # ---------------------------------------------------------------------------
@@ -1028,7 +1051,7 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
 
             try:
                 loop = _aio.get_running_loop()
-                loop.create_task(_persist_recovery())
+                _track_db_task(loop.create_task(_persist_recovery()))
             except RuntimeError:
                 logger.warning(
                     "No event loop for recovery DB persist: %s/%s",
@@ -1099,7 +1122,7 @@ def add_alert_to_store(enriched: EnrichedLog, correlated: CorrelatedEvent) -> No
                                     _bundle_capture,
                                 )
 
-                        loop.create_task(_resolve_with_logging())
+                        _track_db_task(loop.create_task(_resolve_with_logging()))
 
     if (
         not is_recovery
