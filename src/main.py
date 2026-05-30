@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from slowapi.errors import RateLimitExceeded
@@ -1268,8 +1268,17 @@ app.mount(
 # ── REST API router ─────────────────────────────────────────────────────────
 app.include_router(router)
 
+# Resolved once at import: the favicon asset served at the site root.
+_FAVICON_PATH = _WEB_DIR / "static" / "favicon.ico"
+
 
 # ── Page routes ──────────────────────────────────────────────────────────────
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon() -> FileResponse:
+    """Serve the site favicon so browsers don't 404 on every page load."""
+    return FileResponse(_FAVICON_PATH, media_type="image/x-icon")
 
 
 @app.get("/", response_class=HTMLResponse)

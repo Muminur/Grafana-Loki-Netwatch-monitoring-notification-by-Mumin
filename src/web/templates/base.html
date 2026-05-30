@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}BSCCL NETWATCH{% endblock %}</title>
     <meta name="robots" content="noindex, nofollow">
+    <link rel="icon" type="image/x-icon"
+          href="/static/favicon.ico?v={{ app_version | default('1.0') }}">
 
     <!-- Self-hosted fonts (offline-first); CDN fallback if local file missing -->
     <link rel="stylesheet" href="/static/css/fonts.css?v={{ app_version | default('1.0') }}"
