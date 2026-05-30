@@ -1026,6 +1026,19 @@ button { cursor: pointer; }
 
 .stats-panel canvas { max-width: 100%; }
 
+/* Height-bounded wrapper for doughnut charts (gauge + category donut) so
+   maintainAspectRatio:false sizes them to a sane height instead of forcing a
+   full-panel-width square. */
+.stats-chartbox {
+    position: relative;
+    width: 100%;
+    height: 220px;
+}
+.stats-chartbox-gauge {
+    max-width: 420px;
+    margin: 0 auto;
+}
+
 .stats-health { grid-column: 1; }
 .stats-timeline { grid-column: 2; }
 .stats-donut { grid-column: 1; }

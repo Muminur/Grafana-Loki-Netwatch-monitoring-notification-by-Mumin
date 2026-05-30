@@ -33,8 +33,10 @@
             </span>
         </div>
         <div class="stats-gauge-container" role="region" aria-label="Network health score chart">
-            <canvas id="statsHealthGauge" width="300" height="200"
-                    aria-label="Network health score gauge"></canvas>
+            <div class="stats-chartbox stats-chartbox-gauge">
+                <canvas id="statsHealthGauge" width="300" height="200"
+                        aria-label="Network health score gauge"></canvas>
+            </div>
             <div class="stats-health-value">
                 <span class="health-number" id="statsHealthNumber">—</span>
                 <span class="health-unit">/100</span>
@@ -66,8 +68,10 @@
                 <span class="panel-icon" role="img" aria-hidden="true">⬡</span> ALERT CATEGORIES
             </span>
         </div>
-        <canvas id="statsCategoryDonut" width="280" height="200"
-                aria-label="Alert category distribution donut chart"></canvas>
+        <div class="stats-chartbox">
+            <canvas id="statsCategoryDonut" width="280" height="200"
+                    aria-label="Alert category distribution donut chart"></canvas>
+        </div>
         <div class="donut-legend" id="donutLegend"></div>
     </section>
 
