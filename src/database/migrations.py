@@ -119,6 +119,12 @@ async def _migrate_alert_log_indexes(engine: AsyncEngine) -> None:
             "CREATE INDEX IF NOT EXISTS ix_alertlog_device_mnemonic_resolved "
             "ON alert_log (device_name, mnemonic, resolved_at)"
         ),
+        # timestamp — stats range scans (WHERE timestamp >= start) for the
+        # hourly-bucket and per-device aggregation in /api/stats/daily|weekly
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_alertlog_timestamp "
+            "ON alert_log (timestamp)"
+        ),
     ]
 
     async with engine.begin() as conn:

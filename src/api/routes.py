@@ -2288,8 +2288,36 @@ async def _stats_by_period(period_name: str, period_key: str) -> dict[str, Any]:
         Human label returned in the response (e.g. ``"daily"``).
     period_key:
         Key passed to ``_period_to_time_range`` (e.g. ``"today"``).
+
+    Returns
+    -------
+    dict with keys: period, counts, total, hourly_buckets, per_device.
+    hourly_buckets is a list of 24 dicts (one per hour-of-day) each with
+    hour plus one key per classification.  per_device is the top-10 devices
+    by alert count, sorted descending, excluding blank device names.
     """
     classifications = ["CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"]
+
+    def _empty_buckets() -> list[dict[str, int]]:
+        return [
+            {
+                "hour": h,
+                "CRITICAL": 0,
+                "WARNING": 0,
+                "INFO": 0,
+                "NOISE": 0,
+                "USER_LOGIN": 0,
+            }
+            for h in range(24)
+        ]
+
+    def _finalize_per_device(device_counts: dict[str, int]) -> list[dict[str, Any]]:
+        return [
+            {"device": k, "count": v}
+            for k, v in sorted(device_counts.items(), key=lambda kv: (-kv[1], kv[0]))[
+                :10
+            ]
+        ]
 
     if _db_engine is not None:
         from sqlalchemy import func, select  # noqa: PLC0415
@@ -2299,6 +2327,7 @@ async def _stats_by_period(period_name: str, period_key: str) -> dict[str, Any]:
 
         start, end = _period_to_time_range(period_key)
         async with AsyncSession(_db_engine) as session:
+            # Classification counts
             stmt = select(AlertLog.classification, func.count(AlertLog.id)).group_by(
                 AlertLog.classification
             )
@@ -2309,44 +2338,105 @@ async def _stats_by_period(period_name: str, period_key: str) -> dict[str, Any]:
             result = await session.execute(stmt)
             rows = result.all()
 
+            # Hourly breakdown by classification
+            hour_col = func.cast(
+                func.strftime("%H", AlertLog.timestamp), type_=AlertLog.id.type
+            )
+            hour_stmt = select(
+                hour_col.label("hour"),
+                AlertLog.classification,
+                func.count(AlertLog.id),
+            ).group_by("hour", AlertLog.classification)
+            if start is not None:
+                hour_stmt = hour_stmt.where(AlertLog.timestamp >= start)
+            if end is not None:
+                hour_stmt = hour_stmt.where(AlertLog.timestamp < end)
+            hour_result = await session.execute(hour_stmt)
+            hour_rows = hour_result.all()
+
+            # Per-device counts
+            dev_stmt = (
+                select(AlertLog.device_name, func.count(AlertLog.id))
+                .where(AlertLog.device_name != "")
+                .group_by(AlertLog.device_name)
+            )
+            if start is not None:
+                dev_stmt = dev_stmt.where(AlertLog.timestamp >= start)
+            if end is not None:
+                dev_stmt = dev_stmt.where(AlertLog.timestamp < end)
+            dev_result = await session.execute(dev_stmt)
+            dev_rows = dev_result.all()
+
         counts: dict[str, int] = dict.fromkeys(classifications, 0)
         for cls, cnt in rows:
             if cls in counts:
                 counts[cls] = cnt
+
+        buckets: list[dict[str, int]] = _empty_buckets()
+        for raw_hour, cls, cnt in hour_rows:
+            h = int(raw_hour)
+            if 0 <= h <= 23 and cls in classifications:
+                buckets[h][cls] = int(cnt)
+
+        # device_name is already filtered non-blank by the SQL WHERE clause
+        device_counts: dict[str, int] = {
+            dev_name: int(cnt) for dev_name, cnt in dev_rows
+        }
+
         return {
             "period": period_name,
             "counts": counts,
             "total": sum(counts.values()),
+            "hourly_buckets": buckets,
+            "per_device": _finalize_per_device(device_counts),
         }
 
     # Fallback: in-memory store with timestamp filtering
     start, end = _period_to_time_range(period_key)
     counts = dict.fromkeys(classifications, 0)
+    buckets = _empty_buckets()
+    device_counts = {}
     for alert in _alerts_store:
+        raw_ts = alert.get("timestamp", "")
+        ts: datetime | None = None
         if start is not None or end is not None:
-            raw_ts = alert.get("timestamp", "")
             try:
-                ts = (
+                parsed = (
                     datetime.fromisoformat(raw_ts)
                     if isinstance(raw_ts, str)
                     else raw_ts
                 )
                 # Strip tzinfo to match the naive bounds from _period_to_time_range
-                if ts.tzinfo is not None:
-                    ts = ts.replace(tzinfo=None)
-                if start is not None and ts < start:
+                if parsed.tzinfo is not None:
+                    parsed = parsed.replace(tzinfo=None)
+                if start is not None and parsed < start:
                     continue
-                if end is not None and ts >= end:
+                if end is not None and parsed >= end:
                     continue
+                ts = parsed
             except (ValueError, AttributeError, TypeError):
                 continue
+        # _stats_by_period is only ever called with bounded periods
+        # ("today"/"7d"), so the unbounded case leaves ts=None and simply
+        # skips hourly bucketing — counts/per_device still accumulate.
+
         cls = alert.get("classification", "")
         if cls in counts:
             counts[cls] += 1
+
+        if ts is not None and cls in classifications:
+            buckets[ts.hour][cls] += 1
+
+        dev = alert.get("device", "")
+        if dev:
+            device_counts[dev] = device_counts.get(dev, 0) + 1
+
     return {
         "period": period_name,
         "counts": counts,
         "total": sum(counts.values()),
+        "hourly_buckets": buckets,
+        "per_device": _finalize_per_device(device_counts),
     }
 
 

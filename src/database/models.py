@@ -26,6 +26,9 @@ class AlertLog(Base):
         Index("ix_alertlog_classification_ts", "classification", "timestamp"),
         Index("ix_alertlog_device_ts", "device_name", "timestamp"),
         Index("ix_alertlog_mnemonic", "mnemonic"),
+        # timestamp-leading range scans: stats hourly/per-device aggregation
+        #   WHERE timestamp >= start  (GROUP BY hour / device_name)
+        Index("ix_alertlog_timestamp", "timestamp"),
         # Incident detail lookups: WHERE incident_id = ?
         Index("ix_alertlog_incident_id", "incident_id"),
         # BGP-UP silent-fault resolution query:
