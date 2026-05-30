@@ -719,6 +719,11 @@ class SyslogReceiver:
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind(("0.0.0.0", port))
+            # 1s recv timeout so a blocked recvfrom wakes periodically to
+            # re-check self._running. Without it, stop() leaves the executor
+            # thread blocked in recvfrom (and the port held) until the next
+            # packet arrives — which may never happen on a quiet network.
+            sock.settimeout(1.0)
             self._is_connected = True
 
             _log.info("UDP syslog listener started on port %d", port)
@@ -734,6 +739,9 @@ class SyslogReceiver:
                     if line:
                         self._record_message_received()
                         await self._callback(line)
+                except TimeoutError:
+                    # Periodic wakeup to re-check self._running — not an error.
+                    continue
                 except OSError:
                     self._record_error("udp")
                     if not self._running:
