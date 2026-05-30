@@ -583,6 +583,38 @@ class TestMassBGPEvent:
         # Should belong to existing incident and be suppressed
         assert result.suppress_notification is True or result.incident_id is not None
 
+    def test_non_bgp_event_is_not_mass_incident_root_cause(self) -> None:
+        """A non-BGP event must not become the root cause of a mass-BGP incident
+        merely because prior BGP peer-downs exist on the same device."""
+        engine = CorrelationEngine()
+        dev = "192.168.203.1"
+        # Prime the window with (threshold - 1) BGP peer-downs.
+        for i in range(engine.MASS_BGP_THRESHOLD - 1):
+            engine.correlate(
+                _make_enriched(
+                    source_ip=dev,
+                    bgp_neighbor=f"10.50.0.{i + 1}",
+                    as_number=50000 + i,
+                    classification="CRITICAL",
+                    event_type="BGP Peer Down",
+                    interface_name="",
+                    bundle_parent="",
+                )
+            )
+        # A non-BGP, non-backhaul event on the same device must NOT open a
+        # mass-BGP incident as its root cause.
+        non_bgp = _make_enriched(
+            source_ip=dev,
+            interface_name="GigabitEthernet9/9/9/9",
+            bundle_parent="",
+            bgp_neighbor="",
+            classification="CRITICAL",
+            event_type="Interface Down",
+            mnemonic="UPDOWN",
+        )
+        result = engine.correlate(non_bgp)
+        assert result.is_root_cause is False
+
     def test_three_bgp_downs_form_mass_incident(self) -> None:
         """3 BGP peers down within 60 s on one router form a mass incident.
 
