@@ -651,6 +651,16 @@ class CorrelationEngine:
             if self._backhaul_failures[key] < bh_cutoff:
                 del self._backhaul_failures[key]
 
+        # Purge stale flap history: trim each key to the flap window and drop
+        # keys with no remaining events, so the dict cannot grow without bound
+        # (one entry per peer/interface ever seen) over a long-running process.
+        for key in list(self._flap_history.keys()):
+            recent = [ts for ts in self._flap_history[key] if ts >= cutoff]
+            if recent:
+                self._flap_history[key] = recent
+            else:
+                del self._flap_history[key]
+
     def _purge_stale_incidents(self, now: datetime) -> None:
         """Remove incidents older than 24 hours from the in-memory registry.
 

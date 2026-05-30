@@ -1008,6 +1008,28 @@ class TestDeviceMultipleOverlappingIncidents:
         )
 
 
+class TestFlapHistoryPurge:
+    """Regression: _flap_history must not grow without bound."""
+
+    def test_purge_stale_evicts_stale_flap_history_keys(self) -> None:
+        """Keys with no event inside the flap window are dropped by
+        ``_purge_stale`` (invoked on every ``correlate()``), so a long-running
+        process cannot accumulate one permanent key per peer/interface."""
+        engine = CorrelationEngine()
+        t0 = datetime(2026, 5, 30, 10, 0, 0, tzinfo=_UTC6)
+
+        # 50 distinct devices each emit one BGP-down at t0 -> 50 flap keys.
+        for i in range(50):
+            engine.correlate(_make_enriched(source_ip=f"10.20.0.{i}", ts=t0))
+        assert len(engine._flap_history) == 50  # noqa: SLF001
+
+        # Advance past the flap window and feed one fresh event; the 50 stale
+        # keys must be evicted, leaving only the fresh one.
+        t1 = t0 + timedelta(seconds=engine.FLAP_WINDOW + 60)
+        engine.correlate(_make_enriched(source_ip="10.20.9.9", ts=t1))
+        assert len(engine._flap_history) == 1  # noqa: SLF001
+
+
 # ---------------------------------------------------------------------------
 # New topology entry existence tests
 # ---------------------------------------------------------------------------
