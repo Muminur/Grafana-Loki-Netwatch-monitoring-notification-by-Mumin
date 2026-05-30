@@ -1372,7 +1372,8 @@ async def ws_all(websocket: WebSocket) -> None:
     if not await _ws_authenticate(websocket):
         return
 
-    await _ws_manager.connect(websocket)
+    if not await _ws_manager.connect(websocket):
+        return
     try:
         while True:
             # Keep alive; ignore inbound messages from browser clients
@@ -1393,7 +1394,8 @@ async def ws_filtered(websocket: WebSocket) -> None:
     if not await _ws_authenticate(websocket):
         return
 
-    await _ws_manager.connect(websocket)
+    if not await _ws_manager.connect(websocket):
+        return
     try:
         classification = await websocket.receive_text()
         _ws_manager.set_filter(websocket, classification.strip().upper())
