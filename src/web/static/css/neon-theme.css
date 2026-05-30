@@ -692,6 +692,15 @@ button { cursor: pointer; }
 .alert-card.sev-NOISE      { border-left-color: var(--sev-noise); }
 .alert-card.sev-USER_LOGIN { border-left-color: var(--neon-green); }
 
+/* CRITICAL rows pop at a glance: thicker accent + a faint red wash. */
+.alert-card.sev-CRITICAL {
+    border-left-width: 4px;
+    background: linear-gradient(90deg, rgba(255, 0, 64, 0.09), var(--bg-card) 55%);
+}
+.alert-card.sev-CRITICAL:hover {
+    background: linear-gradient(90deg, rgba(255, 0, 64, 0.16), var(--bg-card-hover) 55%);
+}
+
 .alert-card.acknowledged {
     opacity: 0.6;
     filter: grayscale(0.3);
@@ -1057,6 +1066,15 @@ button { cursor: pointer; }
     align-items: baseline;
     gap: 0.2rem;
     margin-top: 0.5rem;
+}
+
+/* Overlay the score inside the gauge arc rather than below it. */
+.stats-chartbox-gauge .stats-health-value {
+    position: absolute;
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    margin-top: 0;
 }
 
 .health-number {

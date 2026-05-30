@@ -142,7 +142,14 @@
         chart.data.datasets[0].backgroundColor[0] = _healthColor(score);
         chart.update('none');
         var disp = document.getElementById(displayId);
-        if (disp) disp.textContent = score;
+        if (disp) {
+            disp.textContent = score;
+            // Match the number's colour + glow to the gauge arc (the score band)
+            // instead of a fixed green that contradicts a degraded/critical arc.
+            var col = _healthColor(score);
+            disp.style.color = col;
+            disp.style.textShadow = '0 0 16px ' + col + '66';
+        }
     }
 
     // ── Timeline chart ────────────────────────────────────────────────────────
