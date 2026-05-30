@@ -817,6 +817,41 @@ async def test_udp_listen_drops_when_rate_exceeded() -> None:
     mock_sock.close.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_udp_listen_sets_recv_timeout_and_ignores_timeout() -> None:
+    """UDP recv uses a socket timeout so it wakes to re-check _running, and a
+    recv timeout is a wakeup — not counted as a transport error.
+
+    Without the timeout, stop() leaves the executor thread blocked in
+    recvfrom (holding the port) until the next packet arrives.
+    """
+    receiver = SyslogReceiver(_settings(syslog_udp_port=15143), AsyncMock())
+    receiver._running = True  # noqa: SLF001
+
+    mock_sock = MagicMock()
+
+    async def fake_run_in_executor(_executor, _func):  # type: ignore[no-untyped-def] # noqa: ANN001
+        receiver._running = False  # noqa: SLF001 — stop after one timed-out recv
+        raise TimeoutError
+
+    loop_mock = MagicMock()
+    loop_mock.run_in_executor = fake_run_in_executor
+
+    with (
+        patch("src.core.syslog_receiver.socket.socket", return_value=mock_sock),
+        patch(
+            "src.core.syslog_receiver.asyncio.get_running_loop",
+            return_value=loop_mock,
+        ),
+    ):
+        await receiver._udp_listen()  # noqa: SLF001
+
+    mock_sock.settimeout.assert_called_once_with(1.0)
+    # A recv timeout must not be counted as a UDP transport error.
+    assert receiver._error_counters.udp == 0  # noqa: SLF001
+    mock_sock.close.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # 9. Per-transport error counters
 # ---------------------------------------------------------------------------
