@@ -137,9 +137,7 @@ async def _migrate_alert_log_indexes(engine: AsyncEngine) -> None:
             "ON alert_log (device_name, timestamp)"
         ),
         # mnemonic — recovery-prune / BGP-UP resolution lookups by mnemonic
-        text(
-            "CREATE INDEX IF NOT EXISTS ix_alertlog_mnemonic " "ON alert_log (mnemonic)"
-        ),
+        text("CREATE INDEX IF NOT EXISTS ix_alertlog_mnemonic ON alert_log (mnemonic)"),
     ]
 
     async with engine.begin() as conn:
