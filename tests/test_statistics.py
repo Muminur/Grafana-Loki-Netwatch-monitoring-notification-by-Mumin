@@ -70,15 +70,9 @@ def _make_alert(
 
 
 def test_health_score_perfect():
-    """Zero criticals, warnings, incidents, flapping peers → maximum score (100)."""
-    score = calculate_health_score(
-        critical_count=0,
-        warning_count=0,
-        active_incidents=0,
-        flapping_peers=0,
-        total_devices=34,
-    )
-    # With bonuses: +5 no criticals + implied all-devices bonus → 100 (capped)
+    """No deductions + PNI healthy + no criticals → clamps to 100."""
+    score = calculate_health_score(critical_count=0, warning_count=0)
+    # 100 + 5 (PNI) + 5 (no criticals) = 110 → clamped to 100.
     assert score == 100.0
 
 
@@ -87,18 +81,11 @@ def test_health_score_perfect():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_health_score_deductions():
-    """2 criticals + 1 incident → 80 (no all-devices bonus without reporting)."""
-    score = calculate_health_score(
-        critical_count=2,
-        warning_count=0,
-        active_incidents=1,
-        flapping_peers=0,
-        total_devices=34,
-    )
-    # 100 - (2*5) - (1*10) = 80. No +5 for "no criticals" (critical_count=2),
-    # no +5 for "all devices" (reporting_devices defaults to 0).
-    assert score == 80.0
+def test_health_score_critical_weight():
+    """PRD E5.2: each active CRITICAL deducts 15 (not 5)."""
+    score = calculate_health_score(critical_count=2, warning_count=0)
+    # 100 - min(2*15, 60) + 5 (PNI) = 75 (no no-criticals bonus: count != 0).
+    assert score == 75.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -111,9 +98,9 @@ def test_health_score_floor_zero():
     score = calculate_health_score(
         critical_count=100,
         warning_count=200,
-        active_incidents=50,
+        bgp_down_count=100,
         flapping_peers=30,
-        total_devices=34,
+        degraded_backhauls=100,
     )
     assert score == 0.0
 
@@ -125,13 +112,7 @@ def test_health_score_floor_zero():
 
 def test_health_score_ceiling_100():
     """Bonuses cannot push score above 100."""
-    score = calculate_health_score(
-        critical_count=0,
-        warning_count=0,
-        active_incidents=0,
-        flapping_peers=0,
-        total_devices=34,
-    )
+    score = calculate_health_score(critical_count=0, warning_count=0)
     assert score <= 100.0
 
 
@@ -141,16 +122,42 @@ def test_health_score_ceiling_100():
 
 
 def test_health_score_warning_only():
-    """5 warnings = -5 points. No critical → +5 bonus. All devices → +5 bonus."""
-    score = calculate_health_score(
-        critical_count=0,
-        warning_count=5,
-        active_incidents=0,
-        flapping_peers=0,
-        total_devices=34,
-    )
-    # 100 - (5 * 1) + 5 (no criticals) + 5 (all devices) = 105 → capped at 100
+    """5 warnings = -10 (PRD -2 each); no critical → +5; PNI → +5; clamped."""
+    score = calculate_health_score(critical_count=0, warning_count=5)
+    # 100 - min(5*2, 20) + 5 (PNI) + 5 (no criticals) = 100.
     assert score == 100.0
+
+
+def test_health_score_caps_and_new_terms():
+    """BGP-down (-3), degraded-backhaul (-10), and the per-term caps apply."""
+    # 100 - 6 (2 bgp) - 10 (1 degraded) + 5 (PNI) + 5 (no criticals) = 94.
+    assert (
+        calculate_health_score(
+            critical_count=0,
+            warning_count=0,
+            bgp_down_count=2,
+            degraded_backhauls=1,
+        )
+        == 94.0
+    )
+    # CRITICAL deduction caps at -60: 10 criticals == 60 criticals here.
+    assert calculate_health_score(critical_count=10, warning_count=0) == 45.0
+    # Flapping caps at -25: 100 - 15 (1 crit) - 25 (cap) + 5 (PNI) = 65.
+    assert (
+        calculate_health_score(critical_count=1, warning_count=0, flapping_peers=10)
+        == 65.0
+    )
+
+
+def test_health_score_pni_unhealthy_withholds_bonus():
+    """An unhealthy PNI withholds the +5 bonus."""
+    healthy = calculate_health_score(
+        critical_count=1, warning_count=0, pni_healthy=True
+    )
+    unhealthy = calculate_health_score(
+        critical_count=1, warning_count=0, pni_healthy=False
+    )
+    assert healthy - unhealthy == 5.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -597,23 +604,13 @@ async def test_hourly_aggregation_upsert_idempotent(session: AsyncSession):
 
 
 def test_health_score_flapping_deduction():
-    """Each flapping peer deducts 3 points from health score."""
-    # Use existing criticals so bonuses are suppressed and ceiling doesn't interfere.
-    # 2 criticals (no +5 no-critical bonus) + 5 all-devices bonus:
-    # no flap:  100 - 10 + 5 = 95
-    # 2 flap:   100 - 10 + 5 - 6 = 89
+    """Each flapping peer deducts 5 points (PRD E5.2)."""
+    # 2 criticals suppress the no-criticals bonus so the flap delta is isolated.
     score_no_flap = calculate_health_score(
-        critical_count=2,
-        warning_count=0,
-        active_incidents=0,
-        flapping_peers=0,
-        total_devices=34,
+        critical_count=2, warning_count=0, flapping_peers=0
     )
     score_with_flap = calculate_health_score(
-        critical_count=2,
-        warning_count=0,
-        active_incidents=0,
-        flapping_peers=2,
-        total_devices=34,
+        critical_count=2, warning_count=0, flapping_peers=2
     )
-    assert score_no_flap - score_with_flap == 6.0
+    # 2 flapping peers = -10 (5 each).
+    assert score_no_flap - score_with_flap == 10.0
