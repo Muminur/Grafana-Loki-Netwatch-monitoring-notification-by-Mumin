@@ -510,10 +510,15 @@ class CorrelationEngine:
             is_downstream = device_ip in downstream_ips
 
             if same_device or is_downstream:
-                # Create or reuse an incident for this backhaul event
+                # Create or reuse an incident for this backhaul event. Only reuse
+                # an incident id that is still LIVE — an id can be evicted (incident
+                # cap / stale purge) while its backhaul-failure entry is still
+                # active, and returning the stale id would attach this alert to a
+                # phantom incident and silently suppress it.
                 bh_incident_key = f"{bh_device}:{bundle_name}"
-                existing_ids = self._device_incidents.get(bh_incident_key)
-                if not existing_ids:
+                existing_ids = self._device_incidents.get(bh_incident_key) or []
+                live_ids = [i for i in existing_ids if i in self._incidents]
+                if not live_ids:
                     self._enforce_incident_cap()
                     inc_id = self._generate_incident_id()
                     self._incidents[inc_id] = []
@@ -521,7 +526,7 @@ class CorrelationEngine:
                     self._device_incidents[bh_incident_key].append(inc_id)
                     self._device_incidents[bh_device].append(inc_id)
                     return inc_id
-                return existing_ids[-1]
+                return live_ids[-1]
 
         return None
 

@@ -533,6 +533,41 @@ class TestBackhaulCorrelation:
         assert result.is_independent is True
         assert result.is_symptom is False
 
+    def test_stale_incident_id_not_returned_after_eviction(self) -> None:
+        """If a backhaul incident is evicted while its failure is still active,
+        a later symptom must attach to a LIVE incident, not a phantom id (which
+        would suppress the alert against a non-existent incident)."""
+        engine = CorrelationEngine()
+        member_down = _make_enriched(
+            source_ip="192.168.203.1",
+            interface_name="TenGigE0/0/0/0",
+            bundle_parent="Bundle-Ether500",
+            classification="CRITICAL",
+            event_type="Interface Down",
+            mnemonic="UPDOWN",
+        )
+        first = engine.correlate(member_down)
+        assert first.incident_id is not None
+        assert first.incident_id in engine._incidents  # noqa: SLF001
+
+        # Simulate the incident being evicted (e.g. by the incident cap) while
+        # its backhaul-failure entry is still live.
+        del engine._incidents[first.incident_id]  # noqa: SLF001
+
+        bgp_down = _make_enriched(
+            source_ip="192.168.203.1",
+            interface_name="",
+            bundle_parent="",
+            bgp_neighbor="10.0.0.1",
+            classification="CRITICAL",
+            event_type="BGP Peer Down",
+            mnemonic="ADJCHANGE",
+        )
+        second = engine.correlate(bgp_down)
+        # The returned incident id must be a live incident, never the evicted one.
+        assert second.incident_id is not None
+        assert second.incident_id in engine._incidents  # noqa: SLF001
+
 
 class TestMassBGPEvent:
     """Test mass BGP event → incident creation."""
