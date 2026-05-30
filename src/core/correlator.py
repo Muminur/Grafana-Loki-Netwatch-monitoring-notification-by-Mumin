@@ -20,7 +20,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from src.data.topology import get_downstream_devices, is_backhaul_member
+from src.data.bgp_bundle_map import lookup_bundle_for_bgp_peer
+from src.data.topology import get_link_remote, is_backhaul_member
 
 _log = logging.getLogger(__name__)
 
@@ -459,16 +460,52 @@ class CorrelationEngine:
         day_seq = self._incident_seq - self._seq_day_offset
         return f"INC-{today}-{day_seq:03d}"
 
-    def _find_root_cause(self, enriched: EnrichedLog) -> str | None:
-        """Check if *enriched* is downstream of a known backhaul failure.
+    def _event_bundle(self, enriched: EnrichedLog) -> str | None:
+        """Return the backbone bundle this event rides on, or ``None``.
 
-        Checks two cases:
-        1. Same-device: the event's device IP matches the device that has an
-           active backhaul failure (e.g. a BGP peer failing on EQ-RTR-01 after
-           a BE500 member went down on EQ-RTR-01).
-        2. Cross-device: the event's device IP is a downstream device of any
-           active backhaul failure (e.g. BGP peers failing on KKT-Core-01 after
-           EQ-RTR-01's BE500 bundle degraded).
+        An event rides a backbone bundle when it is either a physical member of
+        that bundle (interface event) or a BGP session that runs across it (a
+        backbone point-to-point peer).  IX/PNI peers, client ports and any other
+        event return ``None`` and are therefore never treated as the symptom of
+        a backhaul failure.
+
+        Parameters
+        ----------
+        enriched:
+            Event to resolve.
+
+        Returns
+        -------
+        str | None
+            The bundle name (e.g. ``Bundle-Ether500``) or ``None``.
+        """
+        device_ip = enriched.parsed.source_ip
+        if enriched.interface_name:
+            is_member, bundle = is_backhaul_member(device_ip, enriched.interface_name)
+            if is_member:
+                return bundle
+        if enriched.bgp_neighbor:
+            return lookup_bundle_for_bgp_peer(device_ip, enriched.bgp_neighbor)
+        return None
+
+    def _find_root_cause(self, enriched: EnrichedLog) -> str | None:
+        """Check if *enriched* is a symptom of a known backhaul failure.
+
+        Correlation is **per physical link** only.  The network is multi-homed,
+        so a single upstream/backhaul failure does **not** isolate
+        transitively-downstream devices — only the two endpoints of the failed
+        link are correlated.  An event is a symptom of an active backhaul failure
+        on link ``(bh_device, bundle)`` iff the event itself rides on that exact
+        link:
+
+        * **local end** — the event is on *bh_device* and rides *bundle*
+          (another member of that bundle going down, or the BGP session that runs
+          across it);
+        * **remote end** — the event rides a bundle whose far end is *bh_device*
+          (the other side of the same physical link).
+
+        Events that do not ride a backbone bundle (PNI/IX peers, client ports)
+        are never symptoms.
 
         Parameters
         ----------
@@ -483,6 +520,13 @@ class CorrelationEngine:
         device_ip = enriched.parsed.source_ip
         now = enriched.parsed.timestamp
 
+        # The backbone bundle this event itself rides on.  ``None`` ⇒ not a
+        # backbone-link event, so it can never be a backhaul symptom.
+        event_bundle = self._event_bundle(enriched)
+        if event_bundle is None:
+            return None
+        event_remote = get_link_remote(device_ip, event_bundle)
+
         for (bh_device, bundle_name), failure_ts in list(
             self._backhaul_failures.items()
         ):
@@ -490,14 +534,21 @@ class CorrelationEngine:
             if age > self.CORRELATION_WINDOW:
                 continue
 
-            # Case 1: same device as the backhaul failure
-            same_device = bh_device == device_ip
+            # Per-link correlation only (see method docstring).  The failed link
+            # joins bh_device and ``failed_remote``; an event is a symptom only
+            # if it rides THAT physical link:
+            #   local end  — event on bh_device, riding the failing bundle;
+            #   remote end — event on the failed link's far-end device, riding
+            #                the bundle that faces bh_device.
+            # The far-end device check is essential: bh_device may have several
+            # backhaul links, and an event on a *different* neighbour that also
+            # terminates on bh_device rides a DIFFERENT physical link and must
+            # not be correlated with this failure.
+            failed_remote = get_link_remote(bh_device, bundle_name)
+            is_local_end = device_ip == bh_device and event_bundle == bundle_name
+            is_remote_end = device_ip == failed_remote and event_remote == bh_device
 
-            # Case 2: this event's device is downstream of the failing bundle
-            downstream_ips = get_downstream_devices(bh_device, bundle_name)
-            is_downstream = device_ip in downstream_ips
-
-            if same_device or is_downstream:
+            if is_local_end or is_remote_end:
                 # Create or reuse an incident for this backhaul event. Only reuse
                 # an incident id that is still LIVE — an id can be evicted (incident
                 # cap / stale purge) while its backhaul-failure entry is still

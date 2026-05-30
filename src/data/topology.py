@@ -457,58 +457,35 @@ NETWORK_TOPOLOGY: dict[str, DeviceTopology] = {
 # ---------------------------------------------------------------------------
 
 
-def get_downstream_devices(device_ip: str, interface: str) -> list[str]:
-    """Get downstream device IPs affected if *interface* on *device_ip* goes down.
+def get_link_remote(device_ip: str, bundle: str) -> str | None:
+    """Return the remote-device IP at the far end of *bundle* on *device_ip*.
 
-    Performs a recursive BFS traversal with cycle detection.  Starting from the
-    direct remote device of *interface*, the function discovers ALL transitively
-    downstream devices: for each newly discovered device it examines every
-    upstream bundle in :data:`NETWORK_TOPOLOGY` and adds the remote end to the
-    traversal queue (unless already visited).
+    Each backbone bundle is a single point-to-point link between exactly two
+    devices.  This returns the IP of the device on the other end of *bundle*.
 
-    The originating *device_ip* is never included in the result.
+    Correlation is **per physical link** — the network is multi-homed, so a
+    single upstream/backhaul failure does not isolate transitively-downstream
+    devices.  Only the two endpoints of a failed link are correlated, which is
+    why a direct (non-transitive) remote lookup is all that is needed.
 
     Parameters
     ----------
     device_ip:
-        Syslog source IP of the device that has the failing interface.
-    interface:
-        The bundle or physical interface that is failing (e.g. ``Bundle-Ether500``).
+        Syslog source IP of the local device.
+    bundle:
+        Bundle interface name (e.g. ``Bundle-Ether500``).
 
     Returns
     -------
-    list[str]
-        IP addresses of all transitively downstream devices.
-        Returns an empty list if the device or interface is unknown.
+    str | None
+        The remote device IP, or ``None`` if *device_ip* is unknown or has no
+        bundle named *bundle*.
     """
     topo = NETWORK_TOPOLOGY.get(device_ip)
     if topo is None:
-        return []
-    link = topo.upstreams.get(interface)
-    if link is None:
-        return []
-
-    # BFS with cycle detection
-    visited: set[str] = {device_ip}  # never revisit the origin device
-    queue: list[str] = [link.remote_device_ip]
-    result: list[str] = []
-
-    while queue:
-        current_ip = queue.pop(0)
-        if current_ip in visited:
-            continue
-        visited.add(current_ip)
-        result.append(current_ip)
-
-        # Expand: find all remote_device_ips reachable from this device
-        current_topo = NETWORK_TOPOLOGY.get(current_ip)
-        if current_topo is None:
-            continue
-        for _bundle_name, bh_link in current_topo.upstreams.items():
-            if bh_link.remote_device_ip not in visited:
-                queue.append(bh_link.remote_device_ip)
-
-    return result
+        return None
+    link = topo.upstreams.get(bundle)
+    return link.remote_device_ip if link is not None else None
 
 
 def is_backhaul_member(device_ip: str, interface: str) -> tuple[bool, str]:
