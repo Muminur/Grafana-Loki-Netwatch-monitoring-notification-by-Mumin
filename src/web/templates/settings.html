@@ -28,7 +28,7 @@
                         <input type="checkbox" id="discordEnabled" name="discord_enabled">
                         <span class="toggle-slider"></span>
                     </label>
-                    <span class="toggle-desc">Send CRITICAL + WARNING alerts to Discord</span>
+                    <span class="toggle-desc">Send alerts at or above the minimum severity to Discord</span>
                 </div>
             </div>
             <div class="form-group">
@@ -38,7 +38,7 @@
                         <input type="checkbox" id="telegramEnabled" name="telegram_enabled">
                         <span class="toggle-slider"></span>
                     </label>
-                    <span class="toggle-desc">Send CRITICAL alerts to Telegram</span>
+                    <span class="toggle-desc">Send alerts at or above the minimum severity to Telegram</span>
                 </div>
             </div>
             <div class="form-group">
@@ -79,6 +79,18 @@
                 </div>
                 <span class="form-hint" id="hwDefectsNoise-hint">When enabled, hardware optical faults on point-to-point backbone links are moved to the Noise tab instead of creating active incidents. These faults rarely have explicit clear messages from IOS-XR.</span>
             </div>
+            <div class="form-group">
+                <label class="form-label" for="maxpfxAlerts">MAXPFX Alerts</label>
+                <div class="toggle-row">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="maxpfxAlerts" name="maxpfx_alerts" checked
+                               aria-describedby="maxpfxAlerts-hint">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="toggle-desc">Notify, alarm, and show active incidents for MAXPFX (BGP max-prefix) events</span>
+                </div>
+                <span class="form-hint" id="maxpfxAlerts-hint">When turned off, MAXPFX events are muted everywhere — no Discord/Telegram, no audio alarm, and no active incident card. Events are still recorded in history.</span>
+            </div>
         </form>
     </section>
 
@@ -97,7 +109,7 @@
                         <input type="checkbox" id="soundEnabled" name="sound_enabled" checked>
                         <span class="toggle-slider"></span>
                     </label>
-                    <span class="toggle-desc">Play audio alerts for CRITICAL events</span>
+                    <span class="toggle-desc">Master switch for all alert sounds</span>
                 </div>
             </div>
             <div class="form-group">
@@ -499,6 +511,30 @@ document.addEventListener('DOMContentLoaded', function() {
                 })
                 .catch(function(err) {
                     console.error('[Settings] HW noise save failed:', err);
+                    showSaveToast('Save failed — check connection');
+                });
+        });
+    }
+
+    // ── MAXPFX Alerts toggle ─────────────────────────────────────────────
+    var maxpfxToggle = document.getElementById('maxpfxAlerts');
+    if (maxpfxToggle) {
+        fetch(api + '/settings/maxpfx-alerts')
+            .then(function(r) { return r.json(); })
+            .then(function(data) { maxpfxToggle.checked = data.maxpfx_alerts_enabled; })
+            .catch(function() {});
+        maxpfxToggle.addEventListener('change', function() {
+            fetch(api + '/settings/maxpfx-alerts?enabled=' + maxpfxToggle.checked, { method: 'POST' })
+                .then(function(r) {
+                    if (!r.ok) throw new Error('Save failed: ' + r.status);
+                    return r.json();
+                })
+                .then(function(data) {
+                    maxpfxToggle.checked = data.maxpfx_alerts_enabled;
+                    showSaveToast('Setting saved');
+                })
+                .catch(function(err) {
+                    console.error('[Settings] MAXPFX save failed:', err);
                     showSaveToast('Save failed — check connection');
                 });
         });

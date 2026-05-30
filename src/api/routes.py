@@ -128,6 +128,11 @@ _SILENT_FAULT_MNEMONICS = frozenset({"RX_FAULT", "SIGNAL", "RFI"})
 # bundle members as NOISE rather than CRITICAL incidents. Default ON.
 _hardware_defects_as_noise: bool = True
 
+# Runtime toggle: when False, MAXPFX (BGP max-prefix) events are muted across
+# all live surfaces — notify, audio, active-incident card, live feed — while
+# still being persisted to the DB.  Default ON.
+_maxpfx_alerts_enabled: bool = True
+
 # Debounce for the recovery cross-check in get_incidents()
 _last_recovery_prune: float = 0.0
 _RECOVERY_PRUNE_INTERVAL_S: float = 30.0
@@ -274,6 +279,66 @@ def _incident_group_key(
         return f"{device}:ADJCHANGE:{_bgp_discriminator(neighbor, as_number, message)}"
     iface = interface or _extract_iface_from_msg(message)
     return f"{device}:{mnemonic}:{iface}"
+
+
+def is_alert_acknowledged(
+    device: str,
+    mnemonic: str,
+    interface: str,
+    neighbor: str,
+    as_number: int,
+    message: str,
+    incident_id: str = "",
+) -> bool:
+    """Report whether the incident this alert belongs to is acknowledged.
+
+    The notification path calls this to suppress repeat Discord/Telegram alerts
+    for an incident an operator has already acknowledged in the dashboard.
+    Matching mirrors ``add_alert_to_store``: a correlator-owned incident is
+    matched by its ``INC-`` id; everything else by the shared
+    ``_incident_group_key`` (so a repeat MAXPFX folds onto the same ACKed card
+    regardless of BGP neighbor, exactly as the live card grouping does).
+
+    Args:
+        device: Device name.
+        mnemonic: Syslog mnemonic.
+        interface: Interface name (may be empty).
+        neighbor: BGP neighbor address (may be empty).
+        as_number: BGP AS number (may be 0).
+        message: Raw syslog message text.
+        incident_id: Correlator incident id (``INC-...``) when present, else "".
+
+    Returns:
+        True only if a matching incident card exists and is acknowledged.
+    """
+    if incident_id:
+        inc = next((i for i in _incidents_store if i.get("id") == incident_id), None)
+        return bool(inc and inc.get("acknowledged"))
+
+    group_key = _incident_group_key(
+        device, mnemonic, interface, neighbor, as_number, message
+    )
+    for inc in _incidents_store:
+        if str(inc.get("id", "")).startswith("INC-"):
+            continue
+        if (
+            _incident_group_key(
+                inc.get("device", ""),
+                inc.get("mnemonic", ""),
+                inc.get("interface", ""),
+                inc.get("neighbor", ""),
+                inc.get("as_number", 0),
+                inc.get("message", ""),
+            )
+            == group_key
+        ):
+            return bool(inc.get("acknowledged"))
+    return False
+
+
+def is_maxpfx_alerts_enabled() -> bool:
+    """Return whether MAXPFX alerts are enabled (True) or muted (False)."""
+    return _maxpfx_alerts_enabled
 
 
 def _prune_recovered_incidents() -> None:
@@ -554,7 +619,7 @@ async def load_persisted_state(engine: AsyncEngine) -> None:
 
     _load_log = logging.getLogger(__name__)
 
-    global _hardware_defects_as_noise  # noqa: PLW0603
+    global _hardware_defects_as_noise, _maxpfx_alerts_enabled  # noqa: PLW0603
 
     try:
         from sqlalchemy.ext.asyncio import (
@@ -590,6 +655,15 @@ async def load_persisted_state(engine: AsyncEngine) -> None:
                 _load_log.info(
                     "Loaded hardware_defects_as_noise=%s from DB",
                     _hardware_defects_as_noise,
+                )
+
+            # ── MAXPFX-alerts toggle ──────────────────────────────────────
+            mpx = await get_app_setting(session, "maxpfx_alerts_enabled")
+            if mpx is not None:
+                _maxpfx_alerts_enabled = mpx.lower() == "true"
+                _load_log.info(
+                    "Loaded maxpfx_alerts_enabled=%s from DB",
+                    _maxpfx_alerts_enabled,
                 )
 
             # ── Notification settings ─────────────────────────────────────
@@ -2538,6 +2612,57 @@ async def set_hardware_noise_setting(
         except Exception:  # noqa: BLE001
             logger.warning("Failed to persist setting to DB", exc_info=True)
     return {"hardware_defects_as_noise": _hardware_defects_as_noise}
+
+
+@router.get("/api/settings/maxpfx-alerts")
+async def get_maxpfx_alerts_setting() -> dict[str, bool]:
+    """Return whether MAXPFX alerts are enabled (True) or muted (False)."""
+    return {"maxpfx_alerts_enabled": _maxpfx_alerts_enabled}
+
+
+@router.post(
+    "/api/settings/maxpfx-alerts",
+    dependencies=[Depends(require_api_key)],
+)
+@limiter.limit(RATE_LIMIT_MUTATING)
+async def set_maxpfx_alerts_setting(
+    request: Request, enabled: bool = True
+) -> dict[str, bool]:
+    """Toggle MAXPFX alerts.
+
+    Protected when ``API_KEY`` is configured; open when ``API_KEY`` is unset.
+
+    When disabled, MAXPFX (BGP max-prefix) events are muted across all live
+    surfaces — Discord/Telegram, audio, active-incident card, and the live
+    dashboard feed — but are still written to the database for audit/history.
+    On disable, existing MAXPFX incident cards are pruned from the in-memory
+    store.  The new value is persisted to the ``app_setting`` table under the
+    key ``"maxpfx_alerts_enabled"``.
+    """
+    global _maxpfx_alerts_enabled  # noqa: PLW0603
+    _maxpfx_alerts_enabled = enabled
+    if not enabled:
+        kept = [inc for inc in _incidents_store if inc.get("mnemonic") != "MAXPFX"]
+        _incidents_store.clear()
+        _incidents_store.extend(kept)
+    if _db_engine is not None:
+        try:
+            from sqlalchemy.ext.asyncio import (
+                AsyncSession as _AsyncSession,  # noqa: PLC0415
+            )
+
+            from src.database.crud import set_app_setting  # noqa: PLC0415
+
+            async with _AsyncSession(_db_engine) as session:
+                await set_app_setting(
+                    session,
+                    "maxpfx_alerts_enabled",
+                    "true" if enabled else "false",
+                )
+                await session.commit()
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to persist setting to DB", exc_info=True)
+    return {"maxpfx_alerts_enabled": _maxpfx_alerts_enabled}
 
 
 # ---------------------------------------------------------------------------

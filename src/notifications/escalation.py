@@ -194,6 +194,47 @@ class EscalationEngine:
         )
         return len(matching_keys)
 
+    def resolve_alert(self, enriched: EnrichedLog) -> bool:
+        """Cancel escalation for the specific alert that just recovered.
+
+        A CRITICAL fault that recovers (Interface/BGP Up, alarm Clear, …)
+        before a human acknowledges it must never escalate.  This removes the
+        single tracked entry whose key matches the recovered event's
+        ``(device_name, mnemonic, discriminator)`` — the same key
+        :meth:`track_alert` records — so escalation is cancelled precisely for
+        the link/neighbor that recovered, without disturbing other still-down
+        alerts on the same (possibly very busy) device.
+
+        Parameters
+        ----------
+        enriched:
+            The fully enriched recovery event.
+
+        Returns
+        -------
+        bool
+            ``True`` if a tracked entry was removed, ``False`` otherwise.
+        """
+        discriminator = enriched.bgp_neighbor or enriched.interface_name or ""
+        key = (enriched.device_name, enriched.parsed.mnemonic, discriminator)
+        if key not in self._tracked:
+            _log.debug(
+                "resolve_alert: no tracked entry for %s/%s (%s)",
+                enriched.device_name,
+                enriched.parsed.mnemonic,
+                discriminator,
+            )
+            return False
+        del self._tracked[key]
+        self._acked.discard(key)
+        _log.debug(
+            "Resolved escalation for %s/%s (%s) — recovery cancelled escalation",
+            enriched.device_name,
+            enriched.parsed.mnemonic,
+            discriminator,
+        )
+        return True
+
     def get_pending_escalations(self) -> list[tuple[EnrichedLog, int]]:
         """Return alerts that need escalation (unacknowledged after delay).
 

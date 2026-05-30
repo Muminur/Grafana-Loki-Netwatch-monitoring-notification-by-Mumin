@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-1127_passing-00ff88?style=flat-square" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-1175_passing-00ff88?style=flat-square" alt="Tests"/>
   <img src="https://img.shields.io/badge/coverage-86%25-00ff88?style=flat-square" alt="Coverage"/>
   <img src="https://img.shields.io/badge/ruff-clean-00f0ff?style=flat-square" alt="Ruff"/>
   <img src="https://img.shields.io/badge/mypy-strict-8b5cf6?style=flat-square" alt="Mypy"/>
@@ -109,7 +109,7 @@ The correlation engine uses the **network dependency tree** (11 backbone devices
 | Classification rules | **26** (15 CRITICAL, 2 WARNING, 6 INFO, 3 LOGIN) |
 | Syslog formats parsed | **4** (IOS-XR +06, BDT, ADMIN, bare) |
 | Dedup windows | **5 min** standard, **2 min** BGP flap, **60 sec** bundle |
-| Test suite | **1127 tests**, 86% coverage |
+| Test suite | **1175 tests**, 86% coverage |
 
 ---
 
@@ -166,6 +166,21 @@ ruff check .
 black --check .
 mypy src/
 ```
+
+### Notification Smoke Test
+
+Send a clearly-marked **TEST-DRILL** alert through the real parse → enrich → correlate → dedup pipeline to confirm end-to-end Discord/Telegram delivery. Dry-run by default (no network); pass `--send` to deliver to the channels enabled in `.env`:
+
+```bash
+# Dry-run — preview what would be sent, no network calls
+python -m scripts.test_notifications
+
+# Deliver a [TEST-DRILL] alert + escalation + resolution to enabled channels
+python -m scripts.test_notifications --send
+python -m scripts.test_notifications --send --channel discord
+```
+
+Every message is tagged `[TEST-DRILL]` so on-call NOC staff immediately see it is not a real outage. The webhook URL and bot token are read from `.env` at runtime — never hardcoded.
 
 ---
 
@@ -291,6 +306,13 @@ Three shifts aligned to BSCCL NOC operations (BDT timezone):
 - **Hardware Defects as Noise** toggle (default ON) — classifies persistent
   hardware faults (`RX_FAULT` / `SIGNAL` / `RFI`) on backbone P2P bundle members as NOISE
   instead of CRITICAL. Exposed via `GET`/`POST /api/settings/hardware-noise`
+- **MAXPFX Alerts** toggle (default ON) — when turned OFF, BGP max-prefix
+  (`BGP-5-MAXPFX`) events are muted across every live surface: no Discord/Telegram
+  notification, no audio, no incident card, no WebSocket broadcast — **and no
+  escalation** (a muted MAXPFX alert is never surfaced as a 15-minute escalation).
+  The event is still written to the DB for audit/history, and disabling the toggle
+  prunes any existing MAXPFX incident cards. Exposed via
+  `GET`/`POST /api/settings/maxpfx-alerts`
 
 **Sound & UI Settings** (DB-backed, synced via `/api/settings/sound`):
 - **Alert Sounds** master toggle — enable/disable all sounds
@@ -448,6 +470,17 @@ Dedup is enforced at every layer: DB storage, WebSocket broadcast, in-memory sto
    - Marks the alert as escalated to prevent re-sending on subsequent cycles
 4. Escalation tracking is persisted to SQLite and restored on restart — no escalation is lost across server restarts
 
+**Recovery cancels escalation.** A CRITICAL fault that recovers (Interface/BGP Up,
+alarm Clear, …) before a human acknowledges it must never escalate. Every recovery
+event cancels the tracked escalation for the exact link/neighbor that recovered —
+keyed on `(device, mnemonic, discriminator)` — independent of correlator state, so a
+flap that never formed a correlated incident still has its escalation cancelled.
+
+**Muted MAXPFX never escalates.** While the operator has MAXPFX alerts muted (see
+Settings → Alert Classification), pending `BGP-5-MAXPFX` escalations are skipped at
+dispatch time. They are left *pending* rather than marked escalated, so if MAXPFX is
+re-enabled before the underlying issue clears, the alert still escalates.
+
 ### Statistics Aggregation
 
 A background task (`_hourly_aggregator`) runs every 5 minutes and pre-aggregates alert counts into the `HourlyStats` table by device and hour. This enables fast statistics queries for the Statistics page without scanning the full `AlertLog` table on every request.
@@ -506,6 +539,7 @@ Production-hardening applied across the stack:
 | `/api/stats/heatmap` | GET | 7×24 alert heatmap (day-of-week × hour-of-day) |
 | `/api/alerts/export` | GET | CSV export with period filter (max 50K rows) |
 | `/api/settings/hardware-noise` | GET / POST | Read or toggle "Hardware Defects as Noise" |
+| `/api/settings/maxpfx-alerts` | GET / POST | Read or toggle MAXPFX alert muting (POST requires API key) |
 | `/api/settings/notifications` | GET / POST | Read or update notification preferences (Discord, Telegram, severity threshold, dedup window) |
 | `/api/maintenance` | GET / POST | List or create maintenance windows |
 | `/api/maintenance/{id}` | DELETE | Delete a maintenance window |
@@ -589,7 +623,7 @@ bsccl-netwatch/
 │       └── static/
 │           ├── css/neon-theme.css  # Full neon design system
 │           └── js/                # WebSocket, charts, topology, sounds, shortcuts
-├── tests/                         # 1127 tests (unit + integration + e2e)
+├── tests/                         # 1175 tests (unit + integration + e2e)
 ├── Dockerfile                     # Multi-stage, non-root, pinned, healthcheck
 ├── docker-compose.yml             # Production (read-only fs, limits, no-new-privileges)
 └── .github/workflows/ci.yml       # CI: ruff + black + mypy + pytest + coverage + pip-audit
