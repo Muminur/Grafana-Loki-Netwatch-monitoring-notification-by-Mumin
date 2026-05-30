@@ -921,3 +921,41 @@ async def test_lifespan_creates_hourly_aggregator_task(tmp_path: Path) -> None:
     assert (
         hourly_called["n"] >= 1
     ), "_hourly_aggregator must be called during lifespan startup"
+
+
+@pytest.mark.usefixtures("_reset_pipeline_globals")
+async def test_lifespan_shutdown_clears_db_engine_globals(tmp_path: Path) -> None:
+    """After shutdown the DB-engine globals are reset to ``None``.
+
+    Regression: ``engine.dispose()`` ran but ``main._engine`` and
+    ``routes._db_engine`` kept pointing at the now-disposed engine, so any
+    in-flight request or post-``yield`` task could open ``AsyncSession`` on a
+    disposed pool (use-after-dispose). Shutdown must null both globals so every
+    ``if _engine is not None`` / ``if _db_engine is not None`` guard short-circuits.
+    """
+    import src.api.routes as routes_mod  # noqa: PLC0415
+
+    settings = _make_settings(tmp_path)
+    _StubReceiver.instances.clear()
+
+    async def _fast_sleep(_seconds: float) -> None:
+        await asyncio.sleep(0)
+
+    with (
+        patch.object(main_mod, "get_settings", return_value=settings),
+        patch.object(main_mod, "SyslogReceiver", _StubReceiver),
+        patch("src.main.asyncio.sleep", _fast_sleep),
+    ):
+        async with main_mod.lifespan(main_mod.app):
+            # Startup populated both engine references.
+            assert main_mod._engine is not None  # noqa: SLF001
+            assert routes_mod._db_engine is not None  # noqa: SLF001
+        # Exiting the context ran the shutdown sequence.
+
+    # Both globals must be cleared so no disposed-engine access is possible.
+    assert (
+        main_mod._engine is None
+    ), "main._engine must be None after shutdown"  # noqa: SLF001
+    assert (
+        routes_mod._db_engine is None  # noqa: SLF001
+    ), "routes._db_engine must be None after shutdown"

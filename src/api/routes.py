@@ -562,10 +562,11 @@ def build_incident_title(
     return ", ".join(parts)
 
 
-def set_db_engine(engine: AsyncEngine) -> None:
-    """Register the async DB engine for use by /api/alerts.
+def set_db_engine(engine: AsyncEngine | None) -> None:
+    """Register (or clear) the async DB engine for use by /api/alerts.
 
-    Called from ``main.py`` lifespan after the engine is created.
+    Called from ``main.py`` lifespan after the engine is created, and again
+    with ``None`` on shutdown so handlers stop using the disposed engine.
     """
     global _db_engine  # noqa: PLW0603
     _db_engine = engine

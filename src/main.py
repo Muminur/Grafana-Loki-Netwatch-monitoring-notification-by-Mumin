@@ -1204,6 +1204,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
             _log.warning("Could not persist BGP flap state to DB: %s", exc)
 
     _log.info("Disposing DB engine…")
+    # Clear the module-level engine references BEFORE disposing so any in-flight
+    # request or post-yield task sees ``None`` and skips DB access rather than
+    # opening a session on the disposed pool (use-after-dispose).
+    _engine = None
+    set_db_engine(None)
     await engine.dispose()
 
 
