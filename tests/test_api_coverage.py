@@ -442,11 +442,8 @@ async def test_get_alerts_db_backed_with_filters(
     # Recent (yesterday) timestamp so the alert is always inside the "7d" window
     # regardless of the time of day the suite runs — a fixed past date drifts
     # out of the window as wall-clock time advances.
-    recent_ts = datetime.now(routes_mod._BDT).replace(
-        tzinfo=None
-    ) - timedelta(  # noqa: SLF001
-        days=1
-    )
+    bdt_now = datetime.now(routes_mod._BDT).replace(tzinfo=None)  # noqa: SLF001
+    recent_ts = bdt_now - timedelta(days=1)
     async with AsyncSession(async_db) as session:
         session.add(
             AlertLog(

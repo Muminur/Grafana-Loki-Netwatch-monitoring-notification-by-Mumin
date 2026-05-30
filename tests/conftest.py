@@ -19,6 +19,14 @@ os.environ["TELEGRAM_ENABLED"] = "false"
 os.environ["DISCORD_WEBHOOK_URL"] = ""
 os.environ["TELEGRAM_BOT_TOKEN"] = ""
 
+# get_settings() is lru_cached and src/main.py calls it at module import; if it
+# was already seeded (any earlier src import) it holds the real .env webhook.
+# Clear the cache so the very next call re-reads the disabled flags above,
+# making the guard independent of import ordering.
+from src.config import get_settings as _get_settings  # noqa: E402
+
+_get_settings.cache_clear()
+
 
 @pytest.fixture(autouse=True)
 def _reset_db_engine_global():
