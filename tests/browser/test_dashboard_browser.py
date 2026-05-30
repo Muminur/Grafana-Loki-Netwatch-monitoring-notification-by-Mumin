@@ -15,7 +15,7 @@ pytestmark = pytest.mark.browser
 _READ_KPI = """() => {
     const t = (id) => {
         const el = document.getElementById(id);
-        return el ? (parseInt(el.textContent.trim(), 10) || 0) : null;
+        return el ? (parseInt(el.textContent.trim(), 10) || 0) : 0;
     };
     const sev = ['tabCountCritical', 'tabCountWarning', 'tabCountInfo',
                  'tabCountNoise', 'tabCountLogin'].map(t);
@@ -61,6 +61,7 @@ def test_statistics_charts_have_data(live_server: dict[str, Any], page: Any) -> 
     page.goto(f"{live_server['url']}/statistics", wait_until="domcontentloaded")
     # 'Week' (7d) always includes the recently-seeded alerts.
     page.click('[data-period="week"]')
+    page.wait_for_selector('[data-period="week"].active', timeout=5000)
     page.wait_for_function(
         f"() => {{ const f = {_CHART_SUM};"
         f" return f('statsTimelineChart') > 0 && f('statsTopDevicesChart') > 0; }}",

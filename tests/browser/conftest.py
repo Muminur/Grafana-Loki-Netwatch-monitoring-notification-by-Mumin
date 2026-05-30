@@ -119,6 +119,7 @@ def live_server(
             "TELEGRAM_ENABLED": "false",
             "DISCORD_WEBHOOK_URL": "",
             "TELEGRAM_BOT_TOKEN": "",
+            "TELEGRAM_CHAT_ID": "",
         }
     )
 

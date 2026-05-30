@@ -92,6 +92,9 @@ jobs:
   # stays fast and browser flakiness is isolated. Verifies the JS layer
   # (KPI counters, chart population, gauge sizing) that httpx tests can't reach.
   browser-e2e:
+    # Only after the full hard gate (lint/format/type/coverage/security) passes
+    # on the matrix — don't spend browser-job minutes on a failing gate.
+    needs: [test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -116,4 +119,5 @@ jobs:
           TELEGRAM_ENABLED: "false"
           DISCORD_WEBHOOK_URL: ""
           TELEGRAM_BOT_TOKEN: ""
+          TELEGRAM_CHAT_ID: ""
         run: pytest -m browser tests/browser -vv
