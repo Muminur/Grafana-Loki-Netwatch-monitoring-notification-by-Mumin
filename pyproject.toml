@@ -47,6 +47,7 @@ filterwarnings = [
 markers = [
     "asyncio: mark test as async",
     "slow: marks tests as slow",
+    "browser: browser-based Playwright e2e tests (excluded from the default/matrix run; executed by the dedicated browser-e2e CI job)",
 ]
 
 [tool.coverage.run]
