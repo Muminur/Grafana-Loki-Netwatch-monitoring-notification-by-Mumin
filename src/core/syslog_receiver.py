@@ -644,7 +644,11 @@ class SyslogReceiver:
                 resp.status_code,
                 safe_url,
             )
-            return 0
+            # Non-200 means no logs were ingested. Surface it as a failure so the
+            # poll loop marks the receiver disconnected and backs off, instead of
+            # treating a non-200 (e.g. 401 from a bad API key) as a healthy poll.
+            msg = f"Loki HTTP poll returned status {resp.status_code}"
+            raise RuntimeError(msg)
 
         data = resp.json()
         entries = self._extract_entries_from_http(data)

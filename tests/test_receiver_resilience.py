@@ -704,6 +704,47 @@ async def test_http_poll_once_returns_raw_count_for_pagination() -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_http_poll_once_raises_on_non_200() -> None:
+    """A non-200 (e.g. 401 from a bad Grafana API key) must raise, not return 0.
+
+    Returning 0 made ``_http_poll`` treat the cycle as a healthy empty poll, so
+    a persistent auth failure reported 'connected' while ingesting zero logs.
+    """
+    receiver = SyslogReceiver(_settings(), AsyncMock())
+    resp = MagicMock()
+    resp.status_code = 401
+    client = _mock_http_client(resp)
+    with (
+        patch("src.core.syslog_receiver.httpx.AsyncClient", return_value=client),
+        pytest.raises(RuntimeError),
+    ):
+        await receiver._http_poll_once()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_http_poll_non_200_marks_disconnected() -> None:
+    """A persistent non-200 flips is_connected to False, not stays healthy."""
+    receiver = SyslogReceiver(_settings(), AsyncMock())
+    receiver._is_connected = True  # noqa: SLF001 — pretend a prior poll succeeded
+    receiver._running = True  # noqa: SLF001
+
+    resp = MagicMock()
+    resp.status_code = 401
+    client = _mock_http_client(resp)
+
+    async def _stop_sleep(_delay: float) -> None:
+        receiver._running = False  # noqa: SLF001 — break the loop after one cycle
+
+    with (
+        patch("src.core.syslog_receiver.httpx.AsyncClient", return_value=client),
+        patch("src.core.syslog_receiver.asyncio.sleep", new=_stop_sleep),
+    ):
+        await receiver._http_poll()  # noqa: SLF001
+
+    assert receiver._is_connected is False  # noqa: SLF001
+
+
 # ---------------------------------------------------------------------------
 # 8. UDP rate limiting (token bucket)
 # ---------------------------------------------------------------------------
