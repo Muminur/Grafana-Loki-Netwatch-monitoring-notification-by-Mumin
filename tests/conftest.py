@@ -1,6 +1,49 @@
 """Shared test fixtures for BSCCL NetWatch test suite."""
 
+import os
+
 import pytest
+
+# ---------------------------------------------------------------------------
+# SAFETY: the test suite must NEVER send real Discord/Telegram notifications.
+# A local .env may set DISCORD_ENABLED=true with a real webhook; integration
+# tests that drive the alert pipeline (src/main.py) would otherwise POST real
+# CRITICAL alerts to the production NOC channel. Force the notification flags
+# off here — at conftest import, before src.config/src.main load — so the
+# cached get_settings() singleton reads these. load_dotenv(override=False) lets
+# process env win over .env. Unit tests in test_notifications.py build their own
+# Settings via _make_settings(), so they are unaffected by this.
+# ---------------------------------------------------------------------------
+os.environ["DISCORD_ENABLED"] = "false"
+os.environ["TELEGRAM_ENABLED"] = "false"
+os.environ["DISCORD_WEBHOOK_URL"] = ""
+os.environ["TELEGRAM_BOT_TOKEN"] = ""
+
+# get_settings() is lru_cached and src/main.py calls it at module import; if it
+# was already seeded (any earlier src import) it holds the real .env webhook.
+# Clear the cache so the very next call re-reads the disabled flags above,
+# making the guard independent of import ordering.
+from src.config import get_settings as _get_settings  # noqa: E402
+
+_get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_db_engine_global():
+    """Clear the ``routes._db_engine`` global after every test.
+
+    Tests (and the app lifespan) point the global at a per-test engine which is
+    then disposed. If the global is left referencing that disposed engine, a
+    later test's DB code path re-uses it — and using a disposed SQLAlchemy engine
+    silently re-opens a fresh aiosqlite connection that nothing closes. That
+    orphan is garbage-collected during an unrelated test whose event loop has
+    closed, raising ``RuntimeError: Event loop is closed``. Resetting to ``None``
+    keeps the leak from crossing test boundaries.
+    """
+    import src.api.routes as routes_mod
+
+    yield
+    routes_mod._db_engine = None  # noqa: SLF001
 
 
 @pytest.fixture

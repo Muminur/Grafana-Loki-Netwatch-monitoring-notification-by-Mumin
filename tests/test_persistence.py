@@ -458,7 +458,12 @@ async def test_load_persisted_state_tolerates_db_failure(
     # Should not raise
     from src.api.routes import load_persisted_state
 
-    await load_persisted_state(engine)
+    try:
+        await load_persisted_state(engine)
+    finally:
+        # Using the engine after dispose() re-opens a fresh connection; dispose
+        # again so it is closed inside this test's event loop.
+        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------

@@ -422,11 +422,17 @@ async def test_startup_reconstruction_does_not_block_on_db_failure() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     await engine.dispose()
 
-    eng = EscalationEngine()
-    # Should not raise
-    await _run_reconstruction(eng, engine)
+    try:
+        eng = EscalationEngine()
+        # Should not raise
+        await _run_reconstruction(eng, engine)
 
-    assert eng._tracked == {}
+        assert eng._tracked == {}
+    finally:
+        # Using the engine after dispose() re-opens a fresh connection; dispose
+        # again so it is closed inside this test's event loop (otherwise it is
+        # GC'd during a later test whose loop is closed → "Event loop is closed").
+        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ block or fixture teardown so other tests are unaffected.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
@@ -439,10 +439,15 @@ async def test_get_alerts_db_backed_with_filters(
 ) -> None:
     """DB path with severity + device + period filters (lines 564-587)."""
     routes_mod._db_engine = async_db  # noqa: SLF001
+    # Recent (yesterday) timestamp so the alert is always inside the "7d" window
+    # regardless of the time of day the suite runs — a fixed past date drifts
+    # out of the window as wall-clock time advances.
+    bdt_now = datetime.now(routes_mod._BDT).replace(tzinfo=None)  # noqa: SLF001
+    recent_ts = bdt_now - timedelta(days=1)
     async with AsyncSession(async_db) as session:
         session.add(
             AlertLog(
-                timestamp=datetime(2026, 5, 23, 12, 0, 0),
+                timestamp=recent_ts,
                 source_ip="192.168.203.1",
                 device_name="EQ-RTR-01",
                 hostname="BSCCL-EQ-RTR-01",
