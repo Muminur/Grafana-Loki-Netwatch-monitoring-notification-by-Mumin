@@ -51,6 +51,7 @@ from src.api.routes import (
     router,
     set_background_tasks,
     set_db_engine,
+    set_escalation_engine,
     set_receiver,
 )
 from src.api.websocket import WebSocketManager
@@ -1014,6 +1015,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         bundle_window=settings.bundle_group_window_seconds,
     )
     _escalation = EscalationEngine()
+    set_escalation_engine(_escalation)
     _log.info(
         "Pipeline ready: dedup=%ds flap=%ds bundle=%ds",
         settings.dedup_window_seconds,
