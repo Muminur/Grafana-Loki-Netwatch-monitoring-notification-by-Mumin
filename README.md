@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-1175_passing-00ff88?style=flat-square" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-1202_passing-00ff88?style=flat-square" alt="Tests"/>
   <img src="https://img.shields.io/badge/coverage-86%25-00ff88?style=flat-square" alt="Coverage"/>
   <img src="https://img.shields.io/badge/ruff-clean-00f0ff?style=flat-square" alt="Ruff"/>
   <img src="https://img.shields.io/badge/mypy-strict-8b5cf6?style=flat-square" alt="Mypy"/>
@@ -34,7 +34,7 @@ BSCCL (Bangladesh Submarine Cable Company Limited) operates a multi-site ISP/car
 - **Parses** 4 distinct Cisco IOS-XR syslog formats from 34 network devices
 - **Classifies** every log into 5 severity tiers using 26 regex rules
 - **Enriches** each alert with device identity, interface descriptions, client names, and AS numbers from 845+ interface mappings
-- **Correlates** cascading failures — a single fiber cut generating 200+ alerts becomes **one incident**
+- **Correlates** exact backhaul-link symptoms — a fiber cut generating many alerts on one physical link becomes **one incident** without hiding unrelated multi-homed alerts
 - **Notifies** operators via Discord and Telegram with deduplication and flap detection
 - **Displays** everything in a futuristic neon-themed dashboard optimized for 55" 4K NOC wall TVs, with live topology, charts, and sound alerts
 - **Auto-resolves** incidents when recovery events arrive (Interface Up, Bundle Active, BGP Up) — only genuinely unresolved faults remain
@@ -54,7 +54,7 @@ BSCCL (Bangladesh Submarine Cable Company Limited) operates a multi-site ISP/car
 ### Processing Pipeline
 
 ```
-Syslog (UDP 514) → Grafana Loki → WebSocket Tail → NetWatch Pipeline
+Syslog (UDP 514) → Grafana Loki → Grafana datasource proxy (:3000) → NetWatch Pipeline
                                                         │
                     ┌───────────────────────────────────┘
                     │
@@ -66,7 +66,7 @@ Syslog (UDP 514) → Grafana Loki → WebSocket Tail → NetWatch Pipeline
                                                         │
               ┌─────────────┐     ┌──────────┐     ┌────▼─────┐
               │   Dedup     │◀────│Correlator│◀────│  Store   │
-              │ 5m/2m/30s   │     │ Incidents│     │  SQLite  │
+              │ 5m/2m/30s   │     │ Per-link │     │  SQLite  │
               └──────┬──────┘     └──────────┘     └──────────┘
                      │
         ┌────────────┼────────────┐
@@ -85,16 +85,16 @@ Syslog (UDP 514) → Grafana Loki → WebSocket Tail → NetWatch Pipeline
   <img src="docs/assets/topology.svg" alt="Network Topology" width="600"/>
 </p>
 
-The correlation engine uses the **network dependency tree** (11 backbone devices with recursive BFS traversal) to automatically detect root causes. When `Bundle-Ether500` (the 9-link backhaul between Singapore and Kuakata) degrades, NetWatch:
+The correlation engine uses a **device-to-device per-link topology** (11 backbone devices, bundle remotes, and physical members) to detect root causes without over-suppressing a multi-homed network. When `Bundle-Ether500` (the 9-link backhaul between Singapore and Kuakata) degrades, NetWatch:
 
 1. Tags the first member link failure as **root cause** (`is_root_cause=True`) and creates an incident
-2. Recursively identifies **all downstream devices** (multi-hop traversal with cycle detection)
-3. Marks all subsequent BGP peer-down alerts as **symptoms** of that incident
-4. Groups everything into a **single incident** (e.g. `INC-20260523-001`) — persisted to DB across restarts
-5. Suppresses 200+ redundant notifications
-6. Lists all **affected clients** from the topology tree
+2. Resolves BGP backbone neighbors to the bundle they ride using the static BGP bundle map
+3. Marks an event as a **symptom** only when it rides the exact failed physical link, either on the local end or the directly connected remote end
+4. Keeps unrelated PNI/IX peers, client ports, other bundles on the same router, and merely transitive downstream devices independent so their CRITICAL alerts still surface
+5. Reuses only live incident IDs, preventing stale/evicted incident IDs from silently suppressing future alerts
+6. Groups mass BGP events when 3+ BGP-down events occur on the same device within the correlation window
 7. Supports **multiple concurrent incidents** per device (e.g., backhaul failure + mass BGP event)
-8. **Auto-resolves** when recovery events arrive, sending green RESOLVED notifications
+8. **Auto-resolves** when recovery events arrive, sending green RESOLVED notifications when not under maintenance
 
 ---
 
@@ -108,8 +108,8 @@ The correlation engine uses the **network dependency tree** (11 backbone devices
 | AS number database | **121** entries with names and types |
 | Classification rules | **26** (15 CRITICAL, 2 WARNING, 6 INFO, 3 LOGIN) |
 | Syslog formats parsed | **4** (IOS-XR +06, BDT, ADMIN, bare) |
-| Dedup windows | **5 min** standard, **2 min** BGP flap, **60 sec** bundle |
-| Test suite | **1175 tests**, 86% coverage |
+| Dedup windows | **5 min** standard, **2 min** BGP flap, **30 sec** bundle grouping in the deployment template |
+| Test suite | **1202 tests**, 86% coverage |
 
 ---
 
@@ -118,7 +118,7 @@ The correlation engine uses the **network dependency tree** (11 backbone devices
 ### Prerequisites
 
 - Python 3.11 or 3.12
-- Access to Grafana Loki at `192.168.200.230:3100` (office) or `103.16.152.8:3100` (remote)
+- Access to Grafana at `192.168.200.230:3000` (office) or `103.16.152.8:3000` (remote); NetWatch reaches Loki through Grafana's datasource proxy, not Loki's native port
 
 ### Local Development
 
@@ -203,11 +203,13 @@ TELEGRAM_ENABLED=true
 # Grafana
 GRAFANA_API_KEY=...
 GRAFANA_DASHBOARD_UID=8sWAY1LMz
+LOKI_DATASOURCE_ID=37
+LOKI_QUERY={job="Router-Logs"}
 
 # Dedup windows (seconds)
 DEDUP_WINDOW_SECONDS=300
 BGP_FLAP_WINDOW_SECONDS=120
-BUNDLE_GROUP_WINDOW_SECONDS=60
+BUNDLE_GROUP_WINDOW_SECONDS=30
 
 # ASN organization lookup (BigDataCloud — cached in SQLite)
 ASN_API_KEY=...
@@ -375,22 +377,20 @@ Three shifts aligned to BSCCL NOC operations (BDT timezone):
 
 ## Event Correlation
 
-The correlation engine is what makes NetWatch genuinely useful in production. Without it, a single fiber cut generates 200+ alerts. With it:
+The correlation engine is what makes NetWatch genuinely useful in production. Without it, one backhaul member failure can generate a burst of duplicate on-link alerts. With it:
 
 ```
-WITHOUT CORRELATION:                    WITH CORRELATION:
-─────────────────────                   ─────────────────
-Alert: BE500 member TenGigE0/0/0/0 ↓   Incident: INC-20260523-001
-Alert: BE500 member TenGigE0/0/0/1 ↓   Root: Bundle-Ether500 DEGRADED
-Alert: BE500 member TenGigE0/0/0/2 ↓   Device: EQ-RTR-01 (Singapore)
-Alert: BGP DOWN AS399077 TCLOUD         Affected: 3/9 members down
-Alert: BGP DOWN AS24482 SG.GS          Suppressed: 47 symptom alerts
-Alert: BGP DOWN AS714 Apple             Clients: KKT-01, DHK-03,
-Alert: BGP DOWN AS8075 Microsoft          Skytel, ADN, Velocity,
-Alert: BGP DOWN AS15169 Google             Novocom, Link3, ...
-Alert: BGP DOWN AS32934 Facebook
-... (200+ more alerts)                  1 notification (not 200+)
+WITHOUT CORRELATION:                       WITH PER-LINK CORRELATION:
+─────────────────────                      ───────────────────────────
+Alert: BE500 member TenGigE0/0/0/0 ↓      Incident: INC-20260523-001
+Alert: BE500 member TenGigE0/0/0/1 ↓      Root: Bundle-Ether500 DEGRADED
+Alert: BGP DOWN over BE500                 Device: EQ-RTR-01 (Singapore)
+Alert: remote-end BGP DOWN over BE500      Symptom: remote-end event on same link
+Alert: unrelated Google PNI DOWN           Independent alert, still notifies
+Alert: COX-03 BE200 peer DOWN              Independent alert, different link
 ```
+
+This deliberately avoids recursive downstream suppression: in a multi-homed backbone, one upstream down does not mean every transitive device is isolated.
 
 ---
 
@@ -454,7 +454,7 @@ Alert arrives → Classify → Enrich → Correlate → Dedup check
 |----------|--------|-----|---------|
 | **Standard dedup** | 5 minutes | `device:mnemonic:interface_or_neighbor` | Same event within window → suppressed |
 | **BGP flap detection** | 2 minutes | `device:neighbor` | Down → Up → Down → single "FLAPPING" alert |
-| **Bundle member grouping** | 60 seconds | `device:bundle_parent` | Multiple member events → grouped by parent bundle |
+| **Bundle member grouping** | 30 seconds | `device:bundle_parent` | Multiple member events → grouped by parent bundle |
 | **Incident auto-resolution** | Real-time | `device:interface` or `device:AS` | Recovery event (Up/Active/Clear) removes matching DOWN incident |
 | **BGP-UP silent fault clear** | Real-time | `device:bundle_members` | BGP UP on backbone P2P bundle auto-resolves RX_FAULT/SIGNAL/RFI (IOS-XR never sends explicit clears for optical faults) |
 
@@ -483,6 +483,8 @@ re-enabled before the underlying issue clears, the alert still escalates.
 
 ### Statistics Aggregation
 
+Daily and weekly statistics return DB-backed `hourly_buckets` (24 hour-of-day buckets) plus a top-device breakdown for chart rendering. Monthly and yearly statistics are also DB-backed, so period charts survive server restarts instead of falling back to the in-memory alert store.
+
 A background task (`_hourly_aggregator`) runs every 5 minutes and pre-aggregates alert counts into the `HourlyStats` table by device and hour. This enables fast statistics queries for the Statistics page without scanning the full `AlertLog` table on every request.
 
 ---
@@ -497,7 +499,7 @@ Production-hardening applied across the stack:
 - **Syslog ingest resilience** — Loki HTTP poll uses exponential backoff with a lag warning and page-boundary cursor de-duplication (no silent data loss); UDP rate limiting (1000 pkt/s default) with token bucket and guaranteed socket cleanup via `try/finally`; per-transport error counters exposed via `health_status()`.
 - **Memory-bounded correlation** — incident cache capped at 10,000 entries with LRU eviction; prevents unbounded memory growth during high-volume events.
 - **Input limits** — the parser caps line length (ReDoS/DoS guard); the API validates `severity`/`period` filters (HTTP 400) and bounds the in-memory maintenance store; the WebSocket manager caps connections and drops slow clients (backpressure); dedup engine validates `window_seconds > 0`.
-- **Database** — `incident_id` and silent-fault-resolution indexes, an idempotent index migration, and connection pre-ping.
+- **Database** — idempotent migrations for all model-declared `alert_log` indexes (`incident_id`, timestamp, classification/time, device/time, mnemonic, and silent-fault resolution), plus connection pre-ping.
 - **AS-cache** — tight timeout, bounded retry, timezone-correct TTL, and URL/key redaction in logs.
 - **Supply chain & image** — CI runs `pip-audit`; all dependencies pinned to exact versions; Docker image is pinned and non-root with a `.dockerignore`, resource limits, `no-new-privileges`, read-only root filesystem (`read_only: true` + tmpfs), and persistent DB volume at `/app/data/`.
 - **Authentication (opt-in)** — set `API_KEY` to require an `X-API-Key` header (constant-time check, `WWW-Authenticate` challenge on 401) for mutating endpoints; empty = disabled, so existing deployments are unaffected. **WebSocket endpoints** (`/ws`, `/ws/filtered`) also enforce auth via `?token=` query parameter when `API_KEY` is set.
@@ -505,7 +507,7 @@ Production-hardening applied across the stack:
 - **Startup resilience** — server starts successfully even when Loki is unreachable, with automatic reconnection via exponential backoff (1s → 60s). The dashboard serves cached data until Loki comes up.
 - **Self-monitoring** — `/health` endpoint reports `loki_connected` and `last_alert_received_at`; a background task sends Discord/Telegram alerts if no syslog data arrives for 10+ minutes (with startup grace period).
 - **Database retention** — automated cleanup task prunes alerts older than `RETENTION_DAYS` (default 90) and runs SQLite VACUUM at 03:00 UTC daily.
-- **State survives restart** — maintenance windows, the Hardware-Defects-as-Noise toggle, notification preferences (including severity threshold), in-flight CRITICAL escalation tracking, **BGP flap detection state**, **incident records**, and **incident acknowledgment marks** are all persisted to SQLite and restored on startup; the incident-ID counter is seeded from the DB so IDs never collide across a restart. The incident panel synthesizes active incidents from the DB after restart using temporally-correct resolution — a DOWN→UP→DOWN sequence is correctly preserved as active. ACK marks are restored from the `incident_ack` audit trail so acknowledged incidents remain acknowledged after restart, and `AlertLog.acknowledged_at` is written during acknowledgment to prevent the escalation engine from re-escalating already-acknowledged alerts.
+- **State survives restart** — maintenance windows, the Hardware-Defects-as-Noise toggle, notification preferences (including severity threshold), in-flight CRITICAL escalation tracking, **BGP flap detection state**, **incident records**, and **incident acknowledgment marks** are all persisted to SQLite and restored on startup; the incident-ID counter is seeded from the DB so IDs never collide across a restart. The incident panel synthesizes active incidents from the DB after restart using temporally-correct resolution — a DOWN→UP→DOWN sequence is correctly preserved as active. ACK marks are restored from durable alert rows (`AlertLog.acknowledged_at`) and the `incident_ack` audit trail so acknowledged incidents remain acknowledged after restart, and acknowledging an incident cancels the pending escalation immediately.
 - **Timezone-consistent timestamps** — all user-facing incident, acknowledgment, shift-handoff, and fault/recovery-resolution times are written in Bangladesh local time (UTC+6) through a single canonical clock, so live cards, the database, and incidents synthesized from the DB after a restart never disagree by the 6-hour UTC offset.
 - **Observability** — optional structured JSON logs (`LOG_FORMAT=json`) with a per-request `X-Request-ID`, Prometheus `/metrics` endpoint (alerts processed, dedup suppressed, notifications sent, live WebSocket connections), and `/health` endpoint with background task liveness.
 - **Dedup correctness** — the window uses `max(event-time, monotonic)` elapsed so replayed/historical logs and backward clock steps are handled without mis-suppressing real alerts. Eviction logging tracks purged entries for operational visibility.
@@ -557,12 +559,13 @@ Production-hardening applied across the stack:
 
 | Factor | Impact |
 |--------|--------|
-| Active CRITICAL alert | -5 points each |
-| Active WARNING alert | -1 point each |
-| Active incident | -10 points each |
-| Flapping BGP peer | -3 points each |
-| No criticals in last hour | +5 bonus |
-| All 34 devices reporting | +5 bonus |
+| Active CRITICAL alert | -15 points each, capped at -60 |
+| Active WARNING alert | -2 points each, capped at -20 |
+| BGP peer currently DOWN | -3 points each, capped at -30 |
+| Flapping BGP peer | -5 points each, capped at -25 |
+| Degraded backhaul bundle | -10 points each, capped at -40 |
+| All PNI links healthy | +5 bonus |
+| No active CRITICAL alerts | +5 bonus |
 
 ### Client SLA Tracking
 Per-client metrics: **uptime %**, **MTBF** (hours), **MTTR** (minutes), **incident count** over configurable periods.
@@ -597,7 +600,7 @@ bsccl-netwatch/
 │   │   ├── interface_map.py       # 845 interfaces → description
 │   │   ├── as_database.py         # 121 AS numbers → name/type
 │   │   ├── classification_rules.py # 26 compiled regex rules
-│   │   └── topology.py            # Network dependency tree
+│   │   └── topology.py            # Per-link backbone topology
 │   ├── database/
 │   │   ├── models.py              # 7 SQLAlchemy models
 │   │   ├── crud.py                # DB operations
@@ -623,7 +626,7 @@ bsccl-netwatch/
 │       └── static/
 │           ├── css/neon-theme.css  # Full neon design system
 │           └── js/                # WebSocket, charts, topology, sounds, shortcuts
-├── tests/                         # 1175 tests (unit + integration + e2e)
+├── tests/                         # 1202 tests (unit + integration + browser e2e)
 ├── Dockerfile                     # Multi-stage, non-root, pinned, healthcheck
 ├── docker-compose.yml             # Production (read-only fs, limits, no-new-privileges)
 └── .github/workflows/ci.yml       # CI: ruff + black + mypy + pytest + coverage + pip-audit
