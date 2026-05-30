@@ -68,6 +68,22 @@ async def test_device_mnemonic_resolved_index_created() -> None:
 
 
 @pytest.mark.asyncio
+async def test_timestamp_index_created() -> None:
+    """ix_alertlog_timestamp must exist — covers the stats range-scan queries
+    (WHERE timestamp >= start) used by /api/stats/daily and /api/stats/weekly.
+    """
+    engine = await get_engine(IN_MEMORY_URL)
+    await create_tables(engine)
+
+    names = await _index_names(engine)
+    await engine.dispose()
+
+    assert (
+        "ix_alertlog_timestamp" in names
+    ), f"Expected ix_alertlog_timestamp in indexes, got: {sorted(names)}"
+
+
+@pytest.mark.asyncio
 async def test_existing_indexes_preserved() -> None:
     """Pre-existing indexes must still be present alongside the new ones."""
     engine = await get_engine(IN_MEMORY_URL)

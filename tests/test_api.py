@@ -833,3 +833,378 @@ async def test_get_maintenance_windows_filters_expired() -> None:
     finally:
         routes_mod._maintenance_store.clear()  # noqa: SLF001
         routes_mod._maintenance_store.extend(original_store)  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# 34. test_stats_daily_has_hourly_buckets_shape
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stats_daily_has_hourly_buckets_shape() -> None:
+    """GET /api/stats/daily must return hourly_buckets: a list of exactly 24
+    dicts, each with keys 'hour' (== index) plus all five classification keys.
+    """
+    import src.api.routes as routes_mod
+    from src.main import app
+
+    original_store = list(routes_mod._alerts_store)  # noqa: SLF001
+    routes_mod._alerts_store.clear()  # noqa: SLF001
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/stats/daily")
+
+        assert response.status_code == 200
+        body = response.json()
+
+        assert (
+            "hourly_buckets" in body
+        ), "hourly_buckets key missing from /api/stats/daily"
+        buckets = body["hourly_buckets"]
+        assert isinstance(buckets, list), "hourly_buckets must be a list"
+        assert len(buckets) == 24, f"expected 24 buckets, got {len(buckets)}"
+
+        required_cls_keys = {"CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"}
+        for i, bucket in enumerate(buckets):
+            assert (
+                bucket.get("hour") == i
+            ), f"bucket[{i}]['hour'] = {bucket.get('hour')!r}, expected {i}"
+            for k in required_cls_keys:
+                assert k in bucket, f"bucket[{i}] missing classification key '{k}'"
+    finally:
+        routes_mod._alerts_store.clear()  # noqa: SLF001
+        routes_mod._alerts_store.extend(original_store)  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# 35. test_stats_daily_hourly_buckets_count_by_hour
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stats_daily_hourly_buckets_count_by_hour() -> None:
+    """Seed 3 alerts today at hour 14 (BDT) → hourly_buckets[14] has correct
+    per-classification counts; an unrelated hour (3) must be all zeros.
+    """
+    from datetime import datetime
+
+    import src.api.routes as routes_mod
+    from src.api.routes import _BDT  # noqa: PLC2701
+    from src.main import app
+
+    # Hour 14 (mid-afternoon) is chosen so the alert always lands on "today"
+    # regardless of the wall-clock hour the test runs — no midnight race.
+    ts_hour14 = (
+        datetime.now(_BDT)
+        .replace(hour=14, minute=0, second=0, microsecond=0, tzinfo=None)
+        .isoformat()
+    )
+
+    original_store = list(routes_mod._alerts_store)  # noqa: SLF001
+    routes_mod._alerts_store.clear()  # noqa: SLF001
+    routes_mod._alerts_store.append(  # noqa: SLF001
+        {"classification": "CRITICAL", "timestamp": ts_hour14, "device": "EQ-RTR-01"}
+    )
+    routes_mod._alerts_store.append(  # noqa: SLF001
+        {"classification": "WARNING", "timestamp": ts_hour14, "device": "EQ-RTR-01"}
+    )
+    routes_mod._alerts_store.append(  # noqa: SLF001
+        {"classification": "INFO", "timestamp": ts_hour14, "device": "EQ-RTR-01"}
+    )
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/stats/daily")
+
+        assert response.status_code == 200
+        body = response.json()
+        buckets = body["hourly_buckets"]
+
+        assert (
+            buckets[14]["CRITICAL"] == 1
+        ), f"hourly_buckets[14]['CRITICAL'] = {buckets[14].get('CRITICAL')!r}, want 1"
+        assert (
+            buckets[14]["WARNING"] == 1
+        ), f"hourly_buckets[14]['WARNING'] = {buckets[14].get('WARNING')!r}, want 1"
+        assert (
+            buckets[14]["INFO"] == 1
+        ), f"hourly_buckets[14]['INFO'] = {buckets[14].get('INFO')!r}, want 1"
+        # Hour 3 must be untouched (all zeros)
+        assert buckets[3]["CRITICAL"] == 0
+        assert buckets[3]["WARNING"] == 0
+        assert buckets[3]["INFO"] == 0
+        assert buckets[3]["NOISE"] == 0
+        assert buckets[3]["USER_LOGIN"] == 0
+    finally:
+        routes_mod._alerts_store.clear()  # noqa: SLF001
+        routes_mod._alerts_store.extend(original_store)  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# 36. test_stats_daily_has_per_device_sorted_desc
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stats_daily_has_per_device_sorted_desc() -> None:
+    """Seed 5 alerts for EQ-RTR-01 and 2 for COX-Core-01 today → per_device is
+    sorted descending: EQ-RTR-01 first (count=5), COX-Core-01 second (count=2).
+    """
+    from datetime import datetime
+
+    import src.api.routes as routes_mod
+    from src.api.routes import _BDT  # noqa: PLC2701
+    from src.main import app
+
+    ts_today = (
+        datetime.now(_BDT)
+        .replace(hour=10, minute=0, second=0, microsecond=0, tzinfo=None)
+        .isoformat()
+    )
+
+    original_store = list(routes_mod._alerts_store)  # noqa: SLF001
+    routes_mod._alerts_store.clear()  # noqa: SLF001
+    for _ in range(5):
+        routes_mod._alerts_store.append(  # noqa: SLF001
+            {"classification": "CRITICAL", "timestamp": ts_today, "device": "EQ-RTR-01"}
+        )
+    for _ in range(2):
+        routes_mod._alerts_store.append(  # noqa: SLF001
+            {
+                "classification": "WARNING",
+                "timestamp": ts_today,
+                "device": "COX-Core-01",
+            }
+        )
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/stats/daily")
+
+        assert response.status_code == 200
+        body = response.json()
+
+        assert "per_device" in body, "per_device key missing from /api/stats/daily"
+        per_device = body["per_device"]
+        assert isinstance(per_device, list), "per_device must be a list"
+        assert len(per_device) >= 2
+
+        assert per_device[0] == {"device": "EQ-RTR-01", "count": 5}, (
+            f"per_device[0] = {per_device[0]!r}, "
+            "expected {'device':'EQ-RTR-01','count':5}"
+        )
+        assert (
+            per_device[1]["count"] == 2
+        ), f"per_device[1]['count'] = {per_device[1].get('count')!r}, want 2"
+        assert per_device[1]["device"] == "COX-Core-01"
+    finally:
+        routes_mod._alerts_store.clear()  # noqa: SLF001
+        routes_mod._alerts_store.extend(original_store)  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# 37. test_stats_daily_empty_store_zeroed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stats_daily_empty_store_zeroed() -> None:
+    """Cleared _alerts_store → hourly_buckets all-zero and per_device == []."""
+    import src.api.routes as routes_mod
+    from src.main import app
+
+    original_store = list(routes_mod._alerts_store)  # noqa: SLF001
+    routes_mod._alerts_store.clear()  # noqa: SLF001
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/stats/daily")
+
+        assert response.status_code == 200
+        body = response.json()
+
+        buckets = body["hourly_buckets"]
+        assert len(buckets) == 24
+        for i, bucket in enumerate(buckets):
+            for cls_key in ("CRITICAL", "WARNING", "INFO", "NOISE", "USER_LOGIN"):
+                assert bucket[cls_key] == 0, (
+                    f"bucket[{i}]['{cls_key}'] = {bucket[cls_key]!r}, "
+                    "want 0 (empty store)"
+                )
+
+        assert (
+            body["per_device"] == []
+        ), f"per_device = {body['per_device']!r}, want [] (empty store)"
+    finally:
+        routes_mod._alerts_store.clear()  # noqa: SLF001
+        routes_mod._alerts_store.extend(original_store)  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# 38. test_stats_weekly_has_hourly_buckets_and_per_device
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stats_weekly_has_hourly_buckets_and_per_device() -> None:
+    """GET /api/stats/weekly returns hourly_buckets (len 24) and per_device."""
+    import src.api.routes as routes_mod
+    from src.main import app
+
+    original_store = list(routes_mod._alerts_store)  # noqa: SLF001
+    routes_mod._alerts_store.clear()  # noqa: SLF001
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/stats/weekly")
+
+        assert response.status_code == 200
+        body = response.json()
+
+        assert (
+            "hourly_buckets" in body
+        ), "hourly_buckets key missing from /api/stats/weekly"
+        assert isinstance(body["hourly_buckets"], list)
+        assert len(body["hourly_buckets"]) == 24
+
+        assert "per_device" in body, "per_device key missing from /api/stats/weekly"
+        assert isinstance(body["per_device"], list)
+    finally:
+        routes_mod._alerts_store.clear()  # noqa: SLF001
+        routes_mod._alerts_store.extend(original_store)  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# 39. test_stats_daily_db_path_hourly_and_per_device
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stats_daily_db_path_hourly_and_per_device() -> None:
+    """DB path: insert real AlertLog rows via in-memory SQLite, then GET
+    /api/stats/daily.  hourly_buckets[9] and per_device must reflect the
+    inserted data correctly.
+    """
+    from datetime import datetime
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.orm import sessionmaker
+
+    import src.api.routes as routes_mod
+    from src.api.routes import _BDT  # noqa: PLC2701
+    from src.database.migrations import create_tables, get_engine
+    from src.database.models import AlertLog
+    from src.main import app
+
+    engine = await get_engine("sqlite+aiosqlite:///:memory:")
+    await create_tables(engine)
+
+    # Build naive BDT timestamps at hour 9 (no tzinfo — matches DB convention)
+    ts_hour9 = datetime.now(_BDT).replace(
+        hour=9, minute=0, second=0, microsecond=0, tzinfo=None
+    )
+
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_session() as session:
+        session.add(
+            AlertLog(
+                timestamp=ts_hour9,
+                source_ip="192.168.203.1",
+                device_name="EQ-RTR-01",
+                hostname="EQ-RTR-01",
+                facility="BGP",
+                severity_level=2,
+                mnemonic="ADJCHANGE",
+                message="neighbor down",
+                raw="raw1",
+                classification="CRITICAL",
+            )
+        )
+        session.add(
+            AlertLog(
+                timestamp=ts_hour9,
+                source_ip="192.168.203.1",
+                device_name="EQ-RTR-01",
+                hostname="EQ-RTR-01",
+                facility="BGP",
+                severity_level=2,
+                mnemonic="ADJCHANGE",
+                message="neighbor down 2",
+                raw="raw2",
+                classification="CRITICAL",
+            )
+        )
+        session.add(
+            AlertLog(
+                timestamp=ts_hour9,
+                source_ip="192.168.202.2",
+                device_name="KKT-Core-1",
+                hostname="KKT-Core-1",
+                facility="BGP",
+                severity_level=6,
+                mnemonic="ADJCHANGE",
+                message="neighbor up",
+                raw="raw3",
+                classification="INFO",
+            )
+        )
+        await session.commit()
+
+    original_engine = routes_mod._db_engine  # noqa: SLF001
+    routes_mod.set_db_engine(engine)
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/stats/daily")
+
+        assert response.status_code == 200
+        body = response.json()
+
+        assert (
+            "hourly_buckets" in body
+        ), "hourly_buckets key missing from /api/stats/daily (DB path)"
+        buckets = body["hourly_buckets"]
+        assert len(buckets) == 24
+
+        assert buckets[9]["CRITICAL"] == 2, (
+            f"DB path: hourly_buckets[9]['CRITICAL'] = "
+            f"{buckets[9].get('CRITICAL')!r}, want 2"
+        )
+        assert (
+            buckets[9]["INFO"] == 1
+        ), f"DB path: hourly_buckets[9]['INFO'] = {buckets[9].get('INFO')!r}, want 1"
+
+        assert (
+            "per_device" in body
+        ), "per_device missing from /api/stats/daily (DB path)"
+        per_device = body["per_device"]
+        assert isinstance(per_device, list)
+        assert len(per_device) >= 1
+
+        # EQ-RTR-01 has 2 alerts — must be first (sorted descending)
+        assert per_device[0] == {"device": "EQ-RTR-01", "count": 2}, (
+            f"DB path per_device[0] = {per_device[0]!r}, "
+            "expected {'device':'EQ-RTR-01','count':2}"
+        )
+        # KKT-Core-1 must appear somewhere with count 1
+        kkt_entry = next((e for e in per_device if e["device"] == "KKT-Core-1"), None)
+        assert kkt_entry is not None, "KKT-Core-1 not found in per_device (DB path)"
+        assert (
+            kkt_entry["count"] == 1
+        ), f"KKT-Core-1 count = {kkt_entry['count']!r}, want 1"
+    finally:
+        routes_mod.set_db_engine(original_engine)
+        await engine.dispose()
