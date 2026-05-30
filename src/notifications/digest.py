@@ -81,10 +81,11 @@ async def generate_daily_digest(session: AsyncSession) -> str:
     flapping_peers: int = flap_result.scalar_one() or 0
 
     # Health score
+    # bgp_down_count / degraded_backhauls / pni_healthy use PRD defaults until a
+    # live data source is wired; critical/warning/flapping reflect today's state.
     score = calculate_health_score(
         critical_count=critical,
         warning_count=warning,
-        active_incidents=active_incidents,
         flapping_peers=flapping_peers,
     )
 
